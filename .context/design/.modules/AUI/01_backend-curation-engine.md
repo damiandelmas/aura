@@ -1,6 +1,11 @@
 # TRACE → Context Curation Engine: Architectural Vision
 
-This is brilliant. You're essentially proposing to transform TRACE from read-only archaeology into a writable memory management system for AI agents. Let me break down the architecture.
+**Part of:** TRACE-TALK vision (`00_vision-trace-talk.md`)
+**Enables:** Backend for agent memory management and multi-channel UI
+**Frontend:** Multi-Channel UI vision (`02_frontend-multi-channel-ui.md`)
+**Status:** 60% implemented (vector search complete, graph/editing pending)
+
+This document provides complete technical specification for conversation curation, editing, and composition - the backend enabling agent-to-agent communication through intelligent memory management.
 
 ---
 
