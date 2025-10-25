@@ -196,7 +196,7 @@ class EnhancedQdrantSearch:
                 'extracted_metadata': extracted_metadata,
                 'timestamp': timestamp_str,
                 'parsed_timestamp': parsed_timestamp,
-                'original_metadata': hit.payload.get('metadata', {}),
+                'original_metadata': hit.payload,  # Return full payload for rich metadata access
             }
             
             results.append(result)

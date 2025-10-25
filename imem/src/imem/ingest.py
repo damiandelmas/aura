@@ -786,6 +786,40 @@ class EnhancedModularIngest:
             except Exception as e:
                 logger.error(f"Error batch indexing {file_path}: {e}")
 
+    def parse_conversation_section(self, section_name: str) -> dict:
+        """Parse TRACE H2 headers into structured metadata
+
+        Enables rich filtering of conversation chunks by type, role, and file path.
+
+        Args:
+            section_name: H2 header like "Message 1: USER" or "Code Patch 1: src/cli.py"
+
+        Returns:
+            Dict with chunk_type, role (for messages), or file_path (for patches)
+
+        Examples:
+            "Message 1: USER" → {'chunk_type': 'message', 'role': 'user'}
+            "Message 2: ASSISTANT" → {'chunk_type': 'message', 'role': 'assistant'}
+            "Code Patch 1: src/cli.py" → {'chunk_type': 'patch', 'file_path': 'src/cli.py'}
+        """
+        metadata = {}
+
+        if section_name.startswith('Message'):
+            metadata['chunk_type'] = 'message'
+            if 'USER' in section_name:
+                metadata['role'] = 'user'
+            elif 'ASSISTANT' in section_name:
+                metadata['role'] = 'assistant'
+
+        elif section_name.startswith('Code Patch'):
+            metadata['chunk_type'] = 'patch'
+            # Extract "Code Patch 1: src/cli.py" → "src/cli.py"
+            match = re.match(r'Code Patch \d+:\s*(.+)', section_name)
+            if match:
+                metadata['file_path'] = match.group(1).strip()
+
+        return metadata
+
     def ingest_conversation_chunked(self, markdown_path: Path, session_id: str, metadata: dict,
                                    collection_name: str = "institutional_memory"):
         """Ingest conversation with H2-level chunking using LlamaIndex"""
@@ -834,12 +868,15 @@ class EnhancedModularIngest:
             header_match = re.match(r'^#{1,6}\s+(.+)$', first_line)
             section_name = header_match.group(1).strip() if header_match else ''
 
+            # Parse section name into structured metadata (chunk_type, role, file_path)
+            parsed_meta = self.parse_conversation_section(section_name)
+
             raw_header_path = node.metadata.get('header_path', '')
 
             payload = {
                 'source': 'conversation',
                 'session_id': session_id,
-                'section_type': section_name,  # Clean: "User Messages", "Code Changes"
+                'section_type': section_name,  # Clean: "Message 1: USER", "Code Patch 1: src/cli.py"
                 'header_path': raw_header_path,  # Raw: "/Conversation: .../"
                 'section_level': node.metadata.get('header_level'),
                 'content': node.get_content(),
@@ -847,7 +884,9 @@ class EnhancedModularIngest:
                 'duration_minutes': metadata.get('duration_minutes'),
                 'message_count': metadata.get('message_count'),
                 'has_changelog': metadata.get('has_changelog', False),
-                'changelog_path': metadata.get('changelog_path')
+                'changelog_path': metadata.get('changelog_path'),
+                # Rich metadata from parsing (enables filtering)
+                **parsed_meta  # Adds: chunk_type, role (for messages), file_path (for patches)
             }
 
             batch_points.append({

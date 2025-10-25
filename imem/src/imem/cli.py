@@ -99,17 +99,44 @@ def conversations():
 @click.option('--limit', default=5, help='Number of results')
 @click.option('--after', help='Only conversations after date (YYYY-MM-DD)')
 @click.option('--session', help='Filter by session ID (full or partial)')
-def conversations_search(query, limit, after, session):
-    """Search conversation transcripts
+@click.option('--messages-only', is_flag=True, help='Show only message chunks (exclude patches)')
+@click.option('--patches-only', is_flag=True, help='Show only code patch chunks (exclude messages)')
+@click.option('--user-only', is_flag=True, help='Show only user messages')
+@click.option('--assistant-only', is_flag=True, help='Show only assistant messages')
+@click.option('--file', help='Filter patches by file path (e.g., src/cli.py)')
+def conversations_search(query, limit, after, session, messages_only, patches_only, user_only, assistant_only, file):
+    """Search conversation transcripts with rich filtering
 
     Examples:
         imem conversations search "database discussion"
         imem conversations search "authentication" --session cb91d93d
+        imem conversations search "bug fix" --patches-only
+        imem conversations search "error handling" --file src/cli.py
+        imem conversations search "question" --user-only
     """
     filters = {'source': 'conversation'}
 
     if session:
         filters['session_id'] = session
+
+    # Chunk type filtering
+    if messages_only:
+        filters['chunk_type'] = 'message'
+    elif patches_only:
+        filters['chunk_type'] = 'patch'
+
+    # Role filtering (for messages)
+    if user_only:
+        filters['chunk_type'] = 'message'
+        filters['role'] = 'user'
+    elif assistant_only:
+        filters['chunk_type'] = 'message'
+        filters['role'] = 'assistant'
+
+    # File path filtering (for patches)
+    if file:
+        filters['chunk_type'] = 'patch'
+        filters['file_path'] = file
 
     _execute_search(query, filters, limit, after)
 

@@ -11,7 +11,10 @@
 ```markdown
 ---
 schema_version: "v3_adaptive"
-type: "architecture"
+type: "architecture.{system}-{scope}"
+status: "stable"
+keywords: "space separated terms"
+timestamp: "YYYY-MM-DDTHH:MM:SS-0700"
 ---
 
 # {System Name} Architecture
@@ -196,13 +199,33 @@ result = component.process(data)
 ### Required Fields
 ```yaml
 schema_version: "v3_adaptive"
-type: "architecture.{system}"      # Use dot notation: architecture.trace, architecture.imem
+type: "architecture.{system}-{scope}"  # Examples: architecture.imem-overview, architecture.trace-parsing
 status: "stable" | "draft" | "deprecated"
 keywords: "space separated terms"
+timestamp: "YYYY-MM-DDTHH:MM:SS-0700"  # Last refresh/verification time (update when architecture changes)
 ```
 
+### Type Format
+**Pattern:** `architecture.{system}-{scope}`
+
+**System:** The codebase being documented (imem, trace, aura)
+
+**Scope:** The aspect, subsystem, or depth of coverage (flexible, descriptive)
+- **Breadth**: overview, reference, detailed
+- **Subsystem**: indexing, search, registry, parsing, export
+- **Aspect**: dataflow, patterns, integration, business-logic
+
+**Examples:**
+```yaml
+type: "architecture.imem-overview"        # High-level IMEM introduction
+type: "architecture.imem-indexing"        # Deep dive into indexing subsystem
+type: "architecture.trace-parsing"        # How TRACE parsing works
+type: "architecture.aura-ecosystem"       # How AURA components interact
+```
+
+**Parsing:** At index time, split to extract `category` (architecture), `system` (imem), `scope` (overview)
+
 ### Forbidden Fields
-- ❌ `timestamp` - Architecture is eternal, no dates
 - ❌ `phase` - Architecture docs always in .document/architecture/
 - ❌ `session_id` - Not linked to specific conversation
 
@@ -222,7 +245,7 @@ keywords: "space separated terms"
 - ❌ "Recent Changes" or "History" section
 - ❌ "Migration Guide" or "Upgrade Path"
 - ❌ "Evolution" or "Timeline"
-- ❌ Any temporal language or dates in content
+- ❌ Temporal language in content (dates belong in frontmatter only)
 
 ---
 
@@ -311,9 +334,13 @@ Architecture docs describe **stable structure**, not **variable items**.
 - `file_path`: `architecture_trace.md`
 
 **Custom metadata added at index time:**
-- `type`: From frontmatter (`architecture.trace`)
+- `type`: From frontmatter (`architecture.imem-overview`)
+- `category`: Extracted from type (`architecture`)
+- `system`: Extracted from type (`imem`)
+- `scope`: Extracted from type (`overview`)
 - `status`: From frontmatter (`stable`)
 - `keywords`: From frontmatter
+- `timestamp`: From frontmatter (last refresh date)
 
 ### Query Patterns Enabled
 
@@ -321,11 +348,17 @@ Architecture docs describe **stable structure**, not **variable items**.
 # Find all architecture docs
 filter={'type': {'$glob': 'architecture.*'}}
 
-# Find specific system architecture
-filter={'type': 'architecture.trace'}
+# Find all IMEM architecture docs
+filter={'type': {'$glob': 'architecture.imem-*'}}
+
+# Find all overview docs across systems
+filter={'type': {'$glob': 'architecture.*-overview'}}
 
 # Find stable architecture docs
 filter={'type': {'$glob': 'architecture.*'}, 'status': 'stable'}
+
+# Find stale docs (not updated in 6 months)
+filter={'type': {'$glob': 'architecture.*'}, 'timestamp': {'$lt': six_months_ago}}
 ```
 
 ---

@@ -27,10 +27,15 @@ You'll receive:
 1. Read the template at the path above
 2. Read the existing architecture document
 3. Extract eternal content (what exists, how it works)
-4. Remove temporal content (what changed, history, dates)
+4. Remove temporal content (what changed, history, dates in body)
 5. Restructure to 6-section template format
 6. Use present tense throughout
-7. Save to the provided output path
+7. Infer system name from document (imem, trace, aura)
+8. Infer or assign scope based on content (overview if comprehensive, or subsystem name)
+9. Set type to: `architecture.{system}-{scope}`
+10. Set timestamp to current date/time (conversion date)
+11. Set status based on content maturity (stable, draft, deprecated)
+12. Save to the provided output path
 
 ## What to Keep
 
@@ -43,10 +48,12 @@ You'll receive:
 ## What to Remove
 
 ❌ "Recent Changes" sections
-❌ Dates and timestamps
+❌ Dates and timestamps from content (keep timestamp in frontmatter)
 ❌ "We changed X to Y" language
 ❌ Migration guides
 ❌ History or evolution sections
+❌ "Before/After" comparisons
+❌ "Future Enhancements" sections
 
 ## Process
 

@@ -3,6 +3,7 @@ schema_version: "v3_adaptive"
 type: "architecture.imem"
 status: "stable"
 keywords: "imem vector-search qdrant llamaindex embeddings section-chunking structured-retrieval metadata-rich"
+sessionid: "cb91d93d-f844-4677-b8f0-ce8ebbbb0f0f"
 ---
 
 # IMEM Architecture
