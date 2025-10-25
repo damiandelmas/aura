@@ -1,0 +1,30 @@
+{
+  "current": {
+    "name": "current",
+    "model_name": "all-MiniLM-L6-v2",
+    "collection_name": "docs",
+    "vector_name": "fast-all-minilm-l6-v2",
+    "dimensions": 384
+  },
+  "mpnet": {
+    "name": "mpnet",
+    "model_name": "all-mpnet-base-v2",
+    "collection_name": "docs_mpnet",
+    "vector_name": "mpnet-base-v2",
+    "dimensions": 768
+  },
+  "codebert": {
+    "name": "codebert",
+    "model_name": "microsoft/codebert-base",
+    "collection_name": "docs_codebert",
+    "vector_name": "codebert-base",
+    "dimensions": 768
+  },
+  "minilm_l12": {
+    "name": "minilm_l12",
+    "model_name": "all-MiniLM-L12-v2",
+    "collection_name": "docs_minilm_l12",
+    "vector_name": "minilm-l12-v2",
+    "dimensions": 384
+  }
+}

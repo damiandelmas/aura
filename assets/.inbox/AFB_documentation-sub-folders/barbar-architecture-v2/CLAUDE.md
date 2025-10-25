@@ -1,0 +1,8 @@
+- **00_collections/** — Firebase structure, data organization  
+- **01_interfaces/** — TypeScript schemas, data models  
+- **02_services/** — Service layer patterns, dependencies  
+- **03_relationships/** — Data flow, cross-references  
+- **04_security/** — Auth patterns, Firebase rules  
+- **05_deployment/** — Infrastructure, environments  
+- **06_real-time/** — WebSocket patterns, sync strategies  
+- **07_ui-ux/** — Component architecture
