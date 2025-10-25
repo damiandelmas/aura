@@ -15,8 +15,8 @@ Check changelogs against v3 requirements. Fix only what's non-compliant.
 
 Read these files to understand v3 requirements:
 
-1. `/home/axp/projects/fleet/hangar/code/aura/main/assets/changelogs/develop/template/00_TEMPLATE.md`
-2. `/home/axp/projects/fleet/hangar/code/aura/main/assets/changelogs/develop/template/01_FIELD_GUIDE.md`
+1. `/home/axp/.claude/commands/log/develop/template/00_TEMPLATE.md`
+2. `/home/axp/.claude/commands/log/develop/template/01_FIELD_GUIDE.md`
 
 ## What to Check
 

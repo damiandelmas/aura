@@ -3,19 +3,19 @@ schema_version: "v3_adaptive"
 type: "architecture.trace"
 status: "stable"
 keywords: "trace conversations jsonl archaeology parsing chronicle"
-timestamp: "2025-10-23T20:45:00-0700"
+timestamp: "2025-10-24T15:40:00-0700"
 ---
 
 # TRACE Architecture
 
 ## Purpose
 
-TRACE is a conversation archaeology tool that parses Claude Code conversation JSONL files and provides structured queries for both humans and agents. It enables retrieving conversation context, code changes, tool usage, and chronological timelines.
+TRACE is a conversation archaeology tool that parses Claude Code conversation JSONL files and provides structured queries for both humans and AI agents. It enables retrieving conversation context, code changes, tool usage, and chronological timelines.
 
 **Path**: `trace/src/aura_trace/`
-**Lines**: 1,242 lines (33% of codebase)
+**Lines**: ~900 lines (cleaned from 1,242)
 **CLI**: `trace`
-**Code Quality**: ⭐ Highest in codebase (80%+ type hints, dataclasses, comprehensive docstrings)
+**Architecture**: 3-layer (finder → retrieval → formatter)
 
 ---
 
@@ -23,31 +23,29 @@ TRACE is a conversation archaeology tool that parses Claude Code conversation JS
 
 ### 1. Global Session Discovery
 ```bash
-trace --list              # All conversations across projects
-trace --list --recent 10  # 10 most recent
+trace list                    # All conversations across projects
+trace list --marker "keyword" # Filter by content
+trace list --limit 10         # Limit results
 ```
 
 Scans `~/.claude/projects/*/conversations/*.jsonl` globally, sorts by modification time.
 
-### 2. Structured Queries
+### 2. Structured Queries (Subcommands)
 ```bash
-trace --session abc123 --metadata     # Session info (timing, counts)
-trace --session abc123 --messages     # Just user/assistant messages
-trace --session abc123 --patches      # Just code changes
-trace --session abc123 --files        # File operations
-trace --session abc123 --tools        # Tool usage counts
+trace show metadata <session-id>   # Session info (timing, counts)
+trace show messages <session-id>   # Just user/assistant messages
+trace show patches <session-id>    # Just code changes
+trace show chronicle <session-id>  # Complete timeline
+trace show files <session-id>      # File operations
+trace show tools <session-id>      # Tool usage counts
 ```
 
-### 3. Chronological Timeline
+### 3. Export to File
 ```bash
-trace --session abc123 --chronicle
-```
-
-Interleaves messages and patches in chronological order - complete story for agents.
-
-### 4. Agent-Friendly Export
-```bash
-trace --session abc123 --chronicle --output context.md
+trace export chronicle <session-id> -o context.md
+trace export messages <session-id>
+trace export patches <session-id>
+trace export metadata <session-id>  # JSON format
 ```
 
 Exports structured markdown with H2 sections for LlamaIndex chunking.
@@ -59,165 +57,164 @@ Exports structured markdown with H2 sections for LlamaIndex chunking.
 ### `finder.py` - Session Discovery
 **Purpose**: Find conversation JSONL files globally
 
-**Key Features**:
+**Key Methods**:
+```python
+list_all() -> List[Path]
+find_by_session_id(id: str) -> Path
+find_by_marker(keyword: str) -> List[Path]
+```
+
+**Features**:
 - Scans all projects in `~/.claude/projects/`
 - Supports partial session ID matching (min 8 chars)
 - Sorts by modification time (newest first)
-- Extracts session metadata from file
-
-**Data Class**:
-```python
-@dataclass
-class ConversationInfo:
-    session_id: str
-    file_path: Path
-    size: int
-    modified_time: datetime
-    project_path: str
-```
 
 ### `retrieval.py` - JSONL Parsing
 **Purpose**: Parse conversation files and extract structured data
 
-**Key Features**:
-- Dataclass-based extraction (type-safe)
-- Comprehensive docstrings (90%+ coverage)
-- Logging instead of print statements
-- Handles malformed JSONL gracefully
-
-**Extracts**:
-- Summary (timing, counts, working directory)
-- Messages (user + assistant)
-- File operations (deduplicated)
-- Tool usage (counts by tool type)
-- Code patches (with timestamps)
-
-**Data Class**:
+**Key Methods**:
 ```python
-@dataclass
-class ConversationEntry:
-    type: str                    # 'user', 'assistant', 'tool_use', etc.
-    session_id: Optional[str]
-    timestamp: Optional[str]
-    message: Optional[Dict]
-    # ... other fields
+load_conversation(path: Path) -> List[Dict]
+get_timeline(entries, include_messages=True, include_patches=True) -> List[Dict]
+get_messages(entries) -> List[Dict]
+get_patches(entries) -> List[Dict]
+get_metadata(entries) -> Dict
+get_file_operations(entries) -> List[Dict]
+get_tool_usage(entries) -> List[Dict]
 ```
 
-### `query.py` - Agent Formatting
-**Purpose**: Format conversation data for agent consumption
+**Data Extraction**:
+- Timeline (chronologically merged messages + patches)
+- Messages (user + assistant text)
+- Patches (code diffs with timestamps)
+- Metadata (timing, counts, working directory)
+- File operations (deduplicated)
+- Tool usage (counts by tool type)
+
+### `formatter.py` - Markdown Generation
+**Purpose**: Convert Python data structures to markdown
 
 **Key Methods**:
 ```python
-def prepare_for_agent(file_path) -> Dict:
-    """Complete conversation data for agent memory"""
-
-def export_structured_markdown(file_path) -> str:
-    """H2-sectioned markdown for IMEM indexing"""
+format(timeline, session_id, metadata) -> str           # Timeline markdown
+format_messages(messages) -> str                        # Messages only
+format_patches(patches) -> str                          # Patches only
+format_files(file_ops) -> str                           # File operations
+format_tools(tool_usage) -> str                         # Tool usage
+format_metadata(metadata) -> str                        # Metadata display
 ```
 
-**Structured Export Format**:
+**ONE FORMAT FOR EVERYTHING**:
+- Optimized for AI agents and LlamaIndex
+- Creates H2 sections for each message/patch
+- Numbered (Message 1, Message 2, Patch 1, etc.)
+- Chronological order preserved
+
+**Output Format**:
 ```markdown
 # Conversation: abc123
 
-## User Messages
-- "How do we implement auth?"
-- "What about JWT?"
+**Duration:** 42min | **Messages:** 156
 
-## Assistant Responses
+## Message 1: USER
+How do we implement auth?
+
+## Message 2: ASSISTANT
 Here's the approach...
 
-## Code Changes
-### auth/middleware.py
+## Code Patch 1: auth/middleware.py
 ```diff
 + def verify_token(request):
 ```
 
-## Tools Used
-- Edit: 12×
-- Bash: 5×
-
-## Files Modified
-- auth/middleware.py (modified)
+## Message 3: USER
+What about sessions?
 ```
 
 ### `cli.py` - Command Interface
-**Purpose**: User-facing CLI with backwards-compatible flags
+**Purpose**: User-facing CLI with subcommand structure
 
-**Flag Naming**:
-- `--metadata` - Session info (renamed from `--summary`)
-- `--messages` - Text only (renamed from `--conversation`)
-- `--chronicle` - Complete timeline (messages + patches chronological)
-- `--output` - Write to file (alias for `--export`)
+**Subcommands**:
+- `trace list` - Discovery
+- `trace show [content] [session-id]` - Display to terminal
+- `trace export [content] [session-id]` - Save to file
 
-**Deprecation Handling**:
-- Old flags still work but show warnings
-- Migration guidance provided
-- Zero breaking changes
-
----
-
-## Data Flow
-
-### Discovery Flow
-```
-1. User: trace --list
-2. Scan ~/.claude/projects/*/conversations/*.jsonl
-3. Extract file stats (size, mtime)
-4. Parse first few lines for session_id
-5. Sort by mtime (newest first)
-6. Return session list with metadata
-```
-
-### Query Flow
-```
-1. User: trace --session abc123 --chronicle
-2. finder.py: Find file by partial ID match
-3. retrieval.py: Parse JSONL line by line
-4. Extract: messages, patches, files, tools
-5. query.py: Build chronological timeline
-6. Output: Interleaved messages + patches
-```
-
-### Export Flow
-```
-1. User: trace --session abc123 --chronicle --output context.md
-2. query.py: export_structured_markdown()
-3. Build H2-sectioned markdown:
-   - ## User Messages
-   - ## Assistant Responses
-   - ## Code Changes
-   - ## Tools Used
-   - ## Files Modified
-4. Write to file
-5. IMEM can index this file for search
+**Clean Data Flow**:
+```python
+# All commands follow same pattern:
+entries = retrieval.load_conversation(path)
+data = retrieval.get_X(entries)
+output = formatter.format_X(data)
+click.echo(output)
 ```
 
 ---
 
-## Session Detection
+## Architecture
 
-### Partial ID Matching
-```bash
-# Full ID
-trace --session 5d8e69ea-8014-4e2a-9481-368685fb3a1f
+### 3-Layer Design
 
-# Partial (min 8 chars)
-trace --session 5d8e69ea   # Works!
+```
+┌─────────────────────────────────────────┐
+│              CLI (cli.py)               │
+│         User Interface Layer            │
+└────────────┬────────────────────────────┘
+             │
+             ├─> finder.py ──────> Find .jsonl files
+             │
+             ├─> retrieval.py ───> Parse → Python data
+             │
+             └─> formatter.py ───> Python data → Markdown
 ```
 
-**Algorithm**:
-1. List all conversations
-2. Filter where `session_id.startswith(partial_id)`
-3. Return first match
-4. Error if multiple matches (rare)
+**Clean Separation of Concerns**:
+- **Finder**: I/O (finding files)
+- **Retrieval**: Parsing (JSONL → data)
+- **Formatter**: Presentation (data → markdown)
+- **CLI**: User interface (orchestrates all 3)
 
-### Global Search
-TRACE searches **all projects**, not just current directory:
-- `~/.claude/projects/project-a/conversations/*.jsonl`
-- `~/.claude/projects/project-b/conversations/*.jsonl`
-- `~/.claude/projects/project-c/conversations/*.jsonl`
+### Data Flow
 
-**Benefit**: Resume conversations created in different projects.
+**Discovery Flow**:
+```
+User: trace list
+  ↓
+finder.list_all() → List[Path]
+  ↓
+Display session IDs
+```
+
+**Query Flow**:
+```
+User: trace show chronicle <session-id>
+  ↓
+finder.find_by_session_id() → Path
+  ↓
+retrieval.load_conversation() → entries
+  ↓
+retrieval.get_timeline() → timeline
+  ↓
+formatter.format() → markdown
+  ↓
+Display to terminal
+```
+
+**Export Flow**:
+```
+User: trace export chronicle <session-id> -o file.md
+  ↓
+finder.find_by_session_id() → Path
+  ↓
+retrieval.load_conversation() → entries
+  ↓
+retrieval.get_timeline() → timeline
+  ↓
+retrieval.get_metadata() → metadata
+  ↓
+formatter.format(timeline, session_id, metadata) → markdown
+  ↓
+Write to file
+```
 
 ---
 
@@ -227,100 +224,137 @@ TRACE searches **all projects**, not just current directory:
 
 **Solution**: Interleave messages and patches by timestamp.
 
-**Implementation**:
+**Implementation** (`retrieval.get_timeline()`):
 ```python
-# Build timeline array
-timeline = []
+def get_timeline(entries, include_messages=True, include_patches=True):
+    timeline = []
 
-for msg in messages:
-    timeline.append({
-        'type': 'message',
-        'timestamp': msg.get('_timestamp'),
-        'data': msg
-    })
+    if include_messages:
+        for msg in get_messages(entries):
+            timeline.append({
+                'type': 'message',
+                'timestamp': msg.get('_timestamp'),
+                'role': msg.get('role'),
+                'text': extract_text(msg)
+            })
 
-for patch in patches:
-    timeline.append({
-        'type': 'patch',
-        'timestamp': patch.get('timestamp'),
-        'data': patch
-    })
+    if include_patches:
+        for patch in get_patches(entries):
+            timeline.append({
+                'type': 'patch',
+                'timestamp': patch.get('timestamp'),
+                'file': patch.get('file'),
+                'diff_lines': patch.get('diff_lines')
+            })
 
-# Sort chronologically
-timeline.sort(key=lambda x: x['timestamp'])
-
-# Output interleaved
-for event in timeline:
-    if event['type'] == 'message':
-        # Format message
-    elif event['type'] == 'patch':
-        # Format patch
+    # Sort chronologically
+    timeline.sort(key=lambda x: x['timestamp'] or '')
+    return timeline
 ```
 
 **Output**:
 ```
-[09:15] USER: "How do we implement auth?"
-[09:16] ASSISTANT: "Here's the approach..."
-[09:18] PATCH: auth/middleware.py
-        + def verify_token(request):
-[09:20] USER: "What about sessions?"
-[09:21] ASSISTANT: "We can use..."
+## Message 1: USER
+"How do we implement auth?"
+
+## Message 2: ASSISTANT
+"Here's the approach..."
+
+## Code Patch 1: auth/middleware.py
+```diff
++ def verify_token(request):
+```
+
+## Message 3: USER
+"What about sessions?"
 ```
 
 ---
 
-## Structured Markdown Export
+## Integration with IMEM
 
-TRACE exports conversations in LlamaIndex-compatible format for IMEM indexing.
+### IMEM Indexing Pipeline
 
-**Format**:
-```markdown
-# Conversation: {session_id}
-
-## User Messages
-- "Message 1"
-- "Message 2"
-
-## Assistant Responses
-Full assistant text here...
-
-## Code Changes
-### file1.py
-```diff
-+ new code
+```
+IMEM CLI
+  ↓
+retrieval.load_conversation() + get_timeline()  ← Get chronological data
+  ↓
+formatter.format(timeline, session_id, metadata)  ← H2-section markdown
+  ↓
+LlamaIndex MarkdownNodeParser  ← Chunk by H2
+  ↓
+Qdrant (institutional_memory)  ← Vector search
 ```
 
-### file2.py
-```diff
-- old code
-+ new code
-```
+**IMEM Code** (simplified):
+```python
+from aura_trace.retrieval import ConversationRetrieval
+from aura_trace.formatter import ConversationFormatter
 
-## Tools Used
-- Edit: 12×
-- Bash: 5×
-- Read: 3×
+# Load conversation
+retrieval = ConversationRetrieval()
+entries = retrieval.load_conversation(conv_file)
 
-## Files Modified
-- auth/middleware.py (modified)
-- tests/test_auth.py (created)
+# Get timeline (messages + patches chronologically)
+timeline = retrieval.get_timeline(
+    entries,
+    include_messages=True,
+    include_patches=True,
+    include_files=False,
+    include_tools=False
+)
+
+# Get metadata
+metadata = retrieval.get_metadata(entries)
+
+# Format as LlamaIndex-ready markdown
+formatter = ConversationFormatter()
+markdown = formatter.format(timeline, metadata['session_id'], metadata)
+
+# Index with LlamaIndex
+llama_doc = LlamaDocument(text=markdown)
+nodes = MarkdownNodeParser().get_nodes_from_documents([llama_doc])
+# Each H2 section → separate Qdrant vector
 ```
 
 **Why H2 Sections**:
 - LlamaIndex MarkdownNodeParser chunks at H2 level
 - Each section = 1 vector in Qdrant
-- Search "tools used" returns just that section
+- Search "code changes" returns just patch sections
+- Search "user questions" returns just user message sections
 
-**IMEM Integration**:
+---
+
+## Subcommand Structure (Verb-Noun Pattern)
+
+**Design Philosophy**: Optimized for AI agents with clear verb-noun structure.
+
+**Commands**:
 ```bash
-# TRACE exports
-trace --session abc123 --output /tmp/conv.md
+trace list                      # Discovery
+trace show [content] [id]       # Display
+trace export [content] [id]     # Save
+```
 
-# IMEM indexes
-imem index-conversation abc123
-# → Calls TRACE export internally
-# → Chunks with LlamaIndex
-# → Stores in Qdrant
+**Benefits for AI Agents**:
+- Semantic clarity: `show messages` maps to intent
+- Self-documenting: action is explicit
+- Extensible: new content types = just add noun
+
+**Example Usage**:
+```bash
+# List conversations
+trace list --marker "authentication"
+
+# Show specific content
+trace show messages abc123
+trace show patches abc123
+trace show chronicle abc123
+
+# Export to file
+trace export chronicle abc123 -o context.md
+trace export messages abc123    # Auto-generates filename
 ```
 
 ---
@@ -336,108 +370,68 @@ imem index-conversation abc123
 
 ---
 
-## Code Quality Highlights
+## Code Quality
 
-### 1. Type Safety
+### 1. Clean Architecture
+- **3 layers**: Finder → Retrieval → Formatter
+- **Single responsibility**: Each module does ONE thing
+- **No duplication**: All formatting in formatter.py
+
+### 2. Type Safety
 ```python
-@dataclass
-class ConversationEntry:
-    type: str
-    session_id: Optional[str]
-    timestamp: Optional[str]
+from typing import List, Dict, Any
+
+def get_timeline(
+    entries: List[Dict],
+    include_messages: bool = True,
+    include_patches: bool = True
+) -> List[Dict[str, Any]]:
 ```
 
-**Benefit**: IDE autocomplete, type checking, self-documenting.
-
-### 2. Comprehensive Logging
+### 3. Comprehensive Docstrings
 ```python
-logger.info(f"Found {len(conversations)} conversations")
-logger.debug(f"Parsing entry: {entry.type}")
-logger.error(f"Failed to parse JSONL: {e}")
-```
-
-**Benefit**: Debuggable, no print statements cluttering output.
-
-### 3. Docstring Coverage
-```python
-def get_metadata(self, entries: List[ConversationEntry]) -> Dict[str, Any]:
-    """Extract conversation summary (timing, counts, working directory).
+def format(self, timeline: List[Dict[str, Any]],
+          session_id: str = None,
+          metadata: Dict[str, Any] = None) -> str:
+    """Format timeline as chronological markdown
 
     Args:
-        entries: Parsed conversation entries from JSONL file
+        timeline: Chronological list of events from get_timeline()
+        session_id: Session identifier (optional)
+        metadata: Conversation metadata (optional)
 
     Returns:
-        Dict containing session_id, start_time, duration_minutes,
-        message_count, working_directory
-
-    Example:
-        >>> metadata = retrieval.get_metadata(entries)
-        >>> print(metadata['duration_minutes'])
-        42.5
+        Markdown string with numbered H2 sections
     """
 ```
 
-**Benefit**: Self-documenting, clear contracts, usage examples.
-
 ---
 
-## Integration with IMEM
+## Recent Changes (2025-10-24)
 
-### Bidirectional Linking
+### Cleanup: Removed query.py
 
-**Changelog → Conversation**:
-```yaml
-# In changelog frontmatter:
-session_id: "5d8e69ea-8014-4e2a-9481-368685fb3a1f"
+**Before** (4 layers):
+```
+CLI → Finder → Retrieval → Query → Formatter → Output
 ```
 
-Search: `imem search --session 5d8e69ea`
-Returns: Changelog sections from that conversation
-
-**Conversation → Changelog**:
-```python
-# In conversation metadata:
-{
-    'has_changelog': True,
-    'changelog_path': '.context/develop/.changes/...'
-}
+**After** (3 layers):
+```
+CLI → Finder → Retrieval → Formatter → Output
 ```
 
-Workflow:
-1. Search conversations: `imem search "auth" --in conversations`
-2. See: `has_changelog: ✅`
-3. Jump to: Validated changelog
+**What Changed**:
+- ❌ Deleted `query.py` (redundant wrapper layer)
+- ✅ Added formatter methods: `format_messages()`, `format_patches()`, `format_files()`, `format_tools()`
+- ✅ Updated IMEM to call retrieval + formatter directly
+- ✅ CLI uses formatter methods instead of inline formatting
 
----
-
-## Configuration
-
-### Storage Paths
-- **Global conversations**: `~/.claude/projects/*/conversations/*.jsonl`
-- **Registry**: `.claude/.trace/registry.json` (per-project bookmarks)
-- **Exports**: Temporary files (auto-cleaned)
-
-### No Configuration Files
-TRACE has zero configuration - works out of the box.
-
----
-
-## Future Enhancements
-
-### High Priority
-- Live watcher (auto-detect new conversations)
-- SessionStart hook integration (auto-register)
-- Better error messages for malformed JSONL
-
-### Medium Priority
-- Conversation search (grep across all conversations)
-- Statistics (total messages, average duration)
-- Conversation tagging/bookmarking
-
-### Low Priority
-- Export to JSON
-- Conversation diffing
-- Session merging (multi-part conversations)
+**Impact**:
+- ~400 lines removed
+- Cleaner architecture
+- No breaking changes
+- Same output format
 
 ---
 

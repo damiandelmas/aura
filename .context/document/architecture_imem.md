@@ -2,15 +2,17 @@
 schema_version: "v3_adaptive"
 type: "architecture.imem"
 status: "stable"
-keywords: "imem vector-search qdrant llamaindex embeddings section-chunking"
-timestamp: "2025-10-23T20:45:00-0700"
+keywords: "imem vector-search qdrant llamaindex embeddings section-chunking structured-retrieval metadata-rich"
+timestamp: "2025-10-25T00:30:00-0700"
 ---
 
 # IMEM Architecture
 
 ## Purpose
 
-IMEM is a vector search engine that provides section-level semantic retrieval across changelogs and conversations. It uses LlamaIndex for intelligent chunking and E5-Large-v2 embeddings for precise similarity search.
+IMEM is a **structured knowledge retrieval system** (not traditional RAG) that provides SQL-like filtering + semantic search across changelogs and conversations. It extracts rich metadata from template-structured documents, enabling precision retrieval via phase/layer/section filters combined with vector similarity.
+
+**Innovation**: Captures decision genealogy through bidirectional linking (conversations ↔ changelogs), dual-layer architecture (implementation + pattern), and structured field detection (Context/Solution/Rationale).
 
 **Path**: `imem/src/imem/`
 **Lines**: 2,273 lines (61% of codebase)
@@ -42,12 +44,21 @@ Each project gets isolated Qdrant collection (`imem_<hash>`).
 - Tools Used = 1 vector
 - ~5 vectors per conversation
 
-### 3. Intelligent Filtering
+### 3. Structured Filtering (SQL-like)
 ```bash
-imem search "auth" --in develop          # Phase filter
-imem search "auth" --section "Decisions" # Section filter
-imem search "auth" --session abc123      # Session filter
+# Phase-based subcommands
+imem develop search "auth" --decisions         # Only Decision sections
+imem develop search "JSONB" --constraints      # Only Constraint sections
+imem develop search "patterns" --pattern       # Pattern layer only
+
+# Conversations
+imem conversations search "database" --session abc123
 ```
+
+**Rich metadata enables:**
+- section_type filtering (Decisions, Constraints, Failures, Patterns)
+- layer filtering (implementation vs pattern)
+- structured field detection (has_context, has_solution, has_alternatives)
 
 ### 4. Bidirectional Linking
 ```bash
@@ -135,16 +146,25 @@ IMEM_CONTEXT_DIR = ~/.context # Storage directory
 - `get_project_info()` - Retrieve collection name
 
 ### `cli.py` - Command Interface
-**Purpose**: User-facing CLI with project isolation
+**Purpose**: Phase-based CLI with structured filtering
 
-**Commands**:
+**New Architecture (Oct 25, 2025)**:
 ```bash
+# Phase-based subcommands
+imem develop search "query" --decisions --constraints --pattern
+imem conversations search "query" --session abc123
+imem design search "query" --options --questions
+
+# Legacy commands (still supported)
 imem init [--force]                    # Index current project
 imem search <query> [...filters]       # Search current project
-imem index-conversation <session-id>   # Index single conversation
-imem index-all-conversations           # Batch index all conversations
 imem service [start|stop|status]       # Manage Qdrant
 ```
+
+**Why Phase Subcommands?**
+- Natural grouping of section types (develop → Decisions/Constraints/Failures)
+- Phase-specific flags (--decisions only makes sense for develop)
+- Cleaner UX (no confusion between phase vs section filters)
 
 **Project Detection**:
 1. Find `.git/` directory (project root)
@@ -157,9 +177,9 @@ imem service [start|stop|status]       # Manage Qdrant
 
 **Key Method**: `ingest_markdown_chunked()`
 
-**Flow**:
+**Flow (Updated Oct 25, 2025)**:
 ```python
-def ingest_markdown_chunked(file_path, phase, collection):
+def ingest_markdown_chunked(file_path, phase, layer, collection):
     # 1. Read file + extract frontmatter
     frontmatter = extract_frontmatter(content)
 
@@ -167,34 +187,65 @@ def ingest_markdown_chunked(file_path, phase, collection):
     llama_doc = LlamaDocument(text=content)
     nodes = MarkdownNodeParser().get_nodes_from_documents([llama_doc])
 
-    # 3. For each node (H2 or H3 section):
-    for node in nodes:
-        # Extract section name from content
-        section_name = extract_section_name(node.content)
+    # 3. Batch encode all sections (2x faster)
+    texts = [node.get_content() for node in nodes]
+    embeddings = model.encode(texts)
 
-        # Generate embedding
-        embedding = model.encode(node.content).tolist()
+    # 4. For each node:
+    for node, embedding in zip(nodes, embeddings):
+        content = node.get_content()
+        first_line = content.split('\n')[0]
 
-        # Build payload
+        # Parse header level by counting # symbols
+        header_match = re.match(r'^(#{1,6})\s+(.+)$', first_line)
+        header_level = len(header_match.group(1)) if header_match else None
+
+        # FILTER: Only index H3+ sections (skip H1/H2 noise)
+        if header_level is None or header_level < 3:
+            continue
+
+        # Extract H2 parent for section_type
+        section_name = header_match.group(2)
+        h2_section_type = extract_h2_parent(node.metadata['header_path'])
+
+        # Detect structured fields
+        has_context = '**Context**' in content
+        has_solution = '**Solution**' in content
+        # ... more field detection
+
+        # Build rich payload
         payload = {
-            'source': 'changelog',  # or 'conversation'
-            'phase': phase,         # 'develop', 'design', etc.
-            'section_type': section_name,
-            'category': frontmatter['type'].split('.')[0],
-            'session_id': frontmatter.get('session_id'),
-            'content': node.content,
+            'source': 'changelog',
+            'phase': phase,
+            'layer': layer,  # implementation or pattern
+            'section_type': h2_section_type,  # H2 parent (Decisions, Constraints)
+            'section_name': section_name,     # H3 title
+            'section_level': header_level,
+            'has_context': has_context,
+            'has_solution': has_solution,
+            'schema_version': 'v1.0',
+            'word_count': len(content.split()),
+            'char_count': len(content),
+            'content': content,
             'file_path': str(file_path)
         }
 
-        # 4. Batch upsert to Qdrant
         batch_points.append({
             'id': uuid4(),
             'vector': {"e5-large-v2": embedding},
             'payload': payload
         })
 
+    # 5. Batch upsert to Qdrant
     client.upsert(collection, points=batch_points)
 ```
+
+**Key Changes**:
+- ✅ Batch encoding (2x faster)
+- ✅ H1/H2 filtering (only H3+ indexed)
+- ✅ Dual section tracking (section_type + section_name)
+- ✅ Structured field detection
+- ✅ Schema versioning
 
 **Optimizations**:
 - Batch upsert (10x faster than individual)
@@ -352,21 +403,52 @@ section_name = header_match.group(1).strip()
 
 ## Metadata Schema
 
-### Changelog Metadata
+### Changelog Metadata (v1.0)
 ```python
 {
+    # Core identification
     'source': 'changelog',
-    'phase': 'develop',              # design/designate/develop/document
-    'section_type': 'Decisions',     # Extracted from H2/H3
-    'section_level': 3,              # Header level
-    'category': 'implementation',    # From frontmatter type
-    'subtype': 'security',           # From frontmatter type
+    'phase': 'develop',                  # design/designate/develop/document
+    'layer': 'implementation',           # implementation or pattern
+
+    # Hierarchical section tracking
+    'section_type': 'Decisions',         # H2 parent (Decisions, Constraints, etc.)
+    'section_name': 'Database as Inert...',  # H3 title
+    'section_level': 3,                  # Actual header level (H3)
+    'header_path': '/Provider-Agnostic Refactor/Decisions/Database...',
+
+    # Frontmatter metadata
+    'category': 'implementation',        # From frontmatter type
+    'subtype': 'security',               # From frontmatter type
     'timestamp': '2025-10-23T20:00:00-0700',
-    'session_id': 'abc123...',       # Optional: links to conversation
-    'content': 'Full section text',
-    'file_path': '.context/develop/.changes/...'
+    'session_id': 'abc123...',           # Links to conversation
+
+    # Structured field detection (for rich filtering)
+    'has_context': True,
+    'has_solution': True,
+    'has_rationale': True,
+    'has_alternatives': False,
+    'has_approach': False,
+    'has_benefits': False,
+    'has_drawbacks': False,
+
+    # Schema versioning and monitoring
+    'schema_version': 'v1.0',
+    'word_count': 145,
+    'char_count': 892,
+
+    # Content
+    'content': 'Full H3 section text with Context/Solution/Rationale',
+    'file_path': '.context/develop/.changes/251011-1200_provider-agnostic-refactor.md'
 }
 ```
+
+**Key Improvements (Oct 25, 2025)**:
+- ✅ Dual section tracking (section_type = H2 parent, section_name = H3 title)
+- ✅ Structured field flags enable advanced filtering
+- ✅ Schema versioning for safe migrations
+- ✅ Word/char counts for token limit monitoring
+- ✅ Only H3+ sections indexed (H1/H2 noise filtered)
 
 ### Conversation Metadata
 ```python

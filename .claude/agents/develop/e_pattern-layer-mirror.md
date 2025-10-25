@@ -24,7 +24,7 @@ The goal is to preserve the **pattern** while removing the **implementation**.
 ## Required Reading
 
 Read to understand the source structure:
-1. `/home/axp/projects/fleet/hangar/code/aura/main/assets/changelogs/develop/template/00_TEMPLATE.md`
+1. `/home/axp/.claude/commands/log/develop/template/00_TEMPLATE.md`
 
 ## Transformation Rules
 

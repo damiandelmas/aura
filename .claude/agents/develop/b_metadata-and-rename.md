@@ -15,8 +15,8 @@ Clean frontmatter metadata and rename changelog files to proper format.
 
 Read these files to understand the v3 frontmatter format:
 
-1. `/home/axp/projects/fleet/hangar/code/aura/main/assets/changelogs/develop/template/00_TEMPLATE.md`
-2. `/home/axp/projects/fleet/hangar/code/aura/main/assets/changelogs/develop/template/01_FIELD_GUIDE.md`
+1. `/home/axp/.claude/commands/log/develop/template/00_TEMPLATE.md`
+2. `/home/axp/.claude/commands/log/develop/template/01_FIELD_GUIDE.md`
 
 ## What to Do
 

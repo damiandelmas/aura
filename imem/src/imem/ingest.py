@@ -696,6 +696,10 @@ class EnhancedModularIngest:
             if header_match:
                 header_level = len(header_match.group(1))  # Count # characters
 
+            # FILTER: Only index H3+ sections (actual content), skip H1/H2 noise
+            if header_level is None or header_level < 3:
+                continue  # Skip frontmatter, H1 titles, H2 section headers
+
             raw_header_path = node.metadata.get('header_path', '')
 
             # Extract H2 parent from header_path for semantic filtering
