@@ -18,19 +18,19 @@ AURA is a three-microservice institutional memory ecosystem designed for per-pro
 
 ## The Three Microservices
 
-### 1. IMEM - Vector Search & Indexing
+### 1. IMEM - Vector Search & Retrieval
 **Purpose**: Section-level semantic search across changelogs and conversations
 **CLI**: `imem`
-**Details**: See [architecture_imem.md](./architecture_imem.md)
+**Details**: See [architecture_imem-i2.md](./architecture_imem-i2.md)
 
-**Core Capability**: Index markdown documentation with LlamaIndex chunking, search via E5-Large-v2 embeddings, retrieve precise sections (not entire documents).
+**Core Capability**: Retrieval-only mode with LlamaIndex pipeline, H2-section chunking via MarkdownNodeParser, E5-Large-v2 embeddings, returns top-k ranked sections.
 
 ### 2. TRACE - Conversation Archaeology
 **Purpose**: Parse and query Claude Code conversation history
 **CLI**: `trace`
-**Details**: See [architecture_trace.md](./architecture_trace.md)
+**Details**: See [architecture_trace-i2.md](./architecture_trace-i2.md)
 
-**Core Capability**: Find conversations globally, export structured markdown, provide chronological timelines for agent consumption.
+**Core Capability**: Find conversations globally via semantic verb-noun commands, export H2-section chronicle markdown, provide chronologically merged messages + patches for vector indexing.
 
 ### 3. Qdrant - Vector Database Manager
 **Purpose**: Docker lifecycle management for Qdrant vector database
@@ -58,8 +58,9 @@ imem search "context" --session abc123
 
 ### Query Conversations
 ```bash
-trace --list                     # Browse all conversations
-trace --session abc123 --chronicle  # Full timeline
+trace list                          # Browse all conversations
+trace show chronicle abc123         # Full chronological timeline
+trace export chronicle abc123 -o context.md  # Export for agents
 ```
 
 ---
@@ -133,8 +134,8 @@ my-project/
    └→ Returns: Relevant conversation sections
 
 3. Drill down
-   └→ trace --session <id> --chronicle
-   └→ Returns: Full conversation timeline
+   └→ trace show chronicle <id>
+   └→ Returns: Chronologically merged messages + patches
 ```
 
 ---
@@ -256,8 +257,8 @@ project/.claude/.trace/
 ## Component Details
 
 For detailed architecture of each microservice:
-- **IMEM**: See [architecture_imem.md](./architecture_imem.md)
-- **TRACE**: See [architecture_trace.md](./architecture_trace.md)
+- **IMEM**: See [architecture_imem-i2.md](./architecture_imem-i2.md) (i2: retrieval-only mode)
+- **TRACE**: See [architecture_trace-i2.md](./architecture_trace-i2.md) (i2: semantic commands, chronicle pattern)
 
 ---
 

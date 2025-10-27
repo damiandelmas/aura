@@ -14,7 +14,7 @@ Create a changelog for this session following the template structure.
 ## Required Reading
 
 Read the template to understand the structure:
-- `/home/axp/.claude/commands/log/develop/template/00_TEMPLATE.md`
+- `/home/axp/projects/fleet/hangar/code/aura/main/assets/context/develop/template/00_TEMPLATE.md`
 
 ## Input
 

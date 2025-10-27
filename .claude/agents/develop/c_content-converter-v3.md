@@ -15,8 +15,8 @@ Convert changelog content to v3 structure. Metadata and filename are already cle
 
 Read these files - they contain everything you need:
 
-1. `/home/axp/.claude/commands/log/develop/template/00_TEMPLATE.md`
-2. `/home/axp/.claude/commands/log/develop/template/01_FIELD_GUIDE.md`
+1. `/home/axp/projects/fleet/hangar/code/aura/main/assets/context/develop/template/00_TEMPLATE.md`
+2. `/home/axp/projects/fleet/hangar/code/aura/main/assets/context/develop/template/01_FIELD_GUIDE.md`
 
 ## What Matters
 

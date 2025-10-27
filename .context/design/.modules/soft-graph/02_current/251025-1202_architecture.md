@@ -489,269 +489,330 @@ decisions = search(
 
 **Code reference:** `imem/src/imem/enhanced.py:95-144` ✅ EXISTS
 
-### Mode 2: EXPLAIN (Context Retrieval) ❌ PLANNED
+### Primitive 2: siblings ❌ PLANNED (Phase 6)
 
-**Architecture (NOT YET IMPLEMENTED - Phase 7):**
+**Purpose:** Get all chunks from same file (validated pain point: 13+ uses)
+
+**Implementation:**
 ```python
-def explain(query, collection_name):
-    # 1. Find primary match
-    primary = search(query, limit=1)[0]
-
-    # 2. Get related sections from same file
-    related = search(
-        "",  # No semantic query
-        filters={
-            'file_path': primary.payload['file_path'],
-            'section_type': ['Constraints', 'Implementation']
-        }
-    )
-
-    # 3. Get pattern layer variant
-    pattern_path = primary.payload['file_path'].replace('.md', '.pattern.md')
-    pattern = search(
-        "",
-        filters={'file_path': pattern_path}
-    )
-
-    # 4. Get origin conversation
-    if primary.payload.get('session_id'):
-        conversation = search(
-            "",
-            filters={
-                'source': 'conversation',
-                'session_id': primary.payload['session_id']
-            }
-        )
-
-    # 5. Format complete context
-    return {
-        'decision': primary,
-        'constraints': [r for r in related if r.payload['section_type'] == 'Constraints'],
-        'implementation': [r for r in related if r.payload['section_type'] == 'Implementation'],
-        'pattern_layer': pattern,
-        'conversation': conversation
-    }
-```
-
-### Mode 3: TRACE (Genealogy Navigation) ❌ PLANNED
-
-**Architecture (NOT YET IMPLEMENTED - Phase 7):**
-```python
-def trace(query, collection_name):
-    # 1. Find decision in develop phase
-    decision = search(query, filters={'phase': 'develop'})[0]
-    session_id = decision.payload['session_id']
-
-    # 2. Get conversation (earliest timestamp)
-    conversation = search(
-        "",
-        filters={
-            'source': 'conversation',
-            'session_id': session_id
-        }
+def get_siblings(result_id, collection_name):
+    """Get all H3 chunks from same file_path"""
+    # 1. Load result metadata
+    result = client.retrieve(
+        collection_name=collection_name,
+        ids=[result_id]
     )[0]
 
-    # 3. Get design exploration
-    design_docs = search(
-        query,
-        filters={
-            'phase': 'design',
-            'session_id': session_id
-        }
-    )
-
-    # 4. Get designate plan
-    plan = search(
-        query,
-        filters={
-            'phase': 'designate',
-            'session_id': session_id
-        }
-    )
-
-    # 5. Get later refinements (timestamp + semantic)
-    decision_timestamp = decision.payload['timestamp']
-    later_docs = search(
-        query,
-        filters={
-            'timestamp': f'>{decision_timestamp}',  # Qdrant range filter
-            'phase': 'develop'
-        }
-    )
-
-    # 6. Return chronological timeline
-    return {
-        'conversation': conversation,
-        'design_exploration': design_docs,
-        'plan': plan,
-        'implementation': decision,
-        'refinements': later_docs
-    }
-```
-
-### Mode 4: PATTERNS (Abstraction Comparison) ❌ PLANNED
-
-**Architecture (NOT YET IMPLEMENTED - Phase 7):**
-```python
-def patterns(query, collection_name):
-    # 1. Find implementation
-    implementation = search(
-        query,
-        filters={'layer': 'implementation'}
+    # 2. Query all chunks with same file_path
+    siblings = client.scroll(
+        collection_name=collection_name,
+        scroll_filter=Filter(must=[
+            FieldCondition(
+                key='file_path',
+                match=MatchValue(value=result.payload['file_path'])
+            )
+        ])
     )[0]
 
-    # 2. Find pattern variant (naming convention)
-    pattern_path = implementation.payload['file_path'].replace('.md', '.pattern.md')
-    pattern = search(
-        "",
-        filters={'file_path': pattern_path}
-    )
+    return siblings
+```
 
-    # 3. Find similar patterns across projects (cross-collection)
-    # Requires multi-collection search
-    similar_patterns = []
-    for project in registry.list_projects():
-        results = search(
-            query,
-            filters={'layer': 'pattern'},
-            collection_name=project.collection
+**CLI:**
+```bash
+imem siblings <result-id>
+# Returns: All sections from same changelog
+```
+
+**Code reference:** NEW - `imem/src/imem/relationships.py` (to be created)
+
+---
+
+### Primitive 3: filter ❌ PLANNED (Phase 6)
+
+**Purpose:** Filter by metadata relationships (session, timestamp, semantic)
+
+**Implementation:**
+```python
+def filter_metadata(filters, collection_name):
+    """Filter by session_id, timestamp, semantic similarity"""
+    must_conditions = []
+
+    # Session filter
+    if 'session' in filters:
+        must_conditions.append(
+            FieldCondition(key='session_id', match=MatchValue(value=filters['session']))
         )
-        similar_patterns.extend(results)
 
-    return {
-        'implementation': implementation,
-        'pattern': pattern,
-        'similar_patterns': similar_patterns
-    }
+    # Timestamp filters
+    if 'timestamp_before' in filters:
+        must_conditions.append(
+            FieldCondition(key='timestamp', range={'lt': filters['timestamp_before']})
+        )
+
+    if 'timestamp_after' in filters:
+        must_conditions.append(
+            FieldCondition(key='timestamp', range={'gt': filters['timestamp_after']})
+        )
+
+    # Semantic similarity
+    if 'semantic_similar' in filters:
+        reference = client.retrieve(collection_name, ids=[filters['semantic_similar']])[0]
+        return client.search(
+            collection_name=collection_name,
+            query_vector=reference.vector,
+            query_filter=Filter(must=must_conditions),
+            limit=20
+        )
+
+    return client.scroll(
+        collection_name=collection_name,
+        scroll_filter=Filter(must=must_conditions)
+    )[0]
+```
+
+**CLI:**
+```bash
+imem filter --session <session-id>
+imem filter --timestamp-before <time>
+imem filter --timestamp-after <time>
+imem filter --semantic-similar <result-id>
+```
+
+**Code reference:** NEW - `imem/src/imem/relationships.py` (to be created)
+
+---
+
+### Primitive 4: batch ❌ PLANNED (Phase 6.5)
+
+**Purpose:** Multi-query with optional combine + graph operations
+
+**Architecture note:** Batch is a peer command that internally composes other primitives (search, graph build, graph apply) for parallel execution efficiency.
+
+**Implementation:**
+```python
+def batch_search(config_json):
+    """Execute multiple queries, optionally combine and rank"""
+    config = json.loads(config_json)
+
+    # 1. Execute queries in parallel (internal)
+    results = []
+    for query_spec in config['queries']:
+        result = search(
+            query_spec['text'],
+            filters=query_spec.get('filters', {}),
+            limit=query_spec.get('limit', 10)
+        )
+        results.append(result)
+
+    # 2. Combine if requested
+    if config.get('combine'):
+        merged = combine_results(results)
+    else:
+        return results
+
+    # 3. Graph operations if requested
+    if config.get('graph'):
+        graph_id = build_graph(merged)
+        ranked = apply_algorithm(
+            graph_id,
+            config['graph']['algorithm']
+        )
+        return ranked[:config['graph'].get('top', 10)]
+
+    return merged
+```
+
+**CLI:**
+```bash
+imem batch '{"queries": [...], "combine": true, "graph": {...}}'
+```
+
+**Design elegance:**
+
+Multi-query parallelism solved simpler than initially conceived.
+
+**NOT:** MCP tool with structured parameters (protocol overhead, async complexity)
+**NOT:** File-based config (2-step: write JSON file → execute command)
+
+**YES:** JSON string as CLI argument
+- Claude Code constructs JSON inline: `Bash(f"imem batch '{json.dumps(config)}'")`
+- Single bash command from Claude's perspective
+- No temp files, no MCP layer (yet)
+- Unlocks: Parallel queries + combine + graph ranking in one operation
+
+**Why this works:**
+- Claude excels at constructing JSON programmatically
+- Bash accepts arbitrarily long string arguments
+- Single operation = single log entry (observable)
+- Fully reproducible (JSON captured in usage logs)
+
+This validates the primitive-first, composition-at-runtime approach.
+
+**Code reference:** NEW - `imem/src/imem/batch.py` (to be created)
+
+---
+
+## Layer 5: Graph Operations (Runtime Ranking) ❌ PLANNED
+
+### Component: `imem/src/imem/graph_ops.py`
+
+**Implementation status:** Planned (Phase 7)
+
+**Purpose:** Build graphs from result sets and apply ranking algorithms
+
+### Primitive 5: graph build ❌ PLANNED (Phase 7)
+
+**Purpose:** Construct NetworkX graph from search results
+
+**Implementation:**
+```python
+import networkx as nx
+from itertools import combinations
+
+def build_graph(result_ids, graph_id=None):
+    """Build relationship graph from results"""
+    # 1. Load results
+    results = [load_result(rid) for rid in result_ids]
+
+    # 2. Create directed graph
+    G = nx.DiGraph()
+
+    # 3. Add nodes
+    for r in results:
+        G.add_node(r.id, result=r, score=r.score)
+
+    # 4. Add edges (metadata-based relationships)
+    for r1, r2 in combinations(results, 2):
+        # Sibling relationship (same file)
+        if r1.payload['file_path'] == r2.payload['file_path']:
+            G.add_edge(r1.id, r2.id, type='sibling', weight=0.9)
+
+        # Genealogy relationship (same session)
+        if r1.payload.get('session_id') == r2.payload.get('session_id'):
+            G.add_edge(r1.id, r2.id, type='genealogy', weight=0.8)
+
+        # Semantic relationship (cosine similarity)
+        similarity = cosine_similarity(r1.vector, r2.vector)
+        if similarity > 0.85:
+            G.add_edge(r1.id, r2.id, type='semantic', weight=similarity)
+
+    # 5. Save graph
+    graph_id = graph_id or generate_id()
+    save_graph(graph_id, G)
+    return graph_id
+```
+
+**CLI:**
+```bash
+imem graph build <result-ids...> [--id graph-name]
+# Returns: graph_id
+```
+
+**Code reference:** NEW - `imem/src/imem/graph_ops.py` (to be created)
+
+---
+
+### Primitive 6: graph apply ❌ PLANNED (Phase 7)
+
+**Purpose:** Apply ranking algorithms to constructed graph
+
+**Implementation:**
+```python
+def apply_algorithm(graph_id, algorithm, top=None):
+    """Apply NetworkX algorithm, return ranked results"""
+    # 1. Load graph
+    G = load_graph(graph_id)
+
+    # 2. Apply algorithm
+    if algorithm == 'pagerank':
+        scores = nx.pagerank(G, weight='weight')
+    elif algorithm == 'centrality':
+        scores = nx.betweenness_centrality(G, weight='weight')
+    elif algorithm == 'communities':
+        communities = nx.community.louvain_communities(G, weight='weight')
+        return communities
+
+    # 3. Rank by score
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+    # 4. Return results
+    results = [G.nodes[node_id]['result'] for node_id, score in ranked]
+    return results[:top] if top else results
+```
+
+**CLI:**
+```bash
+imem graph apply <graph-id> pagerank [--top N]
+imem graph apply <graph-id> centrality [--top N]
+imem graph apply <graph-id> communities
+```
+
+**Code reference:** NEW - `imem/src/imem/graph_ops.py` (to be created)
+
+---
+
+### Primitive 7: graph export ❌ PLANNED (Phase 7)
+
+**Purpose:** Export graph structure for visualization/analysis
+
+**Implementation:**
+```python
+def export_graph(graph_id, format='json'):
+    """Export graph structure"""
+    G = load_graph(graph_id)
+
+    if format == 'json':
+        return {
+            'nodes': [
+                {'id': n, 'metadata': G.nodes[n]['result'].payload}
+                for n in G.nodes
+            ],
+            'edges': [
+                {'source': u, 'target': v, 'type': d['type'], 'weight': d['weight']}
+                for u, v, d in G.edges(data=True)
+            ]
+        }
+    elif format == 'gexf':
+        nx.write_gexf(G, f"{graph_id}.gexf")
+```
+
+**CLI:**
+```bash
+imem graph export <graph-id> [--format json|gexf]
 ```
 
 ---
 
-## Layer 5: Navigation (Soft-Graph Object Model) ❌ PLANNED
+### Usage Example (Full Pipeline)
 
-### Architecture (NOT YET IMPLEMENTED - Phase 6)
+```bash
+# 1. Multi-query batch search
+imem batch '{
+  "queries": [
+    {"text": "authentication security", "filters": {"decisions": true}, "limit": 10},
+    {"text": "authentication failures", "filters": {"failures": true}, "limit": 10},
+    {"text": "authentication patterns", "filters": {"patterns": true}, "limit": 10}
+  ],
+  "combine": true,
+  "graph": {
+    "algorithm": "pagerank",
+    "top": 10
+  }
+}'
 
-**Domain objects with lazy-loaded relationships (DESIGN ONLY):**
-
-```python
-class KnowledgeGraph:
-    def __init__(self, project_root):
-        self.project_root = project_root
-        self.collection = registry.get_collection(project_root)
-
-    def search(self, query, **filters):
-        """Semantic search → returns Item objects"""
-        results = search_engine.search(query, filters=filters)
-        return [Item(result, self) for result in results]
-
-class Item:
-    def __init__(self, point, graph):
-        self.point = point
-        self.graph = graph
-        self.payload = point.payload
-
-    # Lazy-loaded relationships (cached after first access)
-
-    @property
-    def constraints(self):
-        """Get constraints from same file"""
-        return self.graph.search(
-            "",
-            file_path=self.payload['file_path'],
-            section_type='Constraints'
-        )
-
-    @property
-    def pattern_layer(self):
-        """Get pattern abstraction (naming convention)"""
-        pattern_path = self.payload['file_path'].replace('.md', '.pattern.md')
-        results = self.graph.search("", file_path=pattern_path)
-        return results[0] if results else None
-
-    @property
-    def origin_discussion(self):
-        """Get conversation via session_id"""
-        if not self.payload.get('session_id'):
-            return None
-        return self.graph.search(
-            "",
-            source='conversation',
-            session_id=self.payload['session_id']
-        )
-
-    @property
-    def later_evolution(self):
-        """Get later docs (timestamp + semantic)"""
-        return self.graph.search(
-            self.payload['content'][:200],  # Semantic similarity
-            timestamp=f">{self.payload['timestamp']}",
-            phase=self.payload['phase']
-        )
-
-    @property
-    def quality_score(self):
-        """Computed authority (query-time)"""
-        score = 1.0
-
-        # Check if superseded
-        later = self.later_evolution
-        if later:
-            score *= 0.5  # Significant penalty
-
-        # Count constraints
-        constraints_count = len(self.constraints)
-        score -= constraints_count * 0.05
-
-        # Boost if pattern exists
-        if self.pattern_layer:
-            score *= 1.2
-
-        return max(0.0, score)
-
-class Pattern(Item):
-    @property
-    def source_implementation(self):
-        """Get implementation variant"""
-        impl_path = self.payload['file_path'].replace('.pattern.md', '.md')
-        results = self.graph.search("", file_path=impl_path)
-        return results[0] if results else None
-
-    @property
-    def similar_across_contexts(self):
-        """Find similar patterns in other projects"""
-        # Multi-collection search (future)
-        pass
-
-class Discussion(Item):
-    @property
-    def resulting_changelog(self):
-        """Get changelog created from this conversation"""
-        if not self.payload.get('has_changelog'):
-            return None
-        changelog_path = self.payload['changelog_path']
-        results = self.graph.search("", file_path=changelog_path)
-        return results[0] if results else None
+# Internally executes:
+# 1. Run 3 queries in parallel (30 results)
+# 2. Combine results
+# 3. Build graph (30 nodes, ~200 edges)
+# 4. Apply PageRank
+# 5. Return top 10 by authority
 ```
 
-**Usage example:**
-```python
-graph = KnowledgeGraph("~/my-project")
-
-# Semantic search
-decision = graph.search("JWT authentication")[0]
-
-# Navigate relationships
-print(f"Decision: {decision.payload['section_name']}")
-print(f"Constraints: {len(decision.constraints)}")
-print(f"Pattern: {decision.pattern_layer.payload['content'][:100]}")
-print(f"Conversation: {decision.origin_discussion[0].payload['session_id']}")
-print(f"Quality: {decision.quality_score}")
-
-# Chaining
-auth_constraint = decision.constraints[0]
-original_conversation = auth_constraint.origin_discussion
-patches = original_conversation[0].payload  # Get patches section
-```
+**Soft-graph property:**
+- Query-time construction (not precomputed)
+- O(k²) where k = result set size (not O(n²) where n = corpus size)
+- Ephemeral by default (discarded after use)
+- Rebuild on next query (~40-100ms)
 
 ---
 
