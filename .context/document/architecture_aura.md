@@ -19,11 +19,11 @@ AURA is a three-microservice institutional memory ecosystem designed for per-pro
 ## The Three Microservices
 
 ### 1. IMEM - Vector Search & Retrieval
-**Purpose**: Section-level semantic search across changelogs and conversations
+**Purpose**: Section-level semantic search across changelogs and conversations with compositional discovery primitives
 **CLI**: `imem`
 **Details**: See [architecture_imem-i2.md](./architecture_imem-i2.md)
 
-**Core Capability**: Retrieval-only mode with LlamaIndex pipeline, H2-section chunking via MarkdownNodeParser, E5-Large-v2 embeddings, returns top-k ranked sections.
+**Core Capability**: Retrieval-only mode with LlamaIndex pipeline, H3/H2-section chunking via MarkdownNodeParser, E5-Large-v2 embeddings, returns top-k ranked sections. FlexGraph compositional system enables flexible primitive composition (siblings, genealogy, temporal, cross_phase) via declarative JSON for surgical knowledge retrieval with context-aware template rendering.
 
 ### 2. TRACE - Conversation Archaeology
 **Purpose**: Parse and query Claude Code conversation history
@@ -51,9 +51,13 @@ imem init               # Index changelogs
 
 ### Search Your Knowledge
 ```bash
-imem search "authentication" --in develop
+# Phase-based search
+imem develop search "authentication" --decisions
 imem search "decisions" --section "Decisions"
 imem search "context" --session abc123
+
+# Compositional retrieval (FlexGraph)
+imem compose '{"search": {"text": "JWT"}, "discovery": {"siblings": true, "genealogy": true}}'
 ```
 
 ### Query Conversations
@@ -126,14 +130,19 @@ my-project/
 ### Retrieving Knowledge
 ```
 1. Search changelogs
-   └→ imem search "query" --in develop
+   └→ imem develop search "query" --decisions
    └→ Returns: Section-level matches
 
-2. Find conversations
-   └→ imem search "query" --in conversations
+2. Compositional discovery (FlexGraph)
+   └→ imem compose '{"search": {...}, "discovery": {"siblings": true, "genealogy": true}}'
+   └→ Returns: Enriched results with context (siblings, genealogy, temporal)
+   └→ Template rendering with genealogical indicators
+
+3. Find conversations
+   └→ imem conversations search "query" --messages-only
    └→ Returns: Relevant conversation sections
 
-3. Drill down
+4. Drill down
    └→ trace show chronicle <id>
    └→ Returns: Chronologically merged messages + patches
 ```

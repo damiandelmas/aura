@@ -1,0 +1,352 @@
+================================================================================
+                    IMEM CLI ARCHITECTURE - VISUAL AUDIT
+================================================================================
+
+PROJECT: /home/axp/projects/fleet/hangar/code/aura/main
+FILE: imem/src/imem/cli.py (1167 lines)
+AUDIT DATE: 2025-10-29
+
+================================================================================
+1. CURRENT COMMAND TREE (INCONSISTENT - 3 PATTERNS)
+================================================================================
+
+imem (ROOT: @click.group() at cli.py:31-34)
+│
+├─ NOUN-VERB GROUPS:
+│  ├─ develop [GROUP] (cli.py:41-44)
+│  │  └─ search <query> (cli.py:47-89) ← Backwards English!
+│  │     Options: --decisions, --constraints, --failures, --patterns,
+│  │              --implementation, --pattern, --impl, --limit, --after
+│  │
+│  └─ conversations [GROUP] (cli.py:92-95)
+│     └─ search <query> (cli.py:98-142)
+│        Options: --limit, --after, --session, --messages-only,
+│                 --patches-only, --user-only, --assistant-only, --file
+│
+├─ VERB-FIRST COMMANDS (Direct under imem):
+│  ├─ compose '<json-config>' (cli.py:215-285) ← Complex
+│  ├─ init [--force] [--vscode] [--include-design] (cli.py:288-440)
+│  ├─ search <query> [<query>...] (cli.py:443-586) ← Most features!
+│  │  Options: --limit, --sort-by, --show-metadata, --after,
+│  │           --split-terms, --operator, --in, --layer, --section, --session
+│  ├─ update (cli.py:589-604) ← Delegates to init
+│  ├─ dedupe [--dry-run] (cli.py:607-669)
+│  ├─ status (cli.py:672-704)
+│  │
+│  └─ service [GROUP] (cli.py:707-710)
+│     ├─ start (cli.py:713-734)
+│     ├─ stop (cli.py:737-749)
+│     └─ status (cli.py:752-773)
+│
+├─ VERB-NOUN-HYPHENATED (Direct under imem):
+│  ├─ index-conversation <id> [--collection] (cli.py:877-1004)
+│  │  Issue: Uses hardcoded 'institutional_memory' ❌
+│  │
+│  └─ index-all-conversations [--limit] [--recent] [--min-size]
+│     [--collection] [--dry-run] (cli.py:1007-1162)
+│     Issue: Same hardcoded collection problem ❌
+│
+└─ HELPER FUNCTIONS:
+   ├─ _execute_search() (cli.py:145-212) ← Used by develop/conversations search
+   └─ setup_vscode_integration() (cli.py:776-875) ← Called by init
+
+================================================================================
+2. COMMAND PATTERNS COMPARISON
+================================================================================
+
+Pattern              | Examples                        | Issue
+───────────────────────────────────────────────────────────────────────────────
+Noun-Verb Groups    | develop search                  | Backwards English
+                    | conversations search            | Hard to extend
+                    |                                 | Don't match design/document
+───────────────────────────────────────────────────────────────────────────────
+Verb-First          | init                            | Natural English
+                    | search                          | But inconsistent
+                    | compose                         | with noun-verb above
+                    | update, dedupe, status          |
+───────────────────────────────────────────────────────────────────────────────
+Verb-Noun-Hyphenated| index-conversation             | Mixed with groups
+                    | index-all-conversations         | Doesn't match 'search'
+                    |                                 | pattern (no dashes)
+───────────────────────────────────────────────────────────────────────────────
+
+USER EXPERIENCE: 3 different mental models = confusing!
+
+================================================================================
+3. METADATA STRUCTURE (WHAT'S STORED IN QDRANT)
+================================================================================
+
+CHANGELOG CHUNKS (develop/design/document phases):
+┌─────────────────────────────────────────────────────┐
+│ source: 'changelog'                                 │
+│ phase: 'develop' | 'design' | 'designate' |        │
+│        'document'                                   │
+│ layer: 'implementation' | 'pattern'                │
+│ section_type: 'Decisions' | 'Constraints' | etc    │
+│ section_name: "Actual H3 title"                    │
+│ header_path: "/Provider.../Decisions/..."          │
+│ has_context, has_solution, has_rationale: bool     │
+│ has_alternatives, has_approach, has_benefits: bool │
+│ has_drawbacks: bool                                 │
+│ timestamp: str (optional)                           │
+│ session_id: str (link to conversation)             │
+│ content: str (actual text)                         │
+│ file_path: str (source file)                       │
+└─────────────────────────────────────────────────────┘
+
+CONVERSATION CHUNKS:
+┌─────────────────────────────────────────────────────┐
+│ source: 'conversation'                              │
+│ session_id: str (UUID)                             │
+│ chunk_type: 'message' | 'patch'                    │
+│ role: 'user' | 'assistant' (for messages)          │
+│ file_path: str (for patches)                       │
+│ section_type: "Message 1: USER" |                  │
+│              "Code Patch 1: src/cli.py"            │
+│ start_time, duration_minutes, message_count: int   │
+│ has_changelog, changelog_path: bool/str            │
+│ content: str (actual text)                         │
+└─────────────────────────────────────────────────────┘
+
+================================================================================
+4. COLLECTION ARCHITECTURE (THE PROBLEM)
+================================================================================
+
+CURRENT STATE:
+┌─────────────────────────────────────────────────────┐
+│ Changelogs (all phases):   imem_{hash}             │ ✅ per-project
+│ Conversations (ALL proj):  institutional_memory     │ ❌ GLOBAL (hardcoded)
+│                                                     │
+│ Problem: institutional_memory is:                   │
+│  • Hardcoded (cli.py:879, cli.py:1011)             │
+│  • Never created with E5-Large-v2 schema           │
+│  • Shared across all projects                      │
+│  • Not tracked in registry                         │
+└─────────────────────────────────────────────────────┘
+
+SHOULD BE:
+┌─────────────────────────────────────────────────────┐
+│ Changelogs:   imem_{hash}_changelog                │ ✅ per-project
+│ Conversations: imem_{hash}_conversation             │ ✅ per-project
+│                                                     │
+│ BOTH tracked in registry:                           │
+│ {                                                   │
+│   "collections": {                                 │
+│     "changelog": "imem_{hash}_changelog",           │
+│     "conversation": "imem_{hash}_conversation"      │
+│   }                                                 │
+│ }                                                   │
+└─────────────────────────────────────────────────────┘
+
+================================================================================
+5. KEY INDEXING ENTRY POINTS
+================================================================================
+
+PHASE INDEXING (develop/design/designate/document):
+  Entry: imem init [--force] [--include-design]
+  Location: cli.py:288-440
+  Flow:
+    1. Detect .context folder
+    2. Register project
+    3. Create imem_{hash} collection
+    4. For each phase:
+       └─ For each .md file:
+          └─ EnhancedModularIngest.ingest_markdown_chunked()
+             • Parse with LlamaIndex (section-level)
+             • Filter H3+ sections only
+             • Auto-detect phase + layer
+             • Build metadata
+             • Batch encode E5-Large-v2
+             • Upsert to {hash} collection
+
+CONVERSATION INDEXING (BROKEN):
+  Entries: imem index-all-conversations
+           imem index-conversation <id>
+  Locations: cli.py:877-1004, cli.py:1007-1162
+  Problems:
+    • Uses hardcoded 'institutional_memory'
+    • Never creates collection with schema
+    • Registry doesn't track it
+    • No per-project isolation
+    • BLOCKS conversation retrieval ❌
+
+================================================================================
+6. HELPER FUNCTIONS AT A GLANCE
+================================================================================
+
+cli.py:
+  _execute_search(query, filters, limit, after)    [145-212] ← Shared by 3!
+  setup_vscode_integration(project_root)            [776-875]
+
+ingest.py:
+  ingest_markdown_chunked(path, phase, collection)  [626-787] ← Phases
+  ingest_conversation_chunked(path, id, meta, coll) [823-907] ← Broken
+  _extract_phase(file_path)                         [585-598]
+  _detect_layer(file_path, phase)                   [611-624]
+  parse_conversation_section(section_name)          [789-821]
+  get_existing_file_paths(collection)               [68-107]
+  get_existing_content_hashes(collection)           [109-156]
+  update_file_path(collection, id, path)            [158-216]
+  deduplicate_collection(collection, dry_run)       [218-332]
+
+================================================================================
+7. TOP ISSUES (RANKED BY IMPACT)
+================================================================================
+
+CRITICAL:
+  1. Hardcoded institutional_memory collection
+     Location: cli.py:879, 1011
+     Impact: Conversation indexing completely broken
+     Severity: BLOCKS feature
+
+  2. No per-project conversation collections
+     Impact: No isolation between projects
+     Severity: DATA INTEGRITY
+
+HIGH:
+  3. Three incompatible CLI patterns
+     Impact: User confusion, hard to extend
+     Severity: UX/MAINTAINABILITY
+
+  4. Registry only tracks one collection
+     Location: registry.py:36-46
+     Impact: Can't distinguish changelog vs conversation
+     Severity: ARCHITECTURE
+
+MEDIUM:
+  5. Duplicated search logic (3 entry points)
+     Locations: cli.py:47, 98, 443
+     Impact: Hard to maintain consistency
+     Severity: MAINTAINABILITY
+
+  6. Design phase excluded by default
+     Location: cli.py:402-404
+     Impact: Unclear why design is special
+     Severity: UX
+
+  7. Phase filter mismatch
+     Location: cli.py:453
+     Impact: CLI claims to support designate but doesn't index it
+     Severity: CONSISTENCY
+
+================================================================================
+8. REFACTOR TARGET (PROPOSED SOLUTION)
+================================================================================
+
+NEW COMMAND TREE (Verb-Noun, Consistent):
+
+imem
+├─ index
+│  ├─ develop [--force]           ← Index .context/develop/
+│  ├─ design [--force]             ← Index .context/design/
+│  ├─ document [--force]           ← Index .context/document/
+│  ├─ conversations [--limit]      ← Index ~/.claude/
+│  │  [--recent] [--min-size]
+│  └─ context [--force]            ← Convenience: all phases
+│     [--include-design]
+│
+├─ search <query> [<query>...]     ← Unified search
+│  [--in develop|design|document|
+│       conversations|context]
+│  [--limit] [--sort-by] [--after]
+│  [--split-terms] [--operator]
+│
+├─ service
+│  ├─ start
+│  ├─ stop
+│  └─ status
+│
+├─ compose '<config>'              ← Keep as-is (complex)
+├─ update [--vscode]               ← Convenience
+├─ dedupe [--dry-run]              ← Maintenance
+└─ status                          ← Project status
+
+BENEFITS:
+  ✅ Consistent verb-noun everywhere
+  ✅ Discoverable: `imem index` lists phases
+  ✅ Intuitive: English word order
+  ✅ Extensible: Easy to add new phases
+  ✅ Per-project: Separate collections
+  ✅ Backwards compatible: old syntax still works
+
+================================================================================
+9. FILES TO MODIFY
+================================================================================
+
+PRIMARY:
+  cli.py         [1167 lines]
+    • Extract _index_phase() helper (~30 min)
+    • Refactor to verb-noun pattern (~1 hour)
+    • Merge noun-verb groups into verb commands
+    • Fix collection naming (add _changelog suffix)
+
+SECONDARY:
+  registry.py    [75 lines]
+    • Track multiple collections per project (~30 min)
+    • Support both old single + new dual collection tracking
+
+MINOR:
+  ingest.py      [1076 lines]
+    • Collection naming already flexible (no changes needed)
+    • Just pass different collection names from cli.py
+
+================================================================================
+10. TESTING CHECKLIST (After refactor)
+================================================================================
+
+CLI Commands:
+  [ ] imem index develop --force        # Creates changelog collection
+  [ ] imem index conversations          # Creates conversation collection
+  [ ] imem search "query"               # Searches with default --in develop
+  [ ] imem search "query" --in context  # Searches all phases
+  [ ] imem compose '...'                # Still works (no breaking changes)
+
+Collections:
+  [ ] imem_{hash}_changelog exists
+  [ ] imem_{hash}_conversation exists
+  [ ] Both registered in registry
+  [ ] Can list with `imem status`
+
+Metadata:
+  [ ] Changelog: phase, layer, section_type metadata correct
+  [ ] Conversations: chunk_type, role, file_path metadata correct
+  [ ] Can filter by --in conversations --patches-only
+  [ ] Can filter by --in develop --decisions
+
+Old Commands:
+  [ ] index-conversation removed
+  [ ] index-all-conversations removed
+  [ ] noun-verb groups removed
+  [ ] No deprecated warnings in output
+
+================================================================================
+11. IMPLEMENTATION ROADMAP
+================================================================================
+
+PHASE 1: Foundation (2-3 hours) - CLI + Collection Architecture
+  ├─ Task 1: Extract _index_phase() helper (30 min)
+  ├─ Task 2: Refactor CLI to verb-noun (1 hour)
+  ├─ Task 3: Fix collection architecture (30 min)
+  └─ Task 4: Test conversation indexing (30 min)
+
+PHASE 2: Graph Intelligence (3-4 hours, NEXT SESSION)
+  ├─ Task 1: Build graph from chunks (topology detection)
+  ├─ Task 2: Enrich metadata (position, confidence)
+  └─ Task 3: Adapt templates by topology
+
+PHASE 3: BRAIN Persistence (2-3 hours, MONTHS LATER)
+  └─ Requires: 3-6 months of usage data first!
+
+================================================================================
+12. KEY INSIGHT
+================================================================================
+
+"The current CLI has three incompatible patterns at root level:
+ noun-verb groups, verb-first, and verb-noun-hyphenated.
+ This blocks intuitive discoverability and makes extension painful.
+ 
+ Verb-noun throughout fixes this + enables per-project conversation
+ isolation. Graph reveals how chunks relate → how to serve them →
+ structure aids AI comprehension."
+
+================================================================================

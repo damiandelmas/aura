@@ -31,6 +31,9 @@ imem develop search "authentication decisions" --decisions
 
 # Search conversations
 imem conversations search "bug fix" --patches-only
+
+# Compositional retrieval (FlexGraph)
+imem compose '{"search": {"text": "JWT"}, "discovery": {"siblings": true, "genealogy": true}}'
 ```
 
 ## Service Management
@@ -336,6 +339,46 @@ imem index-all-conversations --recent 20
 imem conversations search "topic"
 ```
 
+**"Reconstruct decision narrative with context"**
+```bash
+# Get decision with genealogy and related patterns
+imem compose '{
+  "search": {"text": "authentication decision"},
+  "discovery": {
+    "genealogy": true,
+    "siblings": {"section_types": ["Patterns", "Failures"]},
+    "temporal": {"direction": "after"}
+  },
+  "output": {"template": "story-context"}
+}'
+```
+
+**"Find what didn't work (anti-patterns)"**
+```bash
+# Surgical retrieval of failures with rationale
+imem compose '{
+  "search": {"text": "error handling"},
+  "discovery": {
+    "siblings": {
+      "section_types": ["Failures"],
+      "has_rationale": true,
+      "order_by": "timestamp",
+      "limit": 5
+    }
+  }
+}'
+```
+
+**"Track evolution of approach over time"**
+```bash
+# Timeline of how solution evolved
+imem compose '{
+  "search": {"text": "API design"},
+  "discovery": {"temporal": {"direction": "both"}},
+  "output": {"template": "timeline"}
+}'
+```
+
 ## Troubleshooting
 
 **"Cannot connect to Qdrant"**
@@ -418,6 +461,62 @@ imem init --force  # Full re-index
 - Use `--pattern` flag to filter to these only
 - Useful for cross-project pattern learning
 
+## FlexGraph Compositional Retrieval
+
+### Overview
+FlexGraph enables flexible composition of discovery primitives for surgical knowledge retrieval. Instead of prescribing fixed query patterns, four orthogonal primitives compose via declarative JSON.
+
+### Discovery Primitives
+
+**siblings** - Related sections from same document
+- Parameters: `section_types`, `order_by`, `limit`, `has_rationale`, `has_alternatives`
+- Example: Get top 3 Failures with rationale
+- Config: `{"siblings": {"section_types": ["Failures"], "limit": 3, "has_rationale": true}}`
+
+**genealogy** - Origin conversation via session_id linking
+- Reconstructs discussion that led to decision
+- Config: `{"genealogy": true}`
+
+**temporal** - Evolution chain via timestamp + semantic similarity
+- Parameters: `direction` ("after", "before", "both")
+- Finds how approach changed over time
+- Config: `{"temporal": {"direction": "after"}}`
+
+**cross_phase** - Related decisions across phases
+- Links design → develop → document
+- Config: `{"cross_phase": true}`
+
+### Compose Pipeline
+
+Four-stage execution:
+1. **Search** - Semantic retrieval of base results
+2. **Discovery** - Enrich each result with primitive data
+3. **Graph** (optional) - Apply PageRank/centrality scoring
+4. **Template** - Render with context-aware structure
+
+### Templates
+
+**story-context.j2** - Narrative reconstruction with genealogical indicators
+- 🟢 Current thrust (zero later chunks)
+- ⚠️ Evolved (some later chunks)
+- ❌ Failed approaches (from Failures sections)
+- Section order: Failures → Patterns → Decisions
+
+**timeline.j2** - Evolution timeline showing approach changes
+
+**anti-patterns.j2** - Failed approaches with don't-suggest warnings
+
+### Composition Examples
+
+See Common Workflows section above for practical examples of:
+- Narrative reconstruction
+- Anti-pattern discovery
+- Evolution tracking
+
+### Observable Usage Pattern
+
+System tracks composition patterns by hashing discovery config. Detects recurring usage (10/15/20/30 times) and suggests preset creation as slash commands. Preset library grows organically from proven patterns.
+
 ## Roadmap
 
 **Planned (Next Agent):**
@@ -430,6 +529,8 @@ imem init --force  # Full re-index
 - Cross-project search
 - Hybrid search (vector + keyword)
 - Auto-indexing on file changes
+- Graph operations (PageRank, centrality)
+- More templates (pattern-library, comparison)
 
 ## See Also
 

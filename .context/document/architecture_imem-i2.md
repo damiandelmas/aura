@@ -24,13 +24,19 @@ The system captures decision genealogy through bidirectional linking between con
 
 **registry.py** - Project tracking system. Maps project directories to Qdrant collections using JSON storage. Provides methods for project registration (`register_project()`), status checking (`is_registered()`), and collection retrieval (`get_project_info()`). Stores metadata including collection name, index timestamp, and document count.
 
-**cli.py** - Phase-based command interface. Provides subcommands organized by phase (develop, design, conversations) with phase-specific filtering flags. Handles project detection by locating `.git/` directory and `.context/` structure. Creates unique collections using `imem_<md5_hash_of_path>` naming convention. Supports legacy commands for backward compatibility.
+**cli.py** - Phase-based command interface. Provides subcommands organized by phase (develop, design, conversations) with phase-specific filtering flags. Handles project detection by locating `.git/` directory and `.context/` structure. Creates unique collections using `imem_<md5_hash_of_path>` naming convention. Includes `compose` command for compositional retrieval via declarative JSON config. Supports legacy commands for backward compatibility.
 
 **ingest.py** - Document indexing engine. Parses markdown files using LlamaIndex MarkdownNodeParser, chunks content at H3-level for changelogs and H2-level for conversations. Implements batch encoding for performance (2x faster than sequential). Filters H1/H2 noise (only indexes H3+ sections for changelogs), extracts section metadata, detects structured fields (has_context, has_solution, etc.), and performs batch upserts to Qdrant. Generates E5-Large-v2 embeddings (1024 dimensions) with named vector support.
 
 **search.py** - Modular search engine architecture. Supports multiple embedding models through SearchConfig dataclass. Currently implements E5-Large-v2 with provisions for future models (MiniLM, BGE). Provides vector name specification for multi-model collections.
 
 **enhanced.py** - High-level search interface. Implements metadata filtering (phase, section, session), timestamp extraction from frontmatter, hybrid scoring (semantic + recency), and multi-term search operators (AND/OR). Provides unified search method with filter composition and result sorting.
+
+**primitives/discovery.py** - Compositional discovery primitives layer. Four orthogonal functions (get_siblings, get_genealogy, get_temporal, get_cross_phase) that retrieve related chunks based on metadata predicates. Each primitive accepts parameterized filters (section_types, order_by, limit, has_rationale, has_alternatives) for surgical retrieval. Pure functions with no cross-dependencies enable flexible composition.
+
+**compose.py** - Compositional orchestrator. Executes four-stage pipeline (search → discovery enrichment → optional graph → template rendering) from declarative JSON config. Handles dict-based discovery config with backward compatibility for boolean flags. Implements metadata enrichment with temporal position detection (current_thrust, superseded, evolved, failed_branch) and confidence signals. Enables single-call retrieval with complete intent expression.
+
+**templates/** - Jinja2 templates for context-aware rendering. Includes `story-context.j2` with genealogical position indicators (🟢⚠️❌), structured sections (Failures → Patterns → Decisions), and explicit AI guidance. Templates adapt based on graph operations and chunk relationships to optimize AI comprehension.
 
 **qdrant_service.py** - Docker lifecycle management for Qdrant container. Manages container lifecycle (start, stop, status, ensure_running). Configures Qdrant image with port mapping (6334 external to 6333 internal), volume mounting (`~/.context/qdrant_storage/`), and container naming (`imem_qdrant`).
 
@@ -44,7 +50,9 @@ The system captures decision genealogy through bidirectional linking between con
 
 **Search Layer** - User submits query with optional filters (phase, section_type, session_id). System loads project collection from registry. Builds Qdrant filter using FieldCondition and Filter objects. Embeds query with E5-Large-v2 model. Executes vector search with metadata filtering against named vector "e5-large-v2". Returns top K results sorted by similarity score.
 
-**Output Layer** - Search results flow to terminal with formatted display. Each result includes section content, metadata (phase, section type, file path), similarity score, and contextual information (parent headers, structured fields present).
+**Compositional Layer (FlexGraph)** - User invokes `imem compose` with declarative JSON config specifying search, discovery, optional graph, and output parameters. System executes four-stage pipeline: (1) Search stage retrieves base results via semantic search, (2) Discovery stage enriches each result with siblings/genealogy/temporal/cross_phase data using parameterized primitives, (3) Optional graph stage applies PageRank or centrality scoring, (4) Template stage renders results with context-aware structure. Metadata enrichment detects temporal position (current_thrust vs superseded) and adds confidence signals. Returns rendered markdown or structured JSON.
+
+**Output Layer** - Search results flow to terminal with formatted display. Each result includes section content, metadata (phase, section type, file path), similarity score, and contextual information (parent headers, structured fields present). Compose results render via Jinja2 templates with genealogical indicators and structured sections optimized for AI comprehension.
 
 ## Integration Points
 
@@ -77,6 +85,12 @@ The system captures decision genealogy through bidirectional linking between con
 **Metadata-Rich Payloads** - Each vector includes 23 metadata fields (schema_version v1.0: phase, layer, section_type, section_name, section_level, timestamps, structured field flags, word_count, char_count, etc.). Enables SQL-like filtering before semantic search. Supports sorting, grouping, and aggregation operations.
 
 **Bidirectional Linking** - Changelogs link to conversations via session_id in frontmatter. Conversations link to changelogs via has_changelog and changelog_path metadata. Enables tracing decisions to originating discussions.
+
+**Compositional Primitives Architecture** - Four orthogonal discovery functions (siblings, genealogy, temporal, cross_phase) compose flexibly via declarative config. Each primitive accepts optional parameters (section_types, order_by, limit, has_rationale, has_alternatives) while maintaining backward compatibility with boolean flags. Dict-based config enables surgical retrieval ("top 3 Patterns with rationale") instead of all-or-nothing queries. Compose orchestrator handles any combination without cross-dependencies between primitives.
+
+**Observable Usage Pattern** - System tracks composition patterns by hashing discovery config and logging usage. Detects recurring patterns at thresholds (10/15/20/30 uses) and suggests preset creation as slash commands. Enables self-improving system where preset library grows organically from proven patterns. Narrative reconstruction (genealogy + siblings + temporal) represents one discovered pattern among many possible compositions.
+
+**Graph-Informed Templates** - Templates selected and structured based on graph properties. High PageRank + temporal chain triggers evolution template. Many failures trigger anti-pattern template. Genealogical position embedded in presentation structure via visual indicators (🟢 current thrust, ⚠️ evolved, ❌ failed) and section ordering (Failures first). Structure conveys relationships for AI comprehension rather than expecting inference from raw content.
 
 ## Usage
 
@@ -150,6 +164,24 @@ imem index-conversation abc12345
 
 # Index all conversations (batch mode)
 imem index-all-conversations
+```
+
+**Compositional Retrieval (FlexGraph)**
+```bash
+# Basic composition with siblings
+imem compose '{"search": {"text": "JWT auth"}, "discovery": {"siblings": true}}'
+
+# Parameterized primitive filtering
+imem compose '{"search": {"text": "error handling"}, "discovery": {"siblings": {"section_types": ["Failures"], "limit": 3, "has_rationale": true}}}'
+
+# Narrative reconstruction pattern
+imem compose '{"search": {"text": "authentication"}, "discovery": {"genealogy": true, "siblings": {"section_types": ["Patterns", "Decisions"]}, "temporal": {"direction": "after"}}, "output": {"template": "story-context"}}'
+
+# Timeline evolution pattern
+imem compose '{"search": {"text": "API design"}, "discovery": {"temporal": {"direction": "both"}}, "output": {"template": "timeline"}}'
+
+# Anti-pattern discovery
+imem compose '{"search": {"text": "retry logic"}, "discovery": {"siblings": {"section_types": ["Failures"], "order_by": "timestamp"}}}'
 ```
 
 **Programmatic Access**
