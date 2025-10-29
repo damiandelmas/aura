@@ -49,6 +49,9 @@ async def compose(collection_name: str, config_dict: dict,
             encoder
         )
 
+    # Stage 2.5: Metadata enrichment (add temporal position and confidence signals)
+    results = _enrich_metadata(results)
+
     # Stage 3: Graph (if requested - sync, NetworkX has no async)
     if config_dict.get('graph'):
         results = _apply_graph_operations(
@@ -176,21 +179,74 @@ async def _enrich_with_discovery(collection_name: str, results: List[Dict[str, A
         tasks = []
         keys = []
 
+        # Handle siblings config (bool or dict)
         if discovery_config.get('siblings'):
-            tasks.append(asyncio.to_thread(get_siblings, collection_name, chunk_id, client, encoder))
+            sibling_config = discovery_config['siblings']
+
+            if isinstance(sibling_config, bool):
+                # Legacy: Just true/false
+                tasks.append(asyncio.to_thread(get_siblings, collection_name, chunk_id,
+                                             client=client, encoder=encoder))
+            else:
+                # New: Dict with parameters
+                tasks.append(asyncio.to_thread(
+                    get_siblings,
+                    collection_name,
+                    chunk_id,
+                    section_types=sibling_config.get('section_types'),
+                    order_by=sibling_config.get('order_by', 'section_level'),
+                    limit=sibling_config.get('limit'),
+                    has_rationale=sibling_config.get('has_rationale'),
+                    has_alternatives=sibling_config.get('has_alternatives'),
+                    client=client,
+                    encoder=encoder
+                ))
             keys.append('siblings')
 
+        # Handle genealogy config (bool or dict)
         if discovery_config.get('genealogy'):
-            tasks.append(asyncio.to_thread(get_genealogy, collection_name, chunk_id, client, encoder))
+            genealogy_config = discovery_config['genealogy']
+
+            if isinstance(genealogy_config, bool):
+                # Legacy: Just true/false
+                tasks.append(asyncio.to_thread(get_genealogy, collection_name, chunk_id,
+                                              client=client, encoder=encoder))
+            else:
+                # New: Dict with parameters
+                tasks.append(asyncio.to_thread(
+                    get_genealogy,
+                    collection_name,
+                    chunk_id,
+                    order_by=genealogy_config.get('order_by', 'timestamp'),
+                    limit=genealogy_config.get('limit'),
+                    client=client,
+                    encoder=encoder
+                ))
             keys.append('genealogy')
 
+        # Handle temporal config (bool or dict)
         if discovery_config.get('temporal'):
-            direction = discovery_config.get('temporal_direction', 'after')
+            temporal_config = discovery_config['temporal']
+
+            if isinstance(temporal_config, bool):
+                direction = 'after'
+            else:
+                direction = temporal_config.get('direction', 'after')
+
             tasks.append(asyncio.to_thread(get_temporal, collection_name, chunk_id, direction, client, encoder))
             keys.append('temporal')
 
+        # Handle cross_phase config (string or dict)
         if discovery_config.get('cross_phase'):
-            target_phase = discovery_config['cross_phase']
+            cross_phase_config = discovery_config['cross_phase']
+
+            if isinstance(cross_phase_config, str):
+                # Legacy: Just phase name
+                target_phase = cross_phase_config
+            else:
+                # New: Dict with parameters
+                target_phase = cross_phase_config.get('phase', cross_phase_config)
+
             tasks.append(asyncio.to_thread(cross_phase_search, collection_name, chunk_id, target_phase, client, encoder))
             keys.append('cross_phase')
 
@@ -206,6 +262,58 @@ async def _enrich_with_discovery(collection_name: str, results: List[Dict[str, A
     enriched_results = await asyncio.gather(*[enrich_single_result(r) for r in results])
 
     return enriched_results
+
+
+def _enrich_metadata(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Add temporal position and confidence signals to results"""
+
+    for result in results:
+        # Detect temporal position
+        result['temporal_position'] = _detect_temporal_position(result)
+
+        # Calculate confidence signals
+        result['confidence'] = {
+            'has_rationale': result['payload'].get('has_rationale', False),
+            'has_alternatives': result['payload'].get('has_alternatives', False),
+            'semantic_score': result.get('score', 0),
+            'continuation_count': _count_continuations(result)
+        }
+
+    return results
+
+
+def _detect_temporal_position(result: Dict[str, Any]) -> str:
+    """Detect if this is current thrust, superseded, or failed branch"""
+
+    # Check if in Failures section
+    if result['payload'].get('section_type') == 'Failures':
+        return 'failed_branch'
+
+    # Check temporal continuations
+    temporal = result.get('temporal', [])
+    if not temporal:
+        return 'current_thrust'  # No temporal = likely current
+
+    # Count how many temporal chunks are AFTER this one
+    result_timestamp = result['payload'].get('timestamp') or ''
+    later_chunks = [t for t in temporal if (t['payload'].get('timestamp') or '') > result_timestamp]
+
+    if len(later_chunks) > 2:
+        return 'superseded'  # Many later chunks = old direction
+    elif len(later_chunks) > 0:
+        return 'evolved'  # Some later = evolved from this
+    else:
+        return 'current_thrust'  # No later = current direction
+
+
+def _count_continuations(result: Dict[str, Any]) -> int:
+    """Count temporal chunks that continue this direction"""
+    temporal = result.get('temporal', [])
+    if not temporal:
+        return 0
+
+    result_timestamp = result['payload'].get('timestamp') or ''
+    return len([t for t in temporal if (t['payload'].get('timestamp') or '') > result_timestamp])
 
 
 def _apply_graph_operations(collection_name: str, results: List[Dict[str, Any]],

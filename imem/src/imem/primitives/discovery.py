@@ -5,21 +5,31 @@ Pure functions for relationship discovery via metadata queries
 
 from typing import List, Dict, Any, Optional
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, MatchValue
+from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
 from sentence_transformers import SentenceTransformer
 
 from ..config import config
 
 
 def get_siblings(collection_name: str, chunk_id: str,
+                 section_types: Optional[List[str]] = None,
+                 order_by: str = 'section_level',
+                 limit: Optional[int] = None,
+                 has_rationale: Optional[bool] = None,
+                 has_alternatives: Optional[bool] = None,
                  client: Optional[QdrantClient] = None,
                  encoder: Optional[SentenceTransformer] = None) -> List[Dict[str, Any]]:
     """
-    Get sibling chunks (same file_path)
+    Get sibling chunks (same file_path) with filtering and ordering
 
     Args:
         collection_name: Qdrant collection name
         chunk_id: Target chunk ID
+        section_types: Filter by section types (e.g., ["Patterns", "Failures"])
+        order_by: Order results by 'section_level', 'timestamp', or None
+        limit: Limit number of results returned
+        has_rationale: Filter by has_rationale metadata
+        has_alternatives: Filter by has_alternatives metadata
         client: Optional Qdrant client (creates new if None)
         encoder: Optional encoder (not used but kept for consistency)
 
@@ -40,17 +50,35 @@ def get_siblings(collection_name: str, chunk_id: str,
     if not file_path:
         return []
 
-    # Scroll all chunks with same file_path
-    scroll_filter = Filter(
-        must=[
-            FieldCondition(key='file_path', match=MatchValue(value=file_path))
-        ]
-    )
+    # Build filter conditions
+    must_conditions = [
+        FieldCondition(key='file_path', match=MatchValue(value=file_path))
+    ]
 
+    # Add section_type filter if specified
+    if section_types:
+        must_conditions.append(
+            FieldCondition(key='section_type', match=MatchAny(any=section_types))
+        )
+
+    # Add quality filters if specified
+    if has_rationale is not None:
+        must_conditions.append(
+            FieldCondition(key='has_rationale', match=MatchValue(value=has_rationale))
+        )
+
+    if has_alternatives is not None:
+        must_conditions.append(
+            FieldCondition(key='has_alternatives', match=MatchValue(value=has_alternatives))
+        )
+
+    scroll_filter = Filter(must=must_conditions)
+
+    # Scroll with filter
     results, _ = client.scroll(
         collection_name=collection_name,
         scroll_filter=scroll_filter,
-        limit=100,  # Typical file has < 100 sections
+        limit=limit or 100,
         with_payload=True,
         with_vectors=False
     )
@@ -66,10 +94,22 @@ def get_siblings(collection_name: str, chunk_id: str,
         if str(point.id) != chunk_id
     ]
 
+    # Order results
+    if order_by == 'timestamp':
+        siblings.sort(key=lambda s: s['payload'].get('timestamp') or '', reverse=True)
+    elif order_by == 'section_level':
+        siblings.sort(key=lambda s: s['payload'].get('section_level') or 999)
+
+    # Apply limit if specified
+    if limit:
+        siblings = siblings[:limit]
+
     return siblings
 
 
 def get_genealogy(collection_name: str, chunk_id: str,
+                  order_by: str = 'timestamp',
+                  limit: Optional[int] = None,
                   client: Optional[QdrantClient] = None,
                   encoder: Optional[SentenceTransformer] = None) -> List[Dict[str, Any]]:
     """
@@ -78,6 +118,8 @@ def get_genealogy(collection_name: str, chunk_id: str,
     Args:
         collection_name: Qdrant collection name
         chunk_id: Target chunk ID
+        order_by: Order results by 'timestamp' (default) or None
+        limit: Limit number of results returned
         client: Optional Qdrant client
         encoder: Optional encoder (not used)
 
@@ -109,7 +151,7 @@ def get_genealogy(collection_name: str, chunk_id: str,
     results, _ = client.scroll(
         collection_name=collection_name,
         scroll_filter=scroll_filter,
-        limit=200,  # Conversations can be long
+        limit=limit or 200,
         with_payload=True,
         with_vectors=False
     )
@@ -122,6 +164,14 @@ def get_genealogy(collection_name: str, chunk_id: str,
         }
         for point in results
     ]
+
+    # Order results
+    if order_by == 'timestamp':
+        genealogy.sort(key=lambda g: g['payload'].get('timestamp') or '')
+
+    # Apply limit if specified
+    if limit:
+        genealogy = genealogy[:limit]
 
     return genealogy
 
