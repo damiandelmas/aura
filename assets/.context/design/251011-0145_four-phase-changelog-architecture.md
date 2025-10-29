@@ -22,11 +22,10 @@ timestamp: "2025-10-11T01:45:00-0700"
    - Decision made, principles established
    - Output: Design changelog
 
-2. **Designate** (Ground Truth & Planning)
+2. **Designate** (Planning)
    - THE PLAN emerges from design
    - Authoritative specifications created
-   - Ground truth artifacts (courses.json, phase-one_plan.md)
-   - Output: Canonical plans, schemas, roadmaps
+   - Output: Plans, schemas, roadmaps
 
 3. **Develop** (Implementation)
    - Code written, tests passing
@@ -77,7 +76,7 @@ type: "architecture.hybrid" | "security.guardrails" | "feature.voice-input"
 │       ├── 251004-1830_schema-separation.md
 │       └── 251004-1845_design-principles.md
 │
-├── designate/        # Ground truth plans
+├── designate/        # Plans
 │   ├── phase-one-plan.md
 │   ├── courses.json
 │   └── aliases/

@@ -10,7 +10,7 @@ sessionid: "cb91d93d-f844-4677-b8f0-ce8ebbbb0f0f"
 
 ## Purpose
 
-IMEM is a structured knowledge retrieval system that provides SQL-like filtering combined with semantic search across changelogs and conversations. The system extracts rich metadata from template-structured documents, enabling precision retrieval through phase/layer/section filters combined with vector similarity.
+IMEM is a structured knowledge retrieval system that provides filtering combined with semantic search across changelogs and conversations. The system extracts rich metadata from template-structured documents, enabling precision retrieval through phase/layer/section filters combined with vector similarity.
 
 The system captures decision genealogy through bidirectional linking between conversations and changelogs, dual-layer architecture (implementation and pattern layers), and structured field detection (Context, Solution, Rationale). Each project receives an isolated Qdrant collection, allowing independent indexing and querying across multiple codebases.
 

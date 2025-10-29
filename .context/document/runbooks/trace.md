@@ -1,54 +1,113 @@
 # TRACE - Conversation Archaeology
 
-TRACE provides conversation intelligence for Claude Code sessions. It searches `~/.claude/projects/` to find and query conversations using a semantic verb-noun command structure.
+**For AI agents.** Find, export, and analyze Claude Code conversations.
 
-## Core Concept
+## Overview
 
-TRACE is your source of truth for conversation data:
-- **Global discovery**: Searches all projects in `~/.claude/projects/`
-- **3-layer architecture**: Finder → Retrieval → Formatter
-- **Chronicle timeline**: Chronologically merged messages + patches
-- **Vector-ready output**: H2-section markdown for LlamaIndex chunking
+TRACE searches `~/.claude/projects/` for conversation intelligence:
 
-## Quick Start
+**What it does:**
+- Find sessions by content/keyword
+- Export chronicles for agent handoff
+- Track code evolution across sessions
+- Format conversations for vector search
 
+**Architecture:**
+- 3-layer: Finder → Retrieval → Formatter
+- Chronicle format: H2-section markdown (LlamaIndex-ready)
+- Lazy loading: Fast discovery, parse on-demand
+
+**Use cases:**
+- Agent handoff (export context for next Claude)
+- Find past conversations ("what session had X?")
+- Review code changes from sessions
+- IMEM vector search integration
+
+## Workflows
+
+**When you need to find a session:**
+1. User shows conversation snippet
+2. Extract unique phrase (2-4 words)
+3. Use: `trace list --marker "unique phrase"`
+4. Returns session ID
+
+**When you need to export for handoff:**
+1. Find session ID (if needed)
+2. Export chronicle: `trace export chronicle <id> -o context.md`
+3. Chronicle contains complete timeline (messages + patches)
+
+**When you need to review code changes:**
+1. See what changed: `trace show files <id>`
+2. See exact diffs: `trace show patches <id>`
+3. Understand evolution from conversation to code
+
+## Slash Commands
+
+<!-- BUILD SOURCE: This section compiles to ~/.claude/commands/aura/trace/*.md -->
+
+**trace-find** - Find session by conversation snippet
+**Args:** <unique-text>
+**Action:** Find TRACE Session
+**Verb:** Search conversations for
 ```bash
-# Discover conversations
+trace list --marker "$ARGUMENTS"
+```
+**Examples:**
+```
+/trace-find "Extracted Brand Information"
+/trace-find "simplified sys prompt"
+```
+**Tip:** Use 2-4 word unique phrases from assistant messages
+
+**trace-export** - Export chronicle for agent handoff
+**Args:** [session-id]
+**Action:** Export TRACE Chronicle
+**Verb:** Export session
+```bash
 trace list
-trace list --marker "authentication"
-
-# Display to terminal
-trace show chronicle <session-id>
-trace show messages <session-id>
-trace show patches <session-id>
-
-# Export to file
 trace export chronicle <session-id> -o context.md
 ```
+**Examples:**
+```
+/trace-export
+/trace-export 0a535859
+```
+**Tip:** Chronicle contains complete timeline (messages + patches), H2-section markdown for vector search
 
-## Discovery Commands
-
-**List all conversations:**
+**trace-changes** - Review code evolution from session
+**Args:** <session-id>
+**Action:** Review TRACE Changes
+**Verb:** Review code evolution for
 ```bash
-trace list
-# Shows session IDs sorted by modification time
+trace show files <session-id>
+trace show patches <session-id>
+```
+**Examples:**
+```
+/trace-changes 0a535859
+/trace-changes dc3d19c9
+```
+**Tip:** Shows files modified + exact diffs with timestamps
+
+## Reference
+
+### Discovery Commands
+
+**List sessions:**
+```bash
+trace list                      # All sessions (sorted by time)
+trace list --marker "keyword"   # Filter by content
+trace list --limit 10           # Limit results
 ```
 
-**Filter by content:**
-```bash
-trace list --marker "architecture"
-# Finds conversations containing keyword
-```
+**Session ID format:**
+- Full UUID: `a1acf43d-ed61-475b-b38d-942d33673efc`
+- Partial: Minimum 8 characters
+- Get IDs: `trace list`
 
-**Limit results:**
-```bash
-trace list --limit 10
-# Show first 10 results only
-```
+### Display Commands
 
-## Display Commands (Terminal Output)
-
-All display commands use: `trace show <content-type> <session-id>`
+Pattern: `trace show <content-type> <session-id>`
 
 **Chronicle (complete timeline):**
 ```bash
@@ -89,20 +148,17 @@ trace show tools <session-id>
 # Tool usage counts by type
 ```
 
-## Export Commands (File Output)
+### Export Commands
 
-All export commands use: `trace export <content-type> <session-id> [-o FILE]`
+Pattern: `trace export <content-type> <session-id> [-o FILE]`
 
 **Export chronicle:**
 ```bash
-# Specify output file
-trace export chronicle <session-id> -o context.md
-
-# Auto-generate filename (<session-id>.md)
-trace export chronicle <session-id>
+trace export chronicle <session-id> -o context.md  # Specify output
+trace export chronicle <session-id>                # Auto-named: <id>.md
 ```
 
-**Export other content types:**
+**Export other content:**
 ```bash
 trace export messages <session-id> -o messages.md
 trace export patches <session-id> -o patches.md
@@ -110,13 +166,13 @@ trace export metadata <session-id> -o metadata.json
 ```
 
 **Export use cases:**
-- Documentation generation
 - Agent context preparation
+- Documentation generation
 - Conversation analysis
 - Vector search indexing
 - IMEM integration
 
-## Chronicle Timeline Pattern
+### Chronicle Format
 
 Chronicle merges messages and patches chronologically:
 
@@ -143,36 +199,7 @@ Response here...
 - Each section becomes separate Qdrant vector
 - Optimized for LlamaIndex MarkdownNodeParser
 
-## Common Workflows
-
-**Discover and view:**
-```bash
-# 1. Find sessions
-trace list --marker "database"
-
-# 2. View complete timeline
-trace show chronicle <session-id>
-```
-
-**Export for documentation:**
-```bash
-# 1. Discover
-trace list
-
-# 2. Export with metadata
-trace export chronicle <session-id> -o analysis.md
-```
-
-**Track code evolution:**
-```bash
-# What files changed
-trace show files <session-id>
-
-# Exact changes
-trace show patches <session-id>
-```
-
-## Integration Points
+### Integration
 
 **IMEM Vector Search:**
 ```python
@@ -208,7 +235,7 @@ patches = retrieval.get_patches(entries)
 metadata = retrieval.get_metadata(entries)
 ```
 
-## Architecture Principles
+### Architecture
 
 **3-Layer Separation:**
 - **Finder**: File discovery (I/O)
@@ -230,24 +257,19 @@ metadata = retrieval.get_metadata(entries)
 - Self-documenting for AI agents
 - Extensible through new content types
 
-## Tips & Tricks
+### Performance
 
-**Session ID format:**
-- Minimum 8 characters (partial matching supported)
-- Full UUID: `a1acf43d-ed61-475b-b38d-942d33673efc`
-- Get IDs: `trace list`
-
-**Performance:**
 - `list` is fast (filesystem scan)
 - `list --marker` is slower (grep through files)
 - Default limit: 20 results
 
-**Project detection:**
+### Project Detection
+
 - Auto-detects from current directory
 - Searches `~/.claude/projects/{project-hash}/conversations/`
 - Works from any subdirectory
 
-## Error Handling
+### Troubleshooting
 
 **"No conversations found":**
 - Verify you're in project directory
@@ -262,8 +284,13 @@ metadata = retrieval.get_metadata(entries)
 - Check output path is writable
 - Verify session ID is correct
 
-## See Also
+### Installation
+
+```bash
+cd trace && pip install -e .
+```
+
+### See Also
 
 - `.context/document/architecture_trace-i2.md` - Full architecture
 - `.context/document/architecture_imem-i2.md` - Vector search integration
-- Installation: `cd trace && pip install -e .`
