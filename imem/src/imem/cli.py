@@ -35,6 +35,248 @@ def imem():
 
 
 # ============================================================================
+# Helper Functions
+# ============================================================================
+
+def _index_phase(phase_name: str, force: bool = False, limit: int = None):
+    """
+    Index a specific phase (develop, design, document) or all context
+
+    Args:
+        phase_name: Phase to index ('develop', 'design', 'document', 'context')
+        force: If True, recreate collection
+        limit: Optional limit for number of documents
+    """
+    from .ingest import EnhancedModularIngest
+
+    registry = SimpleRegistry()
+    project_root = registry.get_project_root()
+
+    if not project_root:
+        click.echo("❌ Not in a registered project. Run 'imem init' first.", err=True)
+        return
+
+    # Get or create collection
+    collections = registry.get_project_info(project_root).get('collections')
+    if not collections:
+        collections = registry.register_project(project_root)
+
+    collection_name = collections['context']
+
+    # Determine paths to index
+    if phase_name == 'context':
+        # Index all phases
+        phases_to_index = ['develop', 'design', 'document']
+    else:
+        phases_to_index = [phase_name]
+
+    # Initialize ingester
+    ingester = EnhancedModularIngest()
+
+    # Create collection if needed
+    from qdrant_client.models import Distance, VectorParams, HnswConfigDiff
+
+    try:
+        collection_exists = ingester.client.collection_exists(collection_name)
+
+        if force and collection_exists:
+            # Force recreate: delete then create
+            click.echo(f"🔄 Recreating collection {collection_name}...")
+            ingester.client.delete_collection(collection_name)
+            collection_exists = False
+
+        if not collection_exists:
+            # Auto-create if doesn't exist
+            click.echo(f"📦 Creating collection {collection_name}...")
+            ingester.client.create_collection(
+                collection_name=collection_name,
+                vectors_config={
+                    "e5-large-v2": VectorParams(
+                        size=1024,
+                        distance=Distance.COSINE,
+                        hnsw_config=HnswConfigDiff(m=16, ef_construct=100)
+                    )
+                }
+            )
+            click.echo(f"✅ Collection created")
+    except Exception as e:
+        click.echo(f"❌ Error with collection: {e}", err=True)
+        return
+
+    # Index each phase
+    total_indexed = 0
+    for phase in phases_to_index:
+        phase_path = project_root / '.context' / phase
+        if not phase_path.exists():
+            click.echo(f"⚠️  Phase directory not found: {phase_path}")
+            continue
+
+        click.echo(f"📚 Indexing {phase} phase...")
+
+        # Find all .md files
+        md_files = list(phase_path.rglob("*.md"))
+        if limit:
+            md_files = md_files[:limit]
+
+        for md_file in md_files:
+            try:
+                ingester.ingest_markdown_chunked(
+                    md_file,
+                    phase=phase,
+                    collection_name=collection_name
+                )
+                total_indexed += 1
+                layer_badge = "[pattern]" if '.pattern.md' in str(md_file) else "[impl]"
+                click.echo(f"   ✅ {layer_badge:10} {md_file.relative_to(project_root)}")
+            except Exception as e:
+                click.echo(f"   ❌ {md_file.name}: {e}")
+
+        click.echo(f"✅ Indexed {total_indexed} documents from {phase}")
+
+    # Update registry
+    registry.update_doc_count(project_root, 'context', total_indexed)
+
+    click.echo(f"\n🎉 Total indexed: {total_indexed} documents")
+    return total_indexed
+
+
+def _index_conversations(force: bool = False, limit: int = None):
+    """
+    Index Claude Code conversations
+
+    Args:
+        force: If True, recreate collection
+        limit: Optional limit for number of conversations
+    """
+    from .ingest import EnhancedModularIngest
+    import sys as _sys
+
+    # Import TRACE components
+    trace_path = Path(__file__).parent.parent.parent.parent / 'trace' / 'src'
+    _sys.path.insert(0, str(trace_path))
+    from aura_trace.finder import ConversationFinder
+
+    registry = SimpleRegistry()
+    project_root = registry.get_project_root()
+
+    if not project_root:
+        click.echo("❌ Not in a registered project. Run 'imem init' first.", err=True)
+        return
+
+    # Get or create collection
+    collections = registry.get_project_info(project_root).get('collections')
+    if not collections:
+        collections = registry.register_project(project_root)
+
+    collection_name = collections['conversation']
+
+    # Initialize ingester
+    ingester = EnhancedModularIngest()
+
+    # Create collection if needed
+    from qdrant_client.models import Distance, VectorParams, HnswConfigDiff
+
+    try:
+        collection_exists = ingester.client.collection_exists(collection_name)
+
+        if force and collection_exists:
+            # Force recreate: delete then create
+            click.echo(f"🔄 Recreating collection {collection_name}...")
+            ingester.client.delete_collection(collection_name)
+            collection_exists = False
+
+        if not collection_exists:
+            # Auto-create if doesn't exist
+            click.echo(f"📦 Creating collection {collection_name}...")
+            ingester.client.create_collection(
+                collection_name=collection_name,
+                vectors_config={
+                    "e5-large-v2": VectorParams(
+                        size=1024,
+                        distance=Distance.COSINE,
+                        hnsw_config=HnswConfigDiff(m=16, ef_construct=100)
+                    )
+                }
+            )
+            click.echo(f"✅ Collection created")
+    except Exception as e:
+        click.echo(f"❌ Error with collection: {e}", err=True)
+        return
+
+    # Find conversations
+    finder = ConversationFinder()
+    conversation_files = finder.list_all()
+
+    if limit:
+        conversation_files = conversation_files[:limit]
+
+    click.echo(f"📚 Indexing {len(conversation_files)} conversations...")
+
+    # Index each conversation (needs JSONL → markdown conversion)
+    total_chunks = 0
+    success_count = 0
+
+    # Import TRACE components for conversion
+    from aura_trace.retrieval import ConversationRetrieval
+    from aura_trace.formatter import ConversationFormatter
+    import tempfile
+
+    retrieval = ConversationRetrieval()
+    formatter = ConversationFormatter()
+
+    for i, conv_file in enumerate(conversation_files, 1):
+        session_id = conv_file.stem
+
+        try:
+            # Load and convert JSONL to markdown
+            entries = retrieval.load_conversation(conv_file)
+            timeline = retrieval.get_timeline(
+                entries,
+                include_messages=True,
+                include_patches=True,
+                include_files=False,
+                include_tools=False
+            )
+            conv_metadata = retrieval.get_metadata(entries)
+            structured_md = formatter.format(timeline, conv_metadata.get('session_id'), conv_metadata)
+
+            # Write to temp file for ingestion
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+                f.write(structured_md)
+                temp_md_path = Path(f.name)
+
+            # Prepare metadata
+            metadata = {
+                'start_time': conv_metadata.get('start_time'),
+                'duration_minutes': conv_metadata.get('duration_minutes'),
+                'message_count': conv_metadata.get('message_count'),
+            }
+
+            # Index conversation
+            ingester.ingest_conversation_chunked(
+                temp_md_path,
+                session_id,
+                metadata,
+                collection_name=collection_name
+            )
+
+            # Clean up
+            temp_md_path.unlink()
+
+            success_count += 1
+            click.echo(f"  [{i}/{len(conversation_files)}] ✅ {session_id[:12]}")
+
+        except Exception as e:
+            click.echo(f"  [{i}/{len(conversation_files)}] ⚠️  {session_id[:12]}: {e}")
+
+    # Update registry
+    registry.update_doc_count(project_root, 'conversation', success_count)
+
+    click.echo(f"\n🎉 Indexed {success_count}/{len(conversation_files)} conversations")
+    return success_count
+
+
+# ============================================================================
 # Phase-based subcommands for structured search
 # ============================================================================
 
@@ -64,7 +306,7 @@ def develop_search(query, decisions, constraints, failures, patterns, implementa
         imem develop search "provider agnostic" --pattern
     """
     filters = {
-        'source': 'changelog',
+        'source': 'context',
         'phase': 'develop'
     }
 
@@ -158,8 +400,14 @@ def _execute_search(query: str, filters: dict, limit: int, after_date: str = Non
         click.echo("Project not initialized. Run 'imem init' first", err=True)
         sys.exit(1)
 
-    info = registry.get_project_info(project_root)
-    collection_name = info['collection']
+    # Determine collection type from source filter
+    source = filters.get('source', 'context')
+    if source == 'context':
+        collection_name = registry.get_collection_by_type(project_root, 'context')
+    elif source == 'conversation':
+        collection_name = registry.get_collection_by_type(project_root, 'conversation')
+    else:
+        raise ValueError(f"Unknown source type: {source}")
 
     # Perform search
     searcher = EnhancedQdrantSearch(
@@ -187,9 +435,9 @@ def _execute_search(query: str, filters: dict, limit: int, after_date: str = Non
             if 'file_path' in result:
                 click.echo(f"    File: {result['file_path']}")
 
-            # Show phase/layer for changelogs
+            # Show phase/layer for context
             payload = result.get('original_metadata', {})
-            if payload.get('source') == 'changelog':
+            if payload.get('source') == 'context':
                 phase = payload.get('phase', 'N/A')
                 layer = payload.get('layer', 'N/A')
                 section_type = payload.get('section_type', 'N/A')
@@ -210,6 +458,36 @@ def _execute_search(query: str, filters: dict, limit: int, after_date: str = Non
     except Exception as e:
         click.echo(f"Search failed: {e}", err=True)
         sys.exit(1)
+
+
+# ============================================================================
+# New Unified Commands (verb-noun structure)
+# ============================================================================
+
+@imem.command('index')
+@click.argument('source', type=click.Choice(['develop', 'design', 'document', 'conversations', 'context']))
+@click.option('--force', is_flag=True, help='Recreate collection if exists')
+@click.option('--limit', type=int, help='Limit number of documents/conversations to index')
+def index_source(source, force, limit):
+    """
+    Index content from a specific source
+
+    Sources:
+      develop       - .context/develop/ phase
+      design        - .context/design/ phase
+      document      - .context/document/ phase
+      context       - All phases (develop + design + document)
+      conversations - Claude Code conversations (~/.claude/)
+
+    Examples:
+      imem index develop
+      imem index context --force
+      imem index conversations --limit 50
+    """
+    if source == 'conversations':
+        _index_conversations(force=force, limit=limit)
+    else:
+        _index_phase(phase_name=source, force=force, limit=limit)
 
 
 @imem.command()
@@ -258,13 +536,14 @@ def compose(config_json):
         # Get collection
         registry = SimpleRegistry()
         project_root = registry.get_project_root()
-        info = registry.get_project_info(project_root)
 
-        if not info:
+        if not registry.is_registered(project_root):
             click.echo("Project not registered. Run 'imem init' first.", err=True)
             sys.exit(1)
 
-        collection_name = info['collection']
+        # Default to context collection (changelogs/design docs)
+        # Compose can be extended to support conversation searches later
+        collection_name = registry.get_collection_by_type(project_root, 'context')
 
         # Execute composition (async)
         result = asyncio.run(compose_pipeline(collection_name, config_dict))
@@ -441,6 +720,7 @@ def init(force, vscode, include_design):
 
 
 @imem.command()
+@click.argument('source', type=click.Choice(['develop', 'design', 'document', 'conversations', 'context']))
 @click.argument('query', nargs=-1, required=True)
 @click.option('--limit', default=5, help='Number of results')
 @click.option('--sort-by', default='similarity', type=click.Choice(['similarity', 'date', 'hybrid']))
@@ -449,17 +729,13 @@ def init(force, vscode, include_design):
 @click.option('--split-terms', is_flag=True, help='Split query into individual terms for multi-term search')
 @click.option('--operator', default='AND', type=click.Choice(['AND', 'OR']),
               help='Operator for combining multiple terms (default: AND)')
-@click.option('--in', 'phase_filter',
-              type=click.Choice(['develop', 'designate', 'document', 'conversations', 'all']),
-              default='develop',
-              help='Filter by phase: develop (ground truth), designate (specs), document (stable), conversations')
 @click.option('--layer',
               type=click.Choice(['implementation', 'pattern', 'both']),
               default='implementation',
               help='Filter by layer: implementation (code-specific), pattern (language-agnostic), both')
 @click.option('--section', help='Filter by section type (e.g., "Decisions", "User Messages")')
 @click.option('--session', help='Filter by conversation session ID (full or partial)')
-def search(query, limit, sort_by, show_metadata, after, split_terms, operator, phase_filter, layer, section, session):
+def search(source, query, limit, sort_by, show_metadata, after, split_terms, operator, layer, section, session):
     """Search documentation in current project.
 
     Performs vector similarity search across the project's indexed documentation
@@ -487,9 +763,10 @@ def search(query, limit, sort_by, show_metadata, after, split_terms, operator, p
         SystemExit: If Qdrant service is not running or project is not initialized.
 
     Examples:
-        imem search "registry collection mapping" --split-terms
-        imem search "relative paths" "project root" --operator=AND
-        imem search documentation
+        imem search develop "authentication flow"
+        imem search conversations "bug fix" --split-terms
+        imem search context "JWT" --operator=AND
+        imem search design "architecture decision"
     """
     # Handle multiple query arguments
     if len(query) > 1:
@@ -514,19 +791,21 @@ def search(query, limit, sort_by, show_metadata, after, split_terms, operator, p
         click.echo("Project not initialized. Run 'imem init' first", err=True)
         sys.exit(1)
 
-    info = registry.get_project_info(project_root)
-    collection_name = info['collection']
-
-    # Build filters based on phase, layer, section, and session
+    # Build filters based on source
     filters = {}
-    if phase_filter == 'conversations':
+    if source == 'conversations':
         filters['source'] = 'conversation'
-    elif phase_filter != 'all':
-        filters['source'] = 'changelog'
-        filters['phase'] = phase_filter
+        collection_name = registry.get_collection_by_type(project_root, 'conversation')
+    elif source in ['develop', 'design', 'document']:
+        filters['source'] = 'context'
+        filters['phase'] = source
+        collection_name = registry.get_collection_by_type(project_root, 'context')
+    else:  # source == 'context'
+        filters['source'] = 'context'
+        collection_name = registry.get_collection_by_type(project_root, 'context')
 
-    # Add layer filter (only applies to develop phase changelogs)
-    if layer != 'both' and phase_filter == 'develop':
+    # Add layer filter (only applies to develop phase context docs)
+    if layer != 'both' and source == 'develop':
         filters['layer'] = layer
 
     if section:
@@ -699,9 +978,126 @@ def status():
     click.echo(f"\n📚 Indexed Projects ({len(projects)}):")
     for path, info in projects.items():
         click.echo(f"\n  {path}")
-        click.echo(f"    Collection: {info['collection']}")
-        click.echo(f"    Documents: {info['doc_count']}")
+
+        # Handle both old (single collection) and new (dual collection) format
+        if 'collections' in info:
+            # New format: dual collections
+            collections = info['collections']
+            doc_counts = info.get('doc_counts', {})
+            click.echo(f"    Collections:")
+            click.echo(f"      Context:      {collections['context']} ({doc_counts.get('context', 0)} docs)")
+            click.echo(f"      Conversation: {collections['conversation']} ({doc_counts.get('conversation', 0)} docs)")
+        else:
+            # Old format: single collection (backward compatibility)
+            click.echo(f"    Collection: {info['collection']}")
+            click.echo(f"    Documents: {info.get('doc_count', 0)}")
+
         click.echo(f"    Indexed: {info['indexed_at'][:19]}")
+
+
+@imem.group()
+def collections():
+    """Manage collections and lifecycle"""
+    pass
+
+
+@collections.command('list')
+def collections_list():
+    """List all collections with status"""
+    from qdrant_client import QdrantClient
+
+    client = QdrantClient(host='localhost', port=6334)
+    registry = SimpleRegistry()
+
+    # Get all IMEM collections
+    all_collections = client.get_collections().collections
+    imem_collections = [c for c in all_collections if c.name.startswith('imem_')]
+
+    # Get registered collections
+    registered = set()
+    for project_path, info in registry.list_projects().items():
+        if 'collections' in info:
+            registered.add(info['collections']['context'])
+            registered.add(info['collections']['conversation'])
+        elif 'collection' in info:
+            registered.add(info['collection'])
+
+    if not imem_collections:
+        click.echo("No IMEM collections found")
+        return
+
+    click.echo(f"📦 Collections ({len(imem_collections)}):\n")
+
+    # Registered collections
+    registered_found = []
+    for c in imem_collections:
+        if c.name in registered:
+            registered_found.append(c)
+
+    if registered_found:
+        click.echo("✅ Registered:")
+        for c in sorted(registered_found, key=lambda x: x.name):
+            info = client.get_collection(c.name)
+            click.echo(f"  {c.name} ({info.points_count} points)")
+
+    # Orphaned collections
+    orphaned = [c for c in imem_collections if c.name not in registered]
+    if orphaned:
+        click.echo(f"\n⚠️  Orphaned ({len(orphaned)}):")
+        for c in sorted(orphaned, key=lambda x: x.name):
+            info = client.get_collection(c.name)
+            click.echo(f"  {c.name} ({info.points_count} points)")
+
+
+@collections.command('clean')
+@click.option('--dry-run', is_flag=True, help='Show what would be deleted')
+def collections_clean(dry_run):
+    """Remove orphaned collections"""
+    from qdrant_client import QdrantClient
+
+    client = QdrantClient(host='localhost', port=6334)
+    registry = SimpleRegistry()
+
+    # Get registered collections
+    registered = set()
+    for project_path, info in registry.list_projects().items():
+        if 'collections' in info:
+            registered.add(info['collections']['context'])
+            registered.add(info['collections']['conversation'])
+        elif 'collection' in info:
+            registered.add(info['collection'])
+
+    # Find orphans
+    all_collections = client.get_collections().collections
+    orphaned = [c for c in all_collections if c.name.startswith('imem_') and c.name not in registered]
+
+    if not orphaned:
+        click.echo("✅ No orphaned collections found")
+        return
+
+    click.echo(f"🗑️  Found {len(orphaned)} orphaned collections:\n")
+    for c in orphaned:
+        info = client.get_collection(c.name)
+        click.echo(f"  {c.name} ({info.points_count} points)")
+
+    if dry_run:
+        click.echo(f"\n📋 Dry run - would delete {len(orphaned)} collections")
+        click.echo("Run without --dry-run to actually delete")
+    else:
+        # Confirm deletion
+        if not click.confirm(f"\n⚠️  Delete {len(orphaned)} orphaned collections?"):
+            click.echo("Cancelled")
+            return
+
+        click.echo()
+        for c in orphaned:
+            try:
+                client.delete_collection(c.name)
+                click.echo(f"  ✅ Deleted {c.name}")
+            except Exception as e:
+                click.echo(f"  ❌ Failed to delete {c.name}: {e}")
+
+        click.echo(f"\n🎉 Cleaned up {len(orphaned)} collections")
 
 
 @imem.group()

@@ -33,18 +33,26 @@ class SimpleRegistry:
         """Get project root (current directory)"""
         return Path.cwd()
 
-    def register_project(self, project_root: Path) -> str:
-        """Register a project and return collection name"""
+    def register_project(self, project_root: Path) -> dict:
+        """Register a project and return collection names"""
         project_key = str(project_root.resolve())
-        collection_name = f"imem_{hashlib.md5(project_key.encode()).hexdigest()[:8]}"
+        hash_suffix = hashlib.md5(project_key.encode()).hexdigest()[:8]
+
+        collections = {
+            "context": f"imem_{hash_suffix}_context",
+            "conversation": f"imem_{hash_suffix}_conversation"
+        }
 
         self.data["projects"][project_key] = {
-            "collection": collection_name,
+            "collections": collections,
             "indexed_at": datetime.now().isoformat(),
-            "doc_count": 0
+            "doc_counts": {
+                "context": 0,
+                "conversation": 0
+            }
         }
         self._save()
-        return collection_name
+        return collections
 
     def is_registered(self, project_root: Path) -> bool:
         """Check if project is registered"""
@@ -54,11 +62,38 @@ class SimpleRegistry:
         """Get project information"""
         return self.data["projects"].get(str(project_root.resolve()), {})
 
-    def update_doc_count(self, project_root: Path, count: int):
-        """Update document count for project"""
+    def get_collection_by_type(self, project_root: Path, collection_type: str) -> str:
+        """Get collection name for a specific type (context or conversation)"""
+        info = self.get_project_info(project_root)
+        if not info:
+            raise ValueError(f"Project not registered: {project_root}")
+
+        collections = info.get('collections', {})
+
+        # Backward compatibility: if old schema, return single collection for context
+        if not collections and 'collection' in info:
+            if collection_type == 'context':
+                return info['collection']
+            else:
+                raise ValueError(f"Old registry format - no {collection_type} collection")
+
+        if collection_type not in collections:
+            raise ValueError(f"Unknown collection type: {collection_type}")
+
+        return collections[collection_type]
+
+    def update_doc_count(self, project_root: Path, collection_type: str, count: int):
+        """Update document count for a specific collection type"""
         project_key = str(project_root.resolve())
         if project_key in self.data["projects"]:
-            self.data["projects"][project_key]["doc_count"] = count
+            # Backward compatibility: handle old schema
+            if "doc_counts" not in self.data["projects"][project_key]:
+                self.data["projects"][project_key]["doc_counts"] = {
+                    "context": 0,
+                    "conversation": 0
+                }
+
+            self.data["projects"][project_key]["doc_counts"][collection_type] = count
             self.data["projects"][project_key]["indexed_at"] = datetime.now().isoformat()
             self._save()
 

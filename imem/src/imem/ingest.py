@@ -734,7 +734,7 @@ class EnhancedModularIngest:
 
             # Build payload with rich metadata
             payload = {
-                'source': 'changelog',
+                'source': 'context',
                 'phase': phase,
                 'layer': layer,  # implementation or pattern
                 'section_type': h2_section_type or section_name,  # H2 parent (e.g., "Decisions")
