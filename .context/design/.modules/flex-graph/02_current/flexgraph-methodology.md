@@ -408,24 +408,374 @@ FlexGraph is a **methodology**, not a product. Different domains implement it di
 
 ---
 
+## Compositional Philosophy
+
+**FlexGraph is not one pattern. It's compositional primitives that enable infinite combinations.**
+
+### Layer 1: Primitives (Building Blocks)
+
+FlexGraph provides composable primitives that can be combined ANY way:
+
+| Primitive | What It Returns | Discovery Method |
+|-----------|----------------|------------------|
+| `siblings` | Chunks from same document | `filter(file_path=X)` |
+| `genealogy` | Origin conversation | `filter(session_id=Y, source='conversation')` |
+| `temporal` | Evolution over time | `semantic_search + timestamp filter` |
+| `cross_phase` | Related phase chunks | `filter(phase=Z, keywords overlap)` |
+
+**Key property:** These primitives are orthogonal. Any combination is valid.
+
+---
+
+### Layer 2: Infinite Compositions
+
+**Agents compose primitives flexibly based on query intent.**
+
+#### Composition Example A: Complete Story
+**Query:** "Explain the JWT authentication decision"
+
+**Composition:**
+```json
+{
+  "discovery": {
+    "genealogy": true,
+    "cross_phase": "design",
+    "siblings": {
+      "section_types": ["Decisions", "Failures", "Patterns"]
+    }
+  },
+  "output": {"template": "story"}
+}
+```
+
+**Returns:**
+1. Origin conversation (genealogy)
+2. Design decisions (cross_phase)
+3. What failed (siblings: Failures)
+4. What worked (siblings: Decisions)
+5. Patterns extracted (siblings: Patterns)
+
+**Structure:** Narrative reconstruction from ideation → implementation
+
+---
+
+#### Composition Example B: Evolution Timeline
+**Query:** "How did the caching strategy evolve?"
+
+**Composition:**
+```json
+{
+  "discovery": {
+    "temporal": {"direction": "both"},
+    "siblings": {
+      "section_types": ["Patterns"],
+      "order_by": "timestamp"
+    }
+  },
+  "output": {"template": "timeline"}
+}
+```
+
+**Returns:**
+1. Earlier attempts (temporal: before)
+2. Current implementation (primary)
+3. Later refinements (temporal: after)
+4. Patterns extracted over time (siblings: Patterns)
+
+**Structure:** Chronological evolution showing how thinking changed
+
+---
+
+#### Composition Example C: Anti-Pattern Search
+**Query:** "What approaches have we tried that didn't work?"
+
+**Composition:**
+```json
+{
+  "discovery": {
+    "siblings": {
+      "section_types": ["Failures"]
+    }
+  }
+}
+```
+
+**Returns:**
+- All Failures sections across documents
+- What was attempted, why it failed, lessons learned
+
+**Structure:** Cross-document failure compilation
+
+---
+
+#### Composition Example D: Pattern Library
+**Query:** "Show me all reusable patterns for authentication"
+
+**Composition:**
+```json
+{
+  "discovery": {
+    "siblings": {
+      "section_types": ["Patterns"],
+      "order_by": "timestamp"
+    }
+  }
+}
+```
+
+**Returns:**
+- Patterns sections from all related documents
+- Ordered by recency (most recent first)
+
+**Structure:** Curated pattern library for domain
+
+---
+
+#### Composition Example E: Design Journey
+**Query:** "What was the design thinking before implementation?"
+
+**Composition:**
+```json
+{
+  "discovery": {
+    "cross_phase": "design",
+    "siblings": {
+      "section_types": ["Decisions"],
+      "has_rationale": true
+    }
+  }
+}
+```
+
+**Returns:**
+- Abstract design decisions (cross_phase)
+- High-quality decisions with rationale (has_rationale filter)
+
+**Structure:** Pre-implementation design exploration
+
+---
+
+#### Composition Example F: Constraint Analysis
+**Query:** "What constraints influenced this decision?"
+
+**Composition:**
+```json
+{
+  "discovery": {
+    "siblings": {
+      "section_types": ["Constraints", "Decisions"]
+    },
+    "genealogy": true
+  }
+}
+```
+
+**Returns:**
+- Constraint sections (limitations, trade-offs)
+- Related decisions (how constraints were addressed)
+- Origin conversation (where constraints emerged)
+
+**Structure:** Decision drivers and limitations
+
+---
+
+### Layer 3: Observable Usage → Preset Library
+
+**FlexGraph is usage-driven, not prescriptive.**
+
+#### The Discovery Process
+
+1. **Flexible composition:** AI agents compose primitives ANY way
+2. **Usage observation:** System logs which compositions recur
+3. **Pattern recognition:** After 10-20 uses of same composition
+4. **Preset capture:** Proven pattern becomes slash command
+
+#### Example: Emergence of `/explain-decision`
+
+**Usage observation:**
+```
+Agent uses composition 30 times:
+{"genealogy": true, "siblings": {"section_types": ["Decisions", "Failures", "Patterns"]}}
+
+Queries that used this:
+- "Explain the debounce fix"
+- "Why did we choose JWT?"
+- "How does caching work?"
+- [27 more similar queries]
+```
+
+**Pattern recognized:** "Explain decision with full context" composition
+
+**Capture as preset:**
+```markdown
+# .claude/commands/explain-decision.md
+
+Find a decision and reconstruct complete context:
+- Origin conversation (how we got here)
+- Related failures (what we tried first)
+- Extracted patterns (reusable learnings)
+
+Usage: /explain-decision <query>
+
+Internally expands to:
+imem compose '{
+  "search": {"text": "$QUERY", "limit": 1},
+  "discovery": {
+    "genealogy": true,
+    "siblings": {"section_types": ["Decisions", "Failures", "Patterns"]}
+  },
+  "output": {"template": "story"}
+}'
+```
+
+**Result:** Proven pattern captured for reuse
+
+---
+
+#### More Emergent Presets (Examples)
+
+**Pattern detected (20 uses):**
+```json
+{"temporal": true, "siblings": {"section_types": ["Patterns"]}}
+```
+→ Captured as `/evolution-trace`
+
+**Pattern detected (15 uses):**
+```json
+{"siblings": {"section_types": ["Failures"]}}
+```
+→ Captured as `/anti-patterns`
+
+**Pattern detected (12 uses):**
+```json
+{"cross_phase": "design"}
+```
+→ Captured as `/design-journey`
+
+**Pattern detected (10 uses):**
+```json
+{"siblings": {"section_types": ["Constraints"], "has_impact": true}}
+```
+→ Captured as `/constraint-analysis`
+
+---
+
+### The Innovation: Compositional + Observable + Self-Improving
+
+**Traditional systems:**
+- Fixed query types
+- Predefined relationships
+- Static structure
+- No learning from usage
+
+**FlexGraph:**
+- ✅ Compositional primitives (any combination valid)
+- ✅ Observable usage (track what agents do)
+- ✅ Self-improving (capture proven patterns)
+- ✅ Usage-driven presets (not prescriptive)
+
+**The power hierarchy:**
+
+```
+Template-as-Schema (Foundation)
+    ↓ enables
+Deterministic Metadata (Primitives)
+    ↓ enables
+Compositional Flexibility (Any combination)
+    ↓ enables
+Observable Usage (Track patterns)
+    ↓ enables
+Self-Improving System (Capture proven patterns)
+```
+
+**Each layer builds on the previous.**
+
+---
+
+### When to Use Compositional FlexGraph
+
+**Ideal for:**
+
+✅ **Evolving knowledge bases**
+- New composition patterns emerge with use
+- System learns what works
+- Preset library grows organically
+
+✅ **AI agent workflows**
+- Agents compose primitives based on query intent
+- No manual pattern specification needed
+- Natural language queries → automatic composition
+
+✅ **Diverse query intents**
+- Same chunks, different compositions
+- "Explain decision" vs "Show evolution" vs "Find failures"
+- Flexibility without predefining all patterns
+
+✅ **Self-improving systems**
+- Observable usage reveals useful patterns
+- Proven patterns captured automatically
+- System gets smarter with use
+
+**Not ideal for:**
+
+❌ **Static query types**
+- If only one composition ever needed
+- Flexibility unused
+- Simple search sufficient
+
+❌ **No usage observation**
+- If can't track agent behavior
+- Can't discover patterns
+- Preset library doesn't emerge
+
+---
+
+### Domain Implementations with Composition
+
+**IMEM (Coding Agents)**
+
+Compositions naturally emerge:
+- Narrative reconstruction (genealogy + siblings)
+- Evolution timeline (temporal + patterns)
+- Anti-pattern search (failures only)
+- Design journey (cross-phase design)
+
+**WriteMem (Hypothetical)**
+
+Different compositions would emerge:
+- Draft evolution (temporal chain of revisions)
+- Citation network (reference traversal)
+- Style analysis (comparison across drafts)
+
+**ResearchMem (Hypothetical)**
+
+Yet different compositions:
+- Literature review (citation + semantic)
+- Experiment lineage (temporal + genealogy)
+- Hypothesis testing (cross-phase experiment → analysis)
+
+**Same primitives. Different emergent patterns per domain.**
+
+---
+
 ## Summary
 
-**Core Insight:** Relationships as queries, not stored structures
+**Core Insight:** Compositional primitives enable flexible, usage-driven knowledge retrieval
 
 **Requirements:**
 1. Creation-time schema (guaranteed metadata) - *Validated*
-2. Small result sets (k << n) - *Working hypothesis*
-3. Metadata predicates (latent edges) - *To be validated*
+2. Compositional primitives (orthogonal building blocks) - *Core innovation*
+3. Observable usage (track agent patterns) - *Self-improving mechanism*
 
-**Proposed Pattern:**
-Query → top-k → build graph → apply algorithm → discard
+**The Pattern:**
+Flexible composition → Observable usage → Preset capture → Self-improvement
 
-**When to explore this approach:**
+**When to use this approach:**
 - Evolving knowledge bases
 - AI-generated structured content
-- Need for flexible relationship discovery
-- Moderate latency tolerance (80-200ms)
+- Diverse query intents
+- Self-improving systems
 
 **Status:** Methodology is domain-agnostic pattern. IMEM is first implementation (in development).
 
-*Next: Validate whether graph operations (Layer 2B) provide meaningful value over metadata discovery (Layer 2A) alone.*
+*Next: Build primitives, enable flexible composition, observe usage patterns, capture presets.*

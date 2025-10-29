@@ -157,70 +157,550 @@ def cross_phase_search(collection_name, chunk_id, target_phase):
 
 ---
 
-## Intelligence: Query-Adaptive Bundling
+## Intelligence: Compositional Discovery
 
-### Strategy 1: Authority (PageRank)
+**FlexGraph enables ANY composition of primitives. Not rigid patterns, but flexible building blocks.**
 
-**Intent:** "What's the most important authentication pattern?"
+### The Composition Philosophy
 
-**Workflow:**
-```
-1. Multi-query search:
-   - "auth" + decisions
-   - "auth" + patterns
-   - "auth" + failures
-2. Build graph from combined results (30 nodes)
-3. Add edges: siblings, genealogy, semantic
-4. Apply PageRank
-5. Return top 10 by authority score
+**Core principle:** Primitives are orthogonal. Agents compose them based on query intent.
+
+**Not this (rigid):**
+```python
+if query_type == "explain":
+    return get_siblings() + get_genealogy()
+elif query_type == "evolution":
+    return get_temporal()
 ```
 
-**Result:** Most-referenced decisions surface
+**But this (flexible):**
+```python
+compose(config):
+    # Agent decides composition
+    if config['discovery']['genealogy']:
+        results.genealogy = get_genealogy(...)
+    if config['discovery']['siblings']:
+        results.siblings = get_siblings(...)
+    if config['discovery']['temporal']:
+        results.temporal = get_temporal(...)
 
-### Strategy 2: Bridge (Centrality)
-
-**Intent:** "What connects auth and caching?"
-
-**Workflow:**
-```
-1. Search "auth" → 15 results
-2. Search "caching" → 15 results
-3. Build graph from 30 combined results
-4. Apply betweenness centrality
-5. Return top 5 bridge nodes
-```
-
-**Result:** Concepts like "token storage" or "session cache" surface
-
-### Strategy 3: Timeline (Temporal Chain)
-
-**Intent:** "Trace JWT decision evolution"
-
-**Workflow:**
-```
-1. Search "JWT decision"
-2. Get primary decision
-3. Discover temporal edges (earlier/later)
-4. Topological sort by timestamp
-5. Render chronologically
+    return results
 ```
 
-**Result:** Design → decision → constraints → refinements
+**Any combination is valid.**
 
-### Strategy 4: Explanation (Sibling Bundle)
+---
 
-**Intent:** "Explain this decision fully"
+### Composition Examples
 
-**Workflow:**
+**These are NOT prescriptive. They're examples of what agents CAN compose.**
+
+#### Composition: Complete Story (Narrative Reconstruction)
+
+**Query:** "Explain the JWT authentication decision"
+
+**Intent:** Reconstruct full development narrative
+
+**Config:**
+```json
+{
+  "search": {"text": "JWT authentication", "phase": "develop", "limit": 1},
+  "discovery": {
+    "genealogy": true,
+    "cross_phase": "design",
+    "siblings": {
+      "section_types": ["Decisions", "Failures", "Patterns"]
+    }
+  },
+  "output": {"template": "story"}
+}
 ```
-1. Search decision
-2. Get siblings (same document sections)
-3. Get genealogy (origin conversation)
-4. Get pattern (abstraction layer)
-5. Render with template
+
+**Execution:**
+```python
+# 1. Find primary (semantic search)
+primary = search("JWT authentication", phase="develop")
+
+# 2. Get conversation origin
+conversation = get_genealogy(primary.session_id)
+# Returns: Brainstorming, debugging, "aha" moments
+
+# 3. Get design decisions
+design = cross_phase(primary, target_phase="design")
+# Returns: Abstract decisions before implementation
+
+# 4. Get failures documented
+failures = get_siblings(primary, section_types=["Failures"])
+# Returns: What didn't work, why it failed
+
+# 5. Get working decisions
+decisions = get_siblings(primary, section_types=["Decisions"])
+# Returns: What worked, why it was chosen
+
+# 6. Get extracted patterns
+patterns = get_siblings(primary, section_types=["Patterns"])
+# Returns: Reusable learnings
+
+# 7. Render as story
+render("story.j2", {
+    'conversation': conversation,
+    'design': design,
+    'failures': failures,
+    'decisions': decisions,
+    'patterns': patterns
+})
 ```
 
-**Result:** Decision + constraints + origin + pattern
+**Returns:**
+```markdown
+# The Story: JWT Authentication
+
+## The Problem (Conversation: Sept 20)
+> "Sessions don't scale beyond single server..."
+
+## What Didn't Work
+❌ Server-side deduplication
+- Why failed: Doesn't prevent wasted calls
+
+## The Design Decision (Design Phase: Sept 21)
+✅ Stateless JWT tokens
+- Alternatives rejected: OAuth (too complex), Sessions (doesn't scale)
+
+## The Implementation (Develop Phase: Sept 22)
+[Implementation details]
+
+## Pattern Extracted
+📋 "Stateless Authentication for Horizontal Scaling"
+```
+
+**Structure:** Complete narrative from ideation → implementation
+
+---
+
+#### Composition: Evolution Timeline
+
+**Query:** "How did the caching strategy evolve?"
+
+**Intent:** Trace temporal evolution
+
+**Config:**
+```json
+{
+  "search": {"text": "caching strategy", "limit": 1},
+  "discovery": {
+    "temporal": {"direction": "both"},
+    "siblings": {
+      "section_types": ["Patterns"],
+      "order_by": "timestamp"
+    }
+  },
+  "output": {"template": "timeline"}
+}
+```
+
+**Execution:**
+```python
+primary = search("caching strategy")
+
+# Get earlier attempts
+earlier = get_temporal(primary, direction="before")
+
+# Get later refinements
+later = get_temporal(primary, direction="after")
+
+# Get patterns over time
+patterns = get_siblings(primary, section_types=["Patterns"])
+patterns.sort(key=lambda p: p.timestamp)
+
+render("timeline.j2", {
+    'earlier': earlier,
+    'primary': primary,
+    'later': later,
+    'patterns': patterns
+})
+```
+
+**Returns:**
+```markdown
+# Evolution: Caching Strategy
+
+## Sept 15: Initial Attempt
+Redis with 5min TTL
+
+## Sept 20: Refined
+Memcached with 1hr TTL
+- Lesson: Simpler = faster
+
+## Sept 25: Current
+Memcached + 24hr TTL + manual invalidation
+- Pattern: Balance freshness vs performance
+
+## Oct 1: Later Enhancement
+Added cache warming on deploy
+```
+
+**Structure:** Chronological evolution showing refinements
+
+---
+
+#### Composition: Anti-Pattern Search
+
+**Query:** "What authentication approaches have failed?"
+
+**Intent:** Find failures across documents
+
+**Config:**
+```json
+{
+  "search": {"text": "authentication", "limit": 10},
+  "discovery": {
+    "siblings": {
+      "section_types": ["Failures"]
+    }
+  }
+}
+```
+
+**Execution:**
+```python
+results = search("authentication", limit=10)
+
+failures = []
+for result in results:
+    failures.extend(get_siblings(result, section_types=["Failures"]))
+
+# Deduplicate by section_name
+failures = deduplicate(failures, key='section_name')
+
+render("anti-patterns.j2", {'failures': failures})
+```
+
+**Returns:**
+```markdown
+# Anti-Patterns: Authentication
+
+## ❌ Session Store in Database
+- Attempted: Store sessions in PostgreSQL
+- Why failed: High latency on every request
+- Lesson: Don't use DB for hot path
+
+## ❌ Long-Lived JWT Tokens
+- Attempted: 7-day expiry JWTs
+- Why failed: Can't revoke compromised tokens
+- Lesson: Short expiry + refresh tokens
+
+## ❌ Custom Encryption Scheme
+- Attempted: Roll own token encryption
+- Why failed: Security vulnerabilities
+- Lesson: Use battle-tested libraries
+```
+
+**Structure:** Cross-document failure compilation
+
+---
+
+#### Composition: Pattern Library
+
+**Query:** "Show me all caching patterns"
+
+**Intent:** Build domain-specific pattern library
+
+**Config:**
+```json
+{
+  "search": {"text": "caching", "limit": 20},
+  "discovery": {
+    "siblings": {
+      "section_types": ["Patterns"],
+      "order_by": "timestamp"
+    }
+  }
+}
+```
+
+**Execution:**
+```python
+results = search("caching", limit=20)
+
+patterns = []
+for result in results:
+    patterns.extend(get_siblings(result, section_types=["Patterns"]))
+
+# Sort by recency
+patterns.sort(key=lambda p: p.timestamp, reverse=True)
+
+# Deduplicate similar patterns
+patterns = deduplicate(patterns, similarity_threshold=0.9)
+
+render("pattern-library.j2", {'patterns': patterns})
+```
+
+**Returns:**
+```markdown
+# Pattern Library: Caching
+
+## Pattern: Cache Warming on Deploy
+- When: Cold cache causes slow first requests
+- Approach: Pre-populate cache during deployment
+- Benefit: Consistent performance from start
+
+## Pattern: TTL Based on Data Volatility
+- When: Different data changes at different rates
+- Approach: Catalog (24h), Prices (1h), Sessions (5min)
+- Benefit: Balance freshness and performance
+
+## Pattern: Manual Invalidation Endpoints
+- When: Immediate updates needed
+- Approach: Business API triggers cache clear
+- Benefit: Control without waiting for TTL
+```
+
+**Structure:** Reusable patterns ordered by recency
+
+---
+
+#### Composition: Design Journey
+
+**Query:** "What was the design thinking for the variant system?"
+
+**Intent:** Understand pre-implementation decisions
+
+**Config:**
+```json
+{
+  "search": {"text": "variant system", "phase": "develop", "limit": 1},
+  "discovery": {
+    "cross_phase": "design",
+    "siblings": {
+      "section_types": ["Decisions"],
+      "has_rationale": true
+    }
+  }
+}
+```
+
+**Execution:**
+```python
+primary = search("variant system", phase="develop")
+
+# Get abstract design decisions
+design = cross_phase(primary, target_phase="design")
+
+# Get high-quality decisions with reasoning
+decisions = get_siblings(primary,
+                        section_types=["Decisions"],
+                        has_rationale=True)
+
+render("design-journey.j2", {
+    'design': design,
+    'decisions': decisions
+})
+```
+
+**Returns:**
+```markdown
+# Design Journey: Variant System
+
+## Abstract Design (Design Phase)
+**Decision**: Plugin-style variant registration
+- Alternatives: Hard-coded variants, Config files
+- Rationale: Extensibility without core changes
+
+## Implementation Decisions (Develop Phase)
+**Decision**: Factory pattern for variant creation
+- Rationale: Dynamic variant selection at runtime
+- Trade-off: Slightly more complex initialization
+```
+
+**Structure:** Pre-implementation thinking → implementation reality
+
+---
+
+### Observable Patterns → Preset Library
+
+**FlexGraph learns from usage. Proven compositions become presets.**
+
+#### The Learning Process
+
+```python
+# 1. Track composition usage
+usage_log = {
+    'composition_hash_1': {
+        'config': {"genealogy": true, "siblings": {...}},
+        'count': 30,
+        'queries': ["Explain JWT", "Why debounce", ...]
+    },
+    'composition_hash_2': {
+        'config': {"temporal": true, "siblings": {"section_types": ["Patterns"]}},
+        'count': 20,
+        'queries': ["Evolution of caching", "How auth changed", ...]
+    }
+}
+
+# 2. Detect patterns (threshold: 10-20 uses)
+for composition, data in usage_log.items():
+    if data['count'] >= 15:
+        capture_as_preset(composition, data)
+```
+
+#### Emergent Presets (Examples)
+
+**After 30 uses:**
+```
+Composition: {"genealogy": true, "siblings": {"section_types": ["Decisions", "Failures", "Patterns"]}}
+Captured as: /explain-decision
+```
+
+**After 20 uses:**
+```
+Composition: {"temporal": true, "siblings": {"section_types": ["Patterns"]}}
+Captured as: /evolution-trace
+```
+
+**After 15 uses:**
+```
+Composition: {"siblings": {"section_types": ["Failures"]}}
+Captured as: /anti-patterns
+```
+
+**After 12 uses:**
+```
+Composition: {"cross_phase": "design"}
+Captured as: /design-journey
+```
+
+#### Preset Structure
+
+```markdown
+# .claude/commands/explain-decision.md
+
+Find a decision and reconstruct complete context.
+
+Usage: /explain-decision <query>
+
+---
+
+This is a captured pattern from 30+ observed uses.
+
+Internally expands to:
+imem compose '{
+  "search": {"text": "$QUERY", "limit": 1},
+  "discovery": {
+    "genealogy": true,
+    "siblings": {"section_types": ["Decisions", "Failures", "Patterns"]}
+  },
+  "output": {"template": "story"}
+}'
+
+Returns:
+- Origin conversation
+- Related failures
+- Working solution
+- Extracted patterns
+```
+
+**Result:** Proven composition becomes reusable shortcut
+
+---
+
+### Why This Matters
+
+**Traditional systems:**
+- Rigid query types
+- Developer defines all patterns
+- No learning from usage
+
+**FlexGraph:**
+- ✅ Flexible composition (any primitive combination)
+- ✅ Observable usage (system tracks patterns)
+- ✅ Self-improving (captures proven compositions)
+- ✅ Usage-driven (not prescriptive)
+
+**The innovation:**
+
+```
+Compositional Primitives
+    +
+Observable Usage
+    +
+Pattern Capture
+    =
+Self-Improving System
+```
+
+**System gets smarter through use.**
+
+---
+
+### Implementation Details
+
+**Composition execution:**
+```python
+def compose(collection_name, config):
+    """Execute compositional pipeline"""
+
+    # Stage 1: Search
+    results = execute_search(collection_name, config['search'])
+
+    # Stage 2: Flexible discovery (based on config)
+    if config.get('discovery'):
+        discovery_config = config['discovery']
+
+        for result in results:
+            # Genealogy (if requested)
+            if discovery_config.get('genealogy'):
+                result['genealogy'] = get_genealogy(collection_name, result['session_id'])
+
+            # Cross-phase (if requested)
+            if 'cross_phase' in discovery_config:
+                target = discovery_config['cross_phase']
+                result['cross_phase'] = cross_phase_search(
+                    collection_name, result['id'], target
+                )
+
+            # Siblings (if requested, with filters)
+            if 'siblings' in discovery_config:
+                sibling_config = discovery_config['siblings']
+                result['siblings'] = get_siblings(
+                    collection_name,
+                    result['id'],
+                    section_types=sibling_config.get('section_types'),
+                    order_by=sibling_config.get('order_by'),
+                    limit=sibling_config.get('limit')
+                )
+
+            # Temporal (if requested)
+            if 'temporal' in discovery_config:
+                temporal_config = discovery_config['temporal']
+                result['temporal'] = get_temporal(
+                    collection_name,
+                    result['id'],
+                    direction=temporal_config.get('direction', 'after')
+                )
+
+    # Stage 3: Template rendering
+    if config.get('output', {}).get('template'):
+        return render_template(results, config['output']['template'])
+
+    return results
+```
+
+**Usage tracking:**
+```python
+def track_composition_usage(config, query):
+    """Log composition patterns for later analysis"""
+
+    # Hash the composition config
+    composition_hash = hash_config(config['discovery'])
+
+    # Increment usage count
+    usage_log[composition_hash]['count'] += 1
+    usage_log[composition_hash]['queries'].append(query)
+
+    # Check if threshold reached
+    if usage_log[composition_hash]['count'] == 15:
+        suggest_preset_creation(composition_hash, usage_log[composition_hash])
+```
 
 ---
 

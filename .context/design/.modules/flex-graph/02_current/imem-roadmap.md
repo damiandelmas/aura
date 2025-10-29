@@ -203,32 +203,486 @@ Session: cb91d93d...
 
 ---
 
-### Phase 8: Slash Command Library (Ongoing)
+### Phase 8: Observable Compositions & Preset Library
 
-**Goal:** Capture proven composition patterns as reusable slash commands
+**Goal:** Let AI agents discover useful composition patterns through flexible usage
 
-**Effort:** 10-20 lines markdown each, ongoing
+**The Philosophy:** Not prescriptive. Usage-driven.
 
-**Process:**
-1. Observe Claude composing primitives
-2. Capture pattern after 10+ uses
-3. Create markdown slash command
-4. Test and iterate
+---
 
-**Example:**
+#### The Learning Process
+
+**Step 1: Flexible Composition**
+
+Agents compose primitives ANY way based on query intent:
+
+```json
+// Query: "Explain this decision"
+{"genealogy": true, "siblings": {"section_types": ["Decisions", "Failures"]}}
+
+// Query: "How did this evolve?"
+{"temporal": true, "siblings": {"section_types": ["Patterns"]}}
+
+// Query: "What failed?"
+{"siblings": {"section_types": ["Failures"]}}
+```
+
+**No restrictions. Any combination valid.**
+
+---
+
+**Step 2: Usage Observation**
+
+System tracks which compositions recur:
+
+```python
+# Usage tracking
+usage_log = {
+    'composition_a': {
+        'config': {"genealogy": true, "siblings": {...}},
+        'count': 30,
+        'queries': [
+            "Explain JWT decision",
+            "Why debounce approach",
+            "How caching works",
+            # ... 27 more
+        ]
+    },
+    'composition_b': {
+        'config': {"temporal": true, "siblings": {"section_types": ["Patterns"]}},
+        'count': 20,
+        'queries': [
+            "Evolution of auth",
+            "How caching changed",
+            # ... 18 more
+        ]
+    }
+}
+```
+
+---
+
+**Step 3: Pattern Recognition**
+
+After 10-20 uses of same composition → Pattern detected:
+
+```python
+def detect_patterns():
+    """Analyze usage log for recurring patterns"""
+
+    for composition_hash, data in usage_log.items():
+        if data['count'] >= 15:
+            # Pattern detected
+            pattern_name = suggest_name(data['queries'])
+            # e.g., "Explain Decision" from query patterns
+
+            confidence = data['count'] / 15  # 2.0 = high confidence
+
+            yield {
+                'name': pattern_name,
+                'composition': data['config'],
+                'usage_count': data['count'],
+                'confidence': confidence
+            }
+```
+
+---
+
+**Step 4: Preset Capture**
+
+Proven pattern becomes slash command:
+
+```python
+def capture_as_preset(pattern):
+    """Create slash command from proven pattern"""
+
+    filename = slugify(pattern['name'])  # "explain-decision"
+
+    content = f"""# {pattern['name']}
+
+{infer_description(pattern['queries'])}
+
+Usage: /{filename} <query>
+
+---
+
+**Captured from {pattern['usage_count']} observed uses.**
+
+Internally expands to:
+```json
+{json.dumps(pattern['composition'], indent=2)}
+```
+"""
+
+    write_file(f".claude/commands/{filename}.md", content)
+```
+
+---
+
+#### Emergent Presets (Examples)
+
+**Pattern 1: Narrative Reconstruction**
+
+Detected after 30 uses:
+```json
+{
+  "genealogy": true,
+  "cross_phase": "design",
+  "siblings": {
+    "section_types": ["Decisions", "Failures", "Patterns"]
+  }
+}
+```
+
+Queries that used this:
+- "Explain JWT authentication"
+- "Why did we choose debounce?"
+- "How does caching work?"
+- "What's the variant system?"
+- [26 more similar queries]
+
+Captured as:
 ```markdown
 # .claude/commands/explain-decision.md
 
-Find a decision and its complete context.
+Find a decision and reconstruct complete context:
+- Origin conversation (brainstorming, debugging)
+- Design decisions (alternatives, rationale)
+- Related failures (what didn't work)
+- Working solution (what did work)
+- Extracted patterns (reusable learnings)
 
 Usage: /explain-decision <query>
-
-Steps:
-1. Search develop phase for decision
-2. Get all sections from same file (siblings)
-3. Get origin conversation via session_id
-4. Assemble response: decision + constraints + patterns + conversation
 ```
+
+**Pattern name:** Explain Decision
+**Confidence:** 2.0 (30 uses / 15 threshold)
+
+---
+
+**Pattern 2: Evolution Timeline**
+
+Detected after 20 uses:
+```json
+{
+  "temporal": {"direction": "both"},
+  "siblings": {
+    "section_types": ["Patterns"],
+    "order_by": "timestamp"
+  }
+}
+```
+
+Queries that used this:
+- "Evolution of caching strategy"
+- "How did auth approach change?"
+- "Trace debounce refinements"
+- [17 more similar queries]
+
+Captured as:
+```markdown
+# .claude/commands/evolution-trace.md
+
+Trace how thinking evolved over time:
+- Earlier attempts (temporal: before)
+- Current approach (primary)
+- Later refinements (temporal: after)
+- Patterns extracted at each stage
+
+Usage: /evolution-trace <query>
+```
+
+**Pattern name:** Evolution Trace
+**Confidence:** 1.33 (20 uses / 15 threshold)
+
+---
+
+**Pattern 3: Anti-Pattern Search**
+
+Detected after 15 uses:
+```json
+{
+  "siblings": {
+    "section_types": ["Failures"]
+  }
+}
+```
+
+Queries that used this:
+- "What auth approaches failed?"
+- "Failed caching attempts"
+- "Rejected solutions for debounce"
+- [12 more similar queries]
+
+Captured as:
+```markdown
+# .claude/commands/anti-patterns.md
+
+Find what didn't work across all documents:
+- Failed attempts
+- Why they failed
+- Lessons learned
+- What to avoid
+
+Usage: /anti-patterns <query>
+```
+
+**Pattern name:** Anti-Patterns
+**Confidence:** 1.0 (15 uses / 15 threshold)
+
+---
+
+**Pattern 4: Design Journey**
+
+Detected after 12 uses:
+```json
+{
+  "cross_phase": "design",
+  "siblings": {
+    "section_types": ["Decisions"],
+    "has_rationale": true
+  }
+}
+```
+
+Queries that used this:
+- "Design thinking for variant system"
+- "Abstract decisions before caching impl"
+- "Pre-implementation choices for auth"
+- [9 more similar queries]
+
+Captured as:
+```markdown
+# .claude/commands/design-journey.md
+
+Show pre-implementation design thinking:
+- Abstract decisions (design phase)
+- Alternatives considered
+- Rationale for choices
+- Before code was written
+
+Usage: /design-journey <query>
+```
+
+**Pattern name:** Design Journey
+**Confidence:** 0.8 (12 uses / 15 threshold)
+
+---
+
+**Pattern 5: Pattern Library**
+
+Detected after 10 uses:
+```json
+{
+  "siblings": {
+    "section_types": ["Patterns"],
+    "order_by": "timestamp"
+  }
+}
+```
+
+Queries that used this:
+- "All caching patterns"
+- "Authentication patterns library"
+- "Reusable debugging patterns"
+- [7 more similar queries]
+
+Captured as:
+```markdown
+# .claude/commands/pattern-library.md
+
+Build domain-specific pattern library:
+- All patterns for topic
+- Ordered by recency
+- Reusable learnings
+- Cross-document compilation
+
+Usage: /pattern-library <query>
+```
+
+**Pattern name:** Pattern Library
+**Confidence:** 0.67 (10 uses / 15 threshold)
+
+---
+
+#### Implementation
+
+**Composition tracking:**
+```python
+# imem/src/imem/tracking.py
+
+import hashlib
+import json
+from pathlib import Path
+
+USAGE_LOG_PATH = Path.home() / '.context' / 'imem_usage.json'
+
+def track_composition(config, query):
+    """Log composition usage for pattern detection"""
+
+    # Load existing log
+    usage_log = load_usage_log()
+
+    # Hash composition config
+    composition_str = json.dumps(config.get('discovery', {}), sort_keys=True)
+    composition_hash = hashlib.sha256(composition_str.encode()).hexdigest()[:16]
+
+    # Initialize or update
+    if composition_hash not in usage_log:
+        usage_log[composition_hash] = {
+            'config': config['discovery'],
+            'count': 0,
+            'queries': [],
+            'first_used': datetime.now().isoformat()
+        }
+
+    usage_log[composition_hash]['count'] += 1
+    usage_log[composition_hash]['queries'].append({
+        'query': query,
+        'timestamp': datetime.now().isoformat()
+    })
+
+    # Save
+    save_usage_log(usage_log)
+
+    # Check for pattern
+    if usage_log[composition_hash]['count'] in [10, 15, 20, 30]:
+        suggest_preset(composition_hash, usage_log[composition_hash])
+```
+
+**Preset suggestion:**
+```python
+def suggest_preset(composition_hash, data):
+    """Suggest creating preset from pattern"""
+
+    count = data['count']
+    confidence = count / 15
+
+    # Infer name from queries
+    queries = [q['query'] for q in data['queries']]
+    suggested_name = infer_preset_name(queries)
+
+    print(f"""
+    🎯 PATTERN DETECTED ({count} uses, confidence: {confidence:.1f}×)
+
+    Suggested preset: /{slugify(suggested_name)}
+
+    Composition:
+    {json.dumps(data['config'], indent=2)}
+
+    Recent queries:
+    {chr(10).join(f'  - {q}' for q in queries[-5:])}
+
+    Create preset? (y/n)
+    """)
+```
+
+---
+
+#### Success Metrics
+
+**MVP validates when:**
+
+- [ ] Agents use flexible composition (not rigid queries)
+- [ ] 3+ distinct patterns detected (10+ uses each)
+- [ ] Presets captured successfully
+- [ ] Presets reused by agents (validation)
+
+**V2 features:**
+
+- Automatic preset suggestions (no manual approval)
+- Preset refinement (update based on continued usage)
+- Preset analytics (which presets most useful)
+- Cross-project preset sharing
+
+---
+
+#### Deliverables
+
+**Phase 8 output:**
+```
+.claude/commands/
+├── explain-decision.md       (30+ uses, conf: 2.0×)
+├── evolution-trace.md        (20+ uses, conf: 1.33×)
+├── anti-patterns.md          (15+ uses, conf: 1.0×)
+├── design-journey.md         (12+ uses, conf: 0.8×)
+└── pattern-library.md        (10+ uses, conf: 0.67×)
+
+.context/imem_usage.json      (usage tracking log)
+```
+
+**Usage log structure:**
+```json
+{
+  "a7f3c21e9b4d8f6a": {
+    "config": {
+      "genealogy": true,
+      "siblings": {"section_types": ["Decisions", "Failures", "Patterns"]}
+    },
+    "count": 30,
+    "first_used": "2025-10-28T12:00:00",
+    "queries": [
+      {"query": "Explain JWT", "timestamp": "2025-10-28T12:00:00"},
+      {"query": "Why debounce", "timestamp": "2025-10-28T14:30:00"},
+      ...
+    ]
+  },
+  ...
+}
+```
+
+---
+
+#### The Value Proposition
+
+**Traditional approach:**
+```
+Developer: "We need these 5 query types"
+System: [Implements 5 rigid patterns]
+Reality: Agents need 12 different patterns
+Result: Manual updates needed
+```
+
+**FlexGraph approach:**
+```
+Developer: "Here are compositional primitives"
+System: [Flexible composition]
+Agents: [Discover 12 useful patterns through use]
+System: [Captures proven patterns automatically]
+Result: Self-improving preset library
+```
+
+**Key differences:**
+
+| Traditional | FlexGraph |
+|------------|-----------|
+| Prescriptive | Usage-driven |
+| Fixed patterns | Emergent patterns |
+| Manual updates | Auto-capture |
+| Developer defines | System learns |
+| Static | Self-improving |
+
+---
+
+#### Why This Matters
+
+**FlexGraph = Compositional + Observable + Self-Improving**
+
+1. **Compositional:** ANY primitive combination works
+2. **Observable:** System tracks what agents do
+3. **Self-Improving:** Proven patterns captured automatically
+
+**Not:**
+- "Here are the allowed queries"
+- "These are the patterns you can use"
+
+**But:**
+- "Compose freely"
+- "System learns what works"
+- "Useful patterns captured automatically"
+
+**The innovation: System that learns from usage.**
 
 ---
 

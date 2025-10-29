@@ -25,6 +25,7 @@ from .search import ModularSearch, SearchConfig
 from .enhanced import EnhancedQdrantSearch
 from .qdrant_service import QdrantService
 from .registry import SimpleRegistry
+from .compose import compose as compose_pipeline
 
 
 @click.group()
@@ -208,6 +209,79 @@ def _execute_search(query: str, filters: dict, limit: int, after_date: str = Non
 
     except Exception as e:
         click.echo(f"Search failed: {e}", err=True)
+        sys.exit(1)
+
+
+@imem.command()
+@click.argument('config_json')
+def compose(config_json):
+    """Execute composition pipeline with search + discovery + graph + rendering.
+
+    Config format (JSON):
+    {
+        "search": {
+            "text": "query",
+            "filters": {"phase": "develop"},
+            "limit": 10
+        },
+        "discovery": {
+            "siblings": true,
+            "genealogy": true,
+            "temporal": true,
+            "cross_phase": "design"
+        },
+        "graph": {
+            "algorithm": "authority",
+            "top": 5
+        },
+        "output": {
+            "template": "genealogy"
+        }
+    }
+
+    Examples:
+        # Full genealogy for JWT decision
+        imem compose '{"search": {"text": "JWT", "filters": {"phase": "develop"}, "limit": 1}, "discovery": {"siblings": true, "genealogy": true}, "output": {"template": "genealogy"}}'
+
+        # Timeline evolution
+        imem compose '{"search": {"text": "caching", "limit": 1}, "discovery": {"temporal": true}, "output": {"template": "timeline"}}'
+
+        # Authority ranking
+        imem compose '{"search": {"text": "decisions", "limit": 5}, "discovery": {"siblings": true}, "graph": {"algorithm": "authority"}}'
+    """
+    import asyncio
+
+    try:
+        # Parse config
+        config_dict = json.loads(config_json)
+
+        # Get collection
+        registry = SimpleRegistry()
+        project_root = registry.get_project_root()
+        info = registry.get_project_info(project_root)
+
+        if not info:
+            click.echo("Project not registered. Run 'imem init' first.", err=True)
+            sys.exit(1)
+
+        collection_name = info['collection']
+
+        # Execute composition (async)
+        result = asyncio.run(compose_pipeline(collection_name, config_dict))
+
+        # Output
+        if 'rendered' in result:
+            click.echo(result['rendered'])
+        else:
+            click.echo(json.dumps(result, indent=2))
+
+    except json.JSONDecodeError as e:
+        click.echo(f"Invalid JSON config: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Composition failed: {e}", err=True)
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 

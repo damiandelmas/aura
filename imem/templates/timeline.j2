@@ -1,0 +1,39 @@
+# TIMELINE: Evolution of "{{ results[0].payload.section_name if results else "No Results" }}"
+
+{% if results %}
+{% set primary = results[0] %}
+
+## Chronological Evolution
+
+{% if primary.temporal %}
+{% for temp in primary.temporal|sort(attribute='payload.timestamp') %}
+### {{ loop.index }}. {{ temp.payload.section_name or "Untitled" }}
+**Date**: {{ temp.payload.timestamp or "Unknown" }}
+**File**: {{ temp.payload.file_path }}
+**Similarity**: {{ "%.3f"|format(temp.score) }}
+
+{{ temp.payload.content }}
+
+---
+
+{% endfor %}
+{% else %}
+No temporal evolution found. This may be the first occurrence of this pattern.
+{% endif %}
+
+## Current State (Primary Result)
+**Date**: {{ primary.payload.timestamp or "Unknown" }}
+**File**: {{ primary.payload.file_path }}
+
+{{ primary.payload.content }}
+
+---
+
+## Summary
+- **Total evolution steps**: {{ primary.temporal|length if primary.temporal else 0 }}
+- **Time span**: {{ primary.temporal[0].payload.timestamp if primary.temporal else "N/A" }} → {{ primary.payload.timestamp or "Current" }}
+- **Documents involved**: {{ primary.temporal|map(attribute='payload.file_path')|unique|list|length if primary.temporal else 1 }}
+
+{% else %}
+No results found.
+{% endif %}
