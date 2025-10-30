@@ -22,9 +22,24 @@ class IMEMConfig:
 
     # Search defaults
     default_limit: int = 10
-    default_vector_name: str = 'e5-large-v2'
-    default_model: str = 'intfloat/e5-large-v2'
-    default_dimensions: int = 1024
+    default_vector_name: str = 'nomic-embed-v1.5'
+    default_model: str = 'nomic-ai/nomic-embed-text-v1.5'
+    default_dimensions: int = 768
+
+# Model Registry - Maps vector names to full model configuration
+# Used for auto-detecting which model to load based on collection's vector config
+MODEL_REGISTRY = {
+    "e5-large-v2": {
+        "model_path": "intfloat/e5-large-v2",
+        "dimensions": 1024,
+        "trust_remote_code": False
+    },
+    "nomic-embed-v1.5": {
+        "model_path": "nomic-ai/nomic-embed-text-v1.5",
+        "dimensions": 768,
+        "trust_remote_code": True
+    }
+}
 
 # Global instance
 config = IMEMConfig()

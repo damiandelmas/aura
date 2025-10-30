@@ -27,6 +27,7 @@ from llama_index.core.node_parser import MarkdownNodeParser
 from llama_index.core.schema import Document as LlamaDocument
 from .search import SearchConfig, ModularSearch
 from .registry import SimpleRegistry
+from .config import config
 
 logger = logging.getLogger(__name__)
 
@@ -628,8 +629,8 @@ class EnhancedModularIngest:
 
         # Lazy load model if not already loaded
         if self.model is None:
-            logger.info("Loading embedding model: intfloat/e5-large-v2")
-            self.model = SentenceTransformer('intfloat/e5-large-v2')
+            logger.info(f"Loading embedding model: {config.default_model}")
+            self.model = SentenceTransformer(config.default_model, trust_remote_code=True)
 
         # Auto-detect phase from path if not provided
         if not phase:
@@ -672,8 +673,8 @@ class EnhancedModularIngest:
         # Build points with pre-computed embeddings
         batch_points = []
 
-        # Chunk size validation (E5-Large-v2 has 512 token limit ~2000 chars)
-        MAX_CHUNK_SIZE = 2000
+        # Chunk size validation (Nomic Embed v1.5: 8k tokens ≈ 32k chars)
+        MAX_CHUNK_SIZE = 30000
         large_chunks = []
 
         for node, embedding in zip(nodes, embeddings):
@@ -733,7 +734,7 @@ class EnhancedModularIngest:
             has_benefits = '**Benefits**' in content or '- **Benefits**:' in content
             has_drawbacks = '**Drawbacks**' in content or '- **Drawbacks**:' in content
 
-            # Warn about large chunks (E5-Large-v2 token limit)
+            # Warn about large chunks (exceeds model token limit)
             char_count = len(content)
             if char_count > MAX_CHUNK_SIZE:
                 large_chunks.append({
@@ -773,7 +774,7 @@ class EnhancedModularIngest:
 
             batch_points.append({
                 'id': str(uuid4()),  # UUID to avoid collision with sequential IDs
-                'vector': {"e5-large-v2": embedding.tolist()},  # Named vector
+                'vector': {config.default_vector_name: embedding.tolist()},  # Named vector
                 'payload': payload
             })
 
@@ -790,7 +791,7 @@ class EnhancedModularIngest:
                 if large_chunks:
                     for chunk in large_chunks:
                         logger.warning(
-                            f"Large chunk ({chunk['size']} chars) may exceed E5-Large-v2 token limit: "
+                            f"Large chunk ({chunk['size']} chars) may exceed {config.default_model} token limit: "
                             f"{chunk['path']} in {Path(chunk['file']).name}"
                         )
             except Exception as e:
@@ -836,8 +837,8 @@ class EnhancedModularIngest:
 
         # Lazy load model if not already loaded
         if self.model is None:
-            logger.info("Loading embedding model: intfloat/e5-large-v2")
-            self.model = SentenceTransformer('intfloat/e5-large-v2')
+            logger.info(f"Loading embedding model: {config.default_model}")
+            self.model = SentenceTransformer(config.default_model, trust_remote_code=True)
 
         try:
             with open(markdown_path, 'r', encoding='utf-8') as f:
@@ -901,7 +902,7 @@ class EnhancedModularIngest:
 
             batch_points.append({
                 'id': str(uuid4()),  # UUID to avoid collision with sequential IDs
-                'vector': {"e5-large-v2": embedding.tolist()},  # Named vector
+                'vector': {config.default_vector_name: embedding.tolist()},  # Named vector
                 'payload': payload
             })
 

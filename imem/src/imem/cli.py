@@ -37,7 +37,7 @@ def imem():
 # Helper Functions
 # ============================================================================
 
-def _index_phase(phase_name: str, force: bool = False, limit: int = None):
+def _index_phase(phase_name: str, force: bool = False, limit: int = None, collection_override: str = None):
     """
     Index a specific phase (develop, design, document) or all context
 
@@ -45,6 +45,7 @@ def _index_phase(phase_name: str, force: bool = False, limit: int = None):
         phase_name: Phase to index ('develop', 'design', 'document', 'context')
         force: If True, recreate collection
         limit: Optional limit for number of documents
+        collection_override: Optional collection name override for A/B testing
     """
     from .ingest import EnhancedModularIngest
 
@@ -56,11 +57,16 @@ def _index_phase(phase_name: str, force: bool = False, limit: int = None):
         return
 
     # Get or create collection
-    collections = registry.get_project_info(project_root).get('collections')
-    if not collections:
-        collections = registry.register_project(project_root)
-
-    collection_name = collections['context']
+    if collection_override:
+        # Manual override for A/B testing
+        collection_name = collection_override
+        click.echo(f"📝 Using custom collection: {collection_name}")
+    else:
+        # Normal path: get from registry
+        collections = registry.get_project_info(project_root).get('collections')
+        if not collections:
+            collections = registry.register_project(project_root)
+        collection_name = collections['context']
 
     # Determine paths to index
     if phase_name == 'context':
@@ -90,8 +96,8 @@ def _index_phase(phase_name: str, force: bool = False, limit: int = None):
             ingester.client.create_collection(
                 collection_name=collection_name,
                 vectors_config={
-                    "e5-large-v2": VectorParams(
-                        size=1024,
+                    config.default_vector_name: VectorParams(
+                        size=config.default_dimensions,
                         distance=Distance.COSINE,
                         hnsw_config=HnswConfigDiff(m=16, ef_construct=100)
                     )
@@ -139,13 +145,14 @@ def _index_phase(phase_name: str, force: bool = False, limit: int = None):
     return total_indexed
 
 
-def _index_conversations(force: bool = False, limit: int = None):
+def _index_conversations(force: bool = False, limit: int = None, collection_override: str = None):
     """
     Index Claude Code conversations
 
     Args:
         force: If True, recreate collection
         limit: Optional limit for number of conversations
+        collection_override: Optional collection name override for A/B testing
     """
     from .ingest import EnhancedModularIngest
     import sys as _sys
@@ -163,11 +170,16 @@ def _index_conversations(force: bool = False, limit: int = None):
         return
 
     # Get or create collection
-    collections = registry.get_project_info(project_root).get('collections')
-    if not collections:
-        collections = registry.register_project(project_root)
-
-    collection_name = collections['conversation']
+    if collection_override:
+        # Manual override for A/B testing
+        collection_name = collection_override
+        click.echo(f"📝 Using custom collection: {collection_name}")
+    else:
+        # Normal path: get from registry
+        collections = registry.get_project_info(project_root).get('collections')
+        if not collections:
+            collections = registry.register_project(project_root)
+        collection_name = collections['conversation']
 
     # Initialize ingester
     ingester = EnhancedModularIngest()
@@ -190,8 +202,8 @@ def _index_conversations(force: bool = False, limit: int = None):
             ingester.client.create_collection(
                 collection_name=collection_name,
                 vectors_config={
-                    "e5-large-v2": VectorParams(
-                        size=1024,
+                    config.default_vector_name: VectorParams(
+                        size=config.default_dimensions,
                         distance=Distance.COSINE,
                         hnsw_config=HnswConfigDiff(m=16, ef_construct=100)
                     )
@@ -368,7 +380,8 @@ def _execute_search(query: str, filters: dict, limit: int, after_date: str = Non
 @click.argument('source', type=click.Choice(['develop', 'design', 'document', 'conversations', 'context']))
 @click.option('--force', is_flag=True, help='Recreate collection if exists')
 @click.option('--limit', type=int, help='Limit number of documents/conversations to index')
-def index_source(source, force, limit):
+@click.option('--collection', help='Override collection name (for A/B testing different models)')
+def index_source(source, force, limit, collection):
     """
     Index content from a specific source
 
@@ -383,11 +396,12 @@ def index_source(source, force, limit):
       imem index develop
       imem index context --force
       imem index conversations --limit 50
+      imem index develop --collection imem_abc123_nomic  # A/B test with Nomic
     """
     if source == 'conversations':
-        _index_conversations(force=force, limit=limit)
+        _index_conversations(force=force, limit=limit, collection_override=collection)
     else:
-        _index_phase(phase_name=source, force=force, limit=limit)
+        _index_phase(phase_name=source, force=force, limit=limit, collection_override=collection)
 
 
 @imem.command()
@@ -585,7 +599,8 @@ def init(force, vscode, include_design):
               help='Filter by layer: implementation (code-specific), pattern (language-agnostic), both')
 @click.option('--section', help='Filter by section type (e.g., "Decisions", "User Messages")')
 @click.option('--session', help='Filter by conversation session ID (full or partial)')
-def search(source, query, limit, sort_by, show_metadata, after, split_terms, operator, layer, section, session):
+@click.option('--collection', help='Override collection name (for A/B testing different models)')
+def search(source, query, limit, sort_by, show_metadata, after, split_terms, operator, layer, section, session, collection):
     """Search documentation in current project.
 
     Performs vector similarity search across the project's indexed documentation
@@ -643,16 +658,30 @@ def search(source, query, limit, sort_by, show_metadata, after, split_terms, ope
 
     # Build filters based on source
     filters = {}
-    if source == 'conversations':
-        filters['source'] = 'conversation'
-        collection_name = registry.get_collection_by_type(project_root, 'conversation')
-    elif source in ['develop', 'design', 'document']:
-        filters['source'] = 'context'
-        filters['phase'] = source
-        collection_name = registry.get_collection_by_type(project_root, 'context')
-    else:  # source == 'context'
-        filters['source'] = 'context'
-        collection_name = registry.get_collection_by_type(project_root, 'context')
+
+    # Allow manual collection override for A/B testing
+    if collection:
+        collection_name = collection
+        # Try to infer source/phase from collection name or use provided source
+        if source == 'conversations':
+            filters['source'] = 'conversation'
+        elif source in ['develop', 'design', 'document']:
+            filters['source'] = 'context'
+            filters['phase'] = source
+        else:  # source == 'context'
+            filters['source'] = 'context'
+    else:
+        # Normal path: get collection from registry
+        if source == 'conversations':
+            filters['source'] = 'conversation'
+            collection_name = registry.get_collection_by_type(project_root, 'conversation')
+        elif source in ['develop', 'design', 'document']:
+            filters['source'] = 'context'
+            filters['phase'] = source
+            collection_name = registry.get_collection_by_type(project_root, 'context')
+        else:  # source == 'context'
+            filters['source'] = 'context'
+            collection_name = registry.get_collection_by_type(project_root, 'context')
 
     # Add layer filter (only applies to develop phase context docs)
     if layer != 'both' and source == 'develop':

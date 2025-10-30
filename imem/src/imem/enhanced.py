@@ -18,17 +18,68 @@ warnings.filterwarnings('ignore', category=UserWarning, module='pydantic')
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 
-from .config import config
+from .config import config, MODEL_REGISTRY
 
 logger = logging.getLogger(__name__)
 
 class EnhancedQdrantSearch:
     def __init__(self, host: str = "localhost", port: int = config.qdrant_port, collection_name: str = "docs_e5_large"):
-        """Initialize enhanced Qdrant connection with metadata parsing"""
+        """Initialize enhanced Qdrant connection with metadata parsing
+
+        Auto-detects which embedding model to use by reading the collection's
+        vector configuration from Qdrant. Falls back to default model if detection fails.
+        """
         self.client = QdrantClient(host=host, port=port)
         self.collection_name = collection_name
-        self.encoder = SentenceTransformer('intfloat/e5-large-v2')
-        self.vector_name = "e5-large-v2"  # Named vector for E5-Large-v2
+
+        # Auto-detect model from collection's vector config
+        model_info = self._detect_model_from_collection()
+
+        # Load appropriate model
+        self.encoder = SentenceTransformer(
+            model_info["model_path"],
+            trust_remote_code=model_info.get("trust_remote_code", False)
+        )
+        self.vector_name = model_info["vector_name"]
+
+        logger.debug(f"Loaded {model_info['model_path']} for collection {collection_name}")
+
+    def _detect_model_from_collection(self) -> dict:
+        """Detect which embedding model to use from collection's vector config"""
+        try:
+            # Get collection info from Qdrant
+            collection = self.client.get_collection(self.collection_name)
+
+            # Extract vector names from config
+            vector_names = list(collection.config.params.vectors.keys())
+
+            if not vector_names:
+                raise ValueError(f"No vectors found in collection {self.collection_name}")
+
+            # Use first vector (or could add logic to prefer specific one)
+            vector_name = vector_names[0]
+
+            # Look up model info in registry
+            if vector_name in MODEL_REGISTRY:
+                model_info = MODEL_REGISTRY[vector_name].copy()
+                model_info["vector_name"] = vector_name
+                return model_info
+            else:
+                logger.warning(f"Vector '{vector_name}' not in MODEL_REGISTRY, using default")
+                return {
+                    "model_path": config.default_model,
+                    "vector_name": config.default_vector_name,
+                    "dimensions": config.default_dimensions,
+                    "trust_remote_code": True
+                }
+        except Exception as e:
+            logger.warning(f"Could not detect model from collection: {e}, using default")
+            return {
+                "model_path": config.default_model,
+                "vector_name": config.default_vector_name,
+                "dimensions": config.default_dimensions,
+                "trust_remote_code": True
+            }
         
     def extract_yaml_frontmatter(self, content: str) -> Dict[str, Any]:
         """Extract YAML frontmatter from document content"""
