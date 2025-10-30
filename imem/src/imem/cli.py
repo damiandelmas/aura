@@ -21,7 +21,6 @@ warnings.filterwarnings('ignore', category=UserWarning, module='pydantic')
 # Microservice imports (within imem package)
 from .config import config
 from .ingest import EnhancedModularIngest
-from .search import ModularSearch, SearchConfig
 from .enhanced import EnhancedQdrantSearch
 from .qdrant_service import QdrantService
 from .registry import SimpleRegistry
@@ -253,7 +252,7 @@ def _index_conversations(force: bool = False, limit: int = None):
             }
 
             # Index conversation
-            ingester.ingest_conversation_chunked(
+            chunks = ingester.ingest_conversation_chunked(
                 temp_md_path,
                 session_id,
                 metadata,
@@ -263,14 +262,18 @@ def _index_conversations(force: bool = False, limit: int = None):
             # Clean up
             temp_md_path.unlink()
 
-            success_count += 1
-            click.echo(f"  [{i}/{len(conversation_files)}] ✅ {session_id[:12]}")
+            if chunks:
+                total_chunks += chunks
+                success_count += 1
+                click.echo(f"  [{i}/{len(conversation_files)}] ✅ {session_id[:12]} ({chunks} chunks)")
+            else:
+                click.echo(f"  [{i}/{len(conversation_files)}] ⚠️  {session_id[:12]}: No chunks indexed")
 
         except Exception as e:
             click.echo(f"  [{i}/{len(conversation_files)}] ⚠️  {session_id[:12]}: {e}")
 
-    # Update registry
-    registry.update_doc_count(project_root, 'conversation', success_count)
+    # Update registry with total chunks (not conversation count)
+    registry.update_doc_count(project_root, 'conversation', total_chunks)
 
     click.echo(f"\n🎉 Indexed {success_count}/{len(conversation_files)} conversations")
     return success_count
@@ -279,109 +282,6 @@ def _index_conversations(force: bool = False, limit: int = None):
 # ============================================================================
 # Phase-based subcommands for structured search
 # ============================================================================
-
-@imem.group()
-def develop():
-    """Search develop phase (what we built)"""
-    pass
-
-
-@develop.command(name='search')
-@click.argument('query')
-@click.option('--decisions', is_flag=True, help='Only Decision sections')
-@click.option('--constraints', is_flag=True, help='Only Constraint sections')
-@click.option('--failures', is_flag=True, help='Only Failure sections')
-@click.option('--patterns', is_flag=True, help='Only Pattern sections')
-@click.option('--implementation', is_flag=True, help='Only Implementation sections')
-@click.option('--pattern', is_flag=True, help='Search pattern layer only')
-@click.option('--impl', is_flag=True, help='Search implementation layer only')
-@click.option('--limit', default=5, help='Number of results')
-@click.option('--after', help='Only docs after date (YYYY-MM-DD)')
-def develop_search(query, decisions, constraints, failures, patterns, implementation, pattern, impl, limit, after):
-    """Search develop phase changelogs with section filtering
-
-    Examples:
-        imem develop search "database approach" --decisions
-        imem develop search "JSONB limitations" --constraints
-        imem develop search "provider agnostic" --pattern
-    """
-    filters = {
-        'source': 'context',
-        'phase': 'develop'
-    }
-
-    # Layer filter
-    if pattern:
-        filters['layer'] = 'pattern'
-    elif impl:
-        filters['layer'] = 'implementation'
-
-    # Section type filter
-    if decisions:
-        filters['section_type'] = 'Decisions'
-    elif constraints:
-        filters['section_type'] = 'Constraints'
-    elif failures:
-        filters['section_type'] = 'Failures'
-    elif patterns:
-        filters['section_type'] = 'Patterns'
-    elif implementation:
-        filters['section_type'] = 'Implementation'
-
-    _execute_search(query, filters, limit, after)
-
-
-@imem.group()
-def conversations():
-    """Search conversations (how we got there)"""
-    pass
-
-
-@conversations.command(name='search')
-@click.argument('query')
-@click.option('--limit', default=5, help='Number of results')
-@click.option('--after', help='Only conversations after date (YYYY-MM-DD)')
-@click.option('--session', help='Filter by session ID (full or partial)')
-@click.option('--messages-only', is_flag=True, help='Show only message chunks (exclude patches)')
-@click.option('--patches-only', is_flag=True, help='Show only code patch chunks (exclude messages)')
-@click.option('--user-only', is_flag=True, help='Show only user messages')
-@click.option('--assistant-only', is_flag=True, help='Show only assistant messages')
-@click.option('--file', help='Filter patches by file path (e.g., src/cli.py)')
-def conversations_search(query, limit, after, session, messages_only, patches_only, user_only, assistant_only, file):
-    """Search conversation transcripts with rich filtering
-
-    Examples:
-        imem conversations search "database discussion"
-        imem conversations search "authentication" --session cb91d93d
-        imem conversations search "bug fix" --patches-only
-        imem conversations search "error handling" --file src/cli.py
-        imem conversations search "question" --user-only
-    """
-    filters = {'source': 'conversation'}
-
-    if session:
-        filters['session_id'] = session
-
-    # Chunk type filtering
-    if messages_only:
-        filters['chunk_type'] = 'message'
-    elif patches_only:
-        filters['chunk_type'] = 'patch'
-
-    # Role filtering (for messages)
-    if user_only:
-        filters['chunk_type'] = 'message'
-        filters['role'] = 'user'
-    elif assistant_only:
-        filters['chunk_type'] = 'message'
-        filters['role'] = 'assistant'
-
-    # File path filtering (for patches)
-    if file:
-        filters['chunk_type'] = 'patch'
-        filters['file_path'] = file
-
-    _execute_search(query, filters, limit, after)
 
 
 def _execute_search(query: str, filters: dict, limit: int, after_date: str = None):
@@ -541,9 +441,12 @@ def compose(config_json):
             click.echo("Project not registered. Run 'imem init' first.", err=True)
             sys.exit(1)
 
-        # Default to context collection (changelogs/design docs)
-        # Compose can be extended to support conversation searches later
-        collection_name = registry.get_collection_by_type(project_root, 'context')
+        # Get collection based on source field (defaults to context)
+        source = config_dict.get('source', 'context')
+        if source == 'conversations':
+            collection_name = registry.get_collection_by_type(project_root, 'conversation')
+        else:
+            collection_name = registry.get_collection_by_type(project_root, 'context')
 
         # Execute composition (async)
         result = asyncio.run(compose_pipeline(collection_name, config_dict))
@@ -625,92 +528,39 @@ def init(force, vscode, include_design):
     if registry.is_registered(project_root) and not force:
         info = registry.get_project_info(project_root)
         click.echo(f"Project already registered: {project_root}")
-        click.echo(f"Collection: {info['collection']}")
-        click.echo(f"Documents: {info['doc_count']}")
+        collections = info.get('collections', {})
+        doc_counts = info.get('doc_counts', {})
+        if collections:
+            click.echo(f"Collections:")
+            click.echo(f"  - context: {collections.get('context', 'N/A')} ({doc_counts.get('context', 0)} docs)")
+            click.echo(f"  - conversation: {collections.get('conversation', 'N/A')} ({doc_counts.get('conversation', 0)} docs)")
         click.echo("Use --force to re-index")
         return
 
-    # Register project
-    collection_name = registry.register_project(project_root)
+    # Register project (returns dict with both collections)
+    collections = registry.register_project(project_root)
     click.echo(f"📁 Project: {project_root}")
-    click.echo(f"🏷️  Collection: {collection_name}")
+    click.echo(f"🏷️  Collections:")
+    click.echo(f"   - context: {collections['context']}")
+    click.echo(f"   - conversation: {collections['conversation']}")
 
-    # Create search config for this project
-    config = SearchConfig(
-        name="project",
-        model_name="intfloat/e5-large-v2",
-        collection_name=collection_name,
-        vector_name="e5-large-v2",
-        dimensions=1024
-    )
-
-    # Ingest documents with section-level chunking
-    click.echo(f"📚 Indexing {dev_folder}...")
-    ingester = EnhancedModularIngest()
-
-    # Create collection with E5-Large-v2 vector config
-    from qdrant_client.models import Distance, VectorParams, HnswConfigDiff
-    try:
-        if force:
-            # Recreate collection
-            ingester.client.delete_collection(collection_name)
-
-        ingester.client.create_collection(
-            collection_name=collection_name,
-            vectors_config={
-                "e5-large-v2": VectorParams(
-                    size=1024,
-                    distance=Distance.COSINE,
-                    hnsw_config=HnswConfigDiff(
-                        m=16,  # Links per node (higher = better recall)
-                        ef_construct=100,  # Build-time search depth
-                        on_disk=False  # Keep vectors in RAM for speed
-                    )
-                )
-            }
-        )
-        click.echo(f"   ✅ Created collection: {collection_name}")
-    except Exception as e:
-        # Collection already exists
-        pass
-
-    # Index markdown files with chunking
-    from pathlib import Path as PathlibPath
-
-    # Define phases to index (design excluded by default)
-    indexed_phases = ['develop', 'designate', 'document']
+    # Index context documents using new helper
+    click.echo(f"\n📚 Indexing context documents...")
+    phases_to_index = ['develop', 'document']
     if include_design:
-        indexed_phases.append('design')
+        phases_to_index.append('design')
 
-    doc_count = 0
-    for phase in indexed_phases:
-        phase_dir = context_root / phase
-        if not phase_dir.exists():
-            continue
+    # Use the new _index_phase helper for each phase
+    total_indexed = 0
+    for phase in phases_to_index:
+        phase_path = project_root / '.context' / phase
+        if phase_path.exists():
+            click.echo(f"\n📂 Indexing {phase} phase...")
+            count = _index_phase(phase, force=force, limit=None)
+            if count:
+                total_indexed += count
 
-        # Find all .md files (including .pattern.md)
-        md_files = list(phase_dir.rglob("*.md"))
-
-        for md_file in md_files:
-            try:
-                # Index with chunking (will auto-detect layer from filename)
-                ingester.ingest_markdown_chunked(
-                    md_file,
-                    phase=phase,
-                    collection_name=collection_name
-                )
-                doc_count += 1
-
-                # Show layer badge in output
-                layer_badge = "[pattern]" if '.pattern.md' in str(md_file) else "[impl]"
-                click.echo(f"   ✅ {layer_badge:10} {md_file.relative_to(project_root)}")
-            except Exception as e:
-                click.echo(f"   ❌ {md_file.name}: {e}")
-
-    # Update registry with doc count
-    registry.update_doc_count(project_root, doc_count)
-
-    click.echo(f"\n✅ Indexed {doc_count} documents with section-level chunking")
+    click.echo(f"\n✅ Indexed {total_indexed} documents with section-level chunking")
 
     # Setup VS Code integration if requested
     if vscode:
@@ -1268,294 +1118,6 @@ def setup_vscode_integration(project_root: Path):
     except Exception as e:
         click.echo(f"⚠️  Warning: Could not setup VS Code integration: {e}", err=True)
         click.echo("   You can manually create .vscode/settings.json with IMEM configuration")
-
-
-@imem.command()
-@click.argument('conversation_id')
-@click.option('--collection', default='institutional_memory', help='Target collection name')
-def index_conversation(conversation_id, collection):
-    """Index a conversation by session ID or JSONL path.
-
-    Accepts either:
-    - Session ID (e.g., abc123 or abc123-def4-5678-9012-34567890abcd)
-    - Path to JSONL file (e.g., ~/.claude/projects/.../session.jsonl)
-
-    Automatically:
-    1. Finds the conversation file (if session ID provided)
-    2. Exports to structured markdown (H2 sections)
-    3. Indexes with LlamaIndex section-level chunking
-    4. Stores in Qdrant with metadata for filtering
-
-    Args:
-        conversation_id: Session ID or path to conversation JSONL file
-        collection: Qdrant collection name (default: institutional_memory)
-
-    Examples:
-        imem index-conversation abc123
-        imem index-conversation 67f63a89-04ab-4aa3-80da-a995c6816e37
-        imem index-conversation ~/.claude/projects/.../session.jsonl
-    """
-    # Import TRACE components
-    import sys as _sys
-    trace_path = Path(__file__).parent.parent.parent.parent / 'trace' / 'src'
-    _sys.path.insert(0, str(trace_path))
-
-    from aura_trace.finder import ConversationFinder
-    from aura_trace.retrieval import ConversationRetrieval
-    from aura_trace.formatter import ConversationFormatter
-
-    # Ensure service is running
-    service = QdrantService()
-    if not service.ensure_running():
-        click.echo("❌ Failed to start Qdrant service", err=True)
-        sys.exit(1)
-
-    # Determine if input is session ID or file path
-    conversation_path = Path(conversation_id)
-
-    if conversation_path.exists() and conversation_path.suffix == '.jsonl':
-        # Direct path to JSONL file
-        conv_file = conversation_path
-        # Extract session ID from file content
-        finder = ConversationFinder()
-        info = finder.get_conversation_info(conv_file)
-        session_id = info['session_id']
-    else:
-        # Session ID provided - find the file
-        finder = ConversationFinder()
-        conversations = finder.list_all()
-
-        conv_file = None
-        for conv in conversations:
-            info = finder.get_conversation_info(conv)
-            # Match full or partial session ID
-            if info['session_id'].startswith(conversation_id):
-                conv_file = conv
-                session_id = info['session_id']
-                break
-
-        if not conv_file:
-            click.echo(f"❌ Conversation not found: {conversation_id}", err=True)
-            click.echo("Run 'trace --list' to see available conversations")
-            sys.exit(1)
-
-    click.echo(f"📁 Found conversation: {session_id[:12]}...")
-
-    # Export to structured markdown using retrieval + formatter directly
-    retrieval = ConversationRetrieval()
-    formatter = ConversationFormatter()
-
-    try:
-        # Load conversation and get timeline
-        entries = retrieval.load_conversation(conv_file)
-        timeline = retrieval.get_timeline(
-            entries,
-            include_messages=True,
-            include_patches=True,
-            include_files=False,
-            include_tools=False
-        )
-
-        # Get metadata
-        conv_metadata = retrieval.get_metadata(entries)
-
-        # Format as markdown
-        structured_md = formatter.format(timeline, conv_metadata.get('session_id'), conv_metadata)
-
-        # Save to temp file
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
-            f.write(structured_md)
-            temp_md_path = Path(f.name)
-
-        click.echo(f"📝 Exported structured markdown: {len(structured_md)} chars")
-
-        # Prepare metadata for ingestion
-        metadata = {
-            'start_time': conv_metadata.get('start_time'),
-            'duration_minutes': conv_metadata.get('duration_minutes'),
-            'message_count': conv_metadata.get('message_count'),
-            'has_changelog': False,  # TODO: detect if changelog exists
-            'changelog_path': None
-        }
-
-        # Index conversation
-        ingester = EnhancedModularIngest()
-        ingester.ingest_conversation_chunked(
-            temp_md_path,
-            session_id,
-            metadata,
-            collection_name=collection
-        )
-
-        # Clean up temp file
-        temp_md_path.unlink()
-
-        click.echo(f"✅ Indexed conversation {session_id[:12]} into {collection}")
-
-    except Exception as e:
-        click.echo(f"❌ Indexing failed: {e}", err=True)
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-
-@imem.command()
-@click.option('--limit', type=int, help='Limit number of conversations to index')
-@click.option('--recent', type=int, help='Index only N most recent conversations')
-@click.option('--min-size', type=int, default=2, help='Skip conversations smaller than N KB (default: 2)')
-@click.option('--collection', default='institutional_memory', help='Target collection name')
-@click.option('--dry-run', is_flag=True, help='Show what would be indexed without actually indexing')
-def index_all_conversations(limit, recent, min_size, collection, dry_run):
-    """Batch index all conversations into IMEM.
-
-    Finds all Claude Code conversations, exports them to structured markdown,
-    and indexes them with LlamaIndex section-level chunking.
-
-    This enables semantic search across all your conversation history:
-    - "What tools did I use for authentication?"
-    - "Show conversations where I modified cli.py"
-    - "Find discussions about LlamaIndex"
-
-    Options:
-        --limit: Process only first N conversations (for testing)
-        --recent: Process only N most recent conversations
-        --min-size: Skip conversations smaller than N KB (default: 10KB)
-        --dry-run: Preview what would be indexed without actually indexing
-
-    Examples:
-        imem index-all-conversations --dry-run
-        imem index-all-conversations --recent 10
-        imem index-all-conversations --limit 100
-        imem index-all-conversations --min-size 50  # Only conversations > 50KB
-    """
-    # Import TRACE components
-    import sys as _sys
-    trace_path = Path(__file__).parent.parent.parent.parent / 'trace' / 'src'
-    _sys.path.insert(0, str(trace_path))
-
-    from aura_trace.finder import ConversationFinder
-    from aura_trace.retrieval import ConversationRetrieval
-    from aura_trace.formatter import ConversationFormatter
-
-    # Ensure service is running
-    service = QdrantService()
-    if not dry_run and not service.ensure_running():
-        click.echo("❌ Failed to start Qdrant service", err=True)
-        sys.exit(1)
-
-    # Find all conversations
-    finder = ConversationFinder()
-    all_conversations = finder.list_all()
-
-    # Filter by size
-    conversations = []
-    skipped_count = 0
-    for conv in all_conversations:
-        size_kb = conv.stat().st_size // 1024
-        if size_kb >= min_size:
-            conversations.append(conv)
-        else:
-            skipped_count += 1
-
-    click.echo(f"📚 Found {len(all_conversations)} conversations")
-    if skipped_count > 0:
-        click.echo(f"⏭️  Skipping {skipped_count} conversations < {min_size}KB")
-
-    if recent:
-        conversations = conversations[:recent]
-    if limit:
-        conversations = conversations[:limit]
-
-    total = len(conversations)
-    click.echo(f"📁 Indexing {total} conversations")
-
-    if dry_run:
-        click.echo("\n🔍 Dry run - showing what would be indexed:\n")
-        for i, conv_file in enumerate(conversations[:10], 1):
-            info = finder.get_conversation_info(conv_file)
-            session_id = info['session_id']
-            modified = info['modified_time'].strftime('%Y-%m-%d %H:%M')
-            size_kb = info['file_size'] // 1024
-            click.echo(f"  {i}. {session_id[:12]} - {modified} ({size_kb}KB)")
-
-        if total > 10:
-            click.echo(f"  ... and {total - 10} more")
-
-        click.echo(f"\nRun without --dry-run to index {total} conversations")
-        return
-
-    # Index conversations with progress using retrieval + formatter directly
-    retrieval = ConversationRetrieval()
-    formatter = ConversationFormatter()
-    ingester = EnhancedModularIngest()
-
-    success_count = 0
-    error_count = 0
-
-    import tempfile
-
-    for i, conv_file in enumerate(conversations, 1):
-        info = finder.get_conversation_info(conv_file)
-        session_id = info['session_id']
-
-        try:
-            click.echo(f"[{i}/{total}] Indexing {session_id[:12]}...", nl=False)
-
-            # Export to structured markdown using retrieval + formatter
-            entries = retrieval.load_conversation(conv_file)
-            timeline = retrieval.get_timeline(
-                entries,
-                include_messages=True,
-                include_patches=True,
-                include_files=False,
-                include_tools=False
-            )
-            conv_metadata = retrieval.get_metadata(entries)
-            structured_md = formatter.format(timeline, conv_metadata.get('session_id'), conv_metadata)
-
-            # Save to temp file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
-                f.write(structured_md)
-                temp_md_path = Path(f.name)
-
-            # Prepare metadata for ingestion
-            metadata = {
-                'start_time': conv_metadata.get('start_time'),
-                'duration_minutes': conv_metadata.get('duration_minutes'),
-                'message_count': conv_metadata.get('message_count'),
-                'has_changelog': False,
-                'changelog_path': None
-            }
-
-            # Index
-            ingester.ingest_conversation_chunked(
-                temp_md_path,
-                session_id,
-                metadata,
-                collection_name=collection
-            )
-
-            # Clean up
-            temp_md_path.unlink()
-
-            click.echo(" ✅")
-            success_count += 1
-
-        except Exception as e:
-            click.echo(f" ❌ Error: {e}")
-            error_count += 1
-            continue
-
-    # Summary
-    click.echo(f"\n{'='*60}")
-    click.echo(f"📊 Indexing Complete")
-    click.echo(f"{'='*60}")
-    click.echo(f"✅ Successfully indexed: {success_count}")
-    click.echo(f"❌ Failed: {error_count}")
-    click.echo(f"📁 Total processed: {total}")
-    click.echo(f"\nSearch your conversations:")
-    click.echo(f"  imem search \"your query\" --in conversations")
 
 
 if __name__ == '__main__':

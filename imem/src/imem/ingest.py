@@ -913,8 +913,11 @@ class EnhancedModularIngest:
                     points=batch_points
                 )
                 logger.info(f"Indexed {len(batch_points)} sections from conversation {session_id[:12]}")
+                return len(batch_points)  # Return chunk count for registry tracking
             except Exception as e:
                 logger.error(f"Error batch indexing conversation: {e}")
+                return 0
+        return 0
 
     def get_collection_status(self):
         """Show detailed status of all collections.
