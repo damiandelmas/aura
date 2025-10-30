@@ -24,10 +24,7 @@ session_id: "uuid-of-originating-conversation"  # Optional: links to TRACE conve
 > "Exact user quote or request that triggered this work"
 
 ## Overview
-Write 2-5 sentences describing what was accomplished in language-agnostic terms.
-Focus on concepts not code - explain the problem, approach, and outcome without
-framework-specific terminology. This should be readable by anyone familiar with
-software development, regardless of their technology stack.
+Write 2-5 sentences describing what was accomplished. Explain what changed, why, and the outcome.
 
 <!-- ===== EXPAND SECTIONS BELOW AS NEEDED ===== -->
 <!-- Use what provides value. Skip what doesn't. -->

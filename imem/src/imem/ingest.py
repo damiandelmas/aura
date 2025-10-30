@@ -696,9 +696,19 @@ class EnhancedModularIngest:
             if header_match:
                 header_level = len(header_match.group(1))  # Count # characters
 
-            # FILTER: Only index H3+ sections (actual content), skip H1/H2 noise
-            if header_level is None or header_level < 3:
-                continue  # Skip frontmatter, H1 titles, H2 section headers
+            # Extract actual content (excluding header line)
+            content_lines = content.split('\n')
+            actual_content = '\n'.join(content_lines[1:]).strip() if len(content_lines) > 1 else ''
+
+            # FILTER: Skip chunks with no actual content (empty H2 parent headers)
+            # This allows H2 sections with content (Overview, Request) while skipping
+            # empty H2 parent headers (Decisions, Implementation that only contain H3s)
+            if len(actual_content) < 20:  # Less than ~3 words of actual content
+                continue  # Skip empty headers (H1 titles, H2 parent sections)
+
+            # Re-assign header_level for H2 sections now that we're allowing them
+            if header_level is None:
+                continue  # Skip frontmatter/non-header chunks
 
             raw_header_path = node.metadata.get('header_path', '')
 
