@@ -418,7 +418,7 @@ class EnhancedModularIngest:
         
         # Load model
         logger.info(f"Loading model: {config.model_name}")
-        model = SentenceTransformer(config.model_name)
+        model = SentenceTransformer(config.model_name, trust_remote_code=True)
         
         # Get document files using os.walk to include hidden directories
         if source_dir is None:
@@ -624,7 +624,7 @@ class EnhancedModularIngest:
         else:
             return 'implementation'
 
-    def ingest_markdown_chunked(self, file_path: Path, phase: str = None, collection_name: str = "institutional_memory"):
+    def ingest_markdown_chunked(self, file_path: Path, phase: str = None, base_collection: str = "institutional_memory"):
         """Ingest markdown with section-level chunking using LlamaIndex"""
 
         # Lazy load model if not already loaded
@@ -638,6 +638,12 @@ class EnhancedModularIngest:
 
         # Detect layer (implementation/pattern)
         layer = self._detect_layer(file_path, phase)
+
+        # Route to separate collections based on layer
+        if layer == 'pattern':
+            collection_name = f"{base_collection}_pattern"
+        else:
+            collection_name = f"{base_collection}_impl"
 
         # Read file
         try:
@@ -747,7 +753,7 @@ class EnhancedModularIngest:
             payload = {
                 'source': 'context',
                 'phase': phase,
-                'layer': layer,  # implementation or pattern
+                # layer determined by collection name (_impl or _pattern)
                 'section_type': h2_section_type or section_name,  # H2 parent (e.g., "Decisions")
                 'section_name': section_name,  # H3 title (e.g., "Database as Inert...")
                 'header_path': raw_header_path,  # Keep raw for debugging

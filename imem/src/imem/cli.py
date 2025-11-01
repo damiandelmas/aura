@@ -82,28 +82,33 @@ def _index_phase(phase_name: str, force: bool = False, limit: int = None, collec
     from qdrant_client.models import Distance, VectorParams, HnswConfigDiff
 
     try:
-        collection_exists = ingester.client.collection_exists(collection_name)
+        # Create both impl and pattern collections
+        impl_collection = f"{collection_name}_impl"
+        pattern_collection = f"{collection_name}_pattern"
 
-        if force and collection_exists:
-            # Force recreate: delete then create
-            click.echo(f"🔄 Recreating collection {collection_name}...")
-            ingester.client.delete_collection(collection_name)
-            collection_exists = False
+        for coll_name in [impl_collection, pattern_collection]:
+            collection_exists = ingester.client.collection_exists(coll_name)
 
-        if not collection_exists:
-            # Auto-create if doesn't exist
-            click.echo(f"📦 Creating collection {collection_name}...")
-            ingester.client.create_collection(
-                collection_name=collection_name,
-                vectors_config={
-                    config.default_vector_name: VectorParams(
-                        size=config.default_dimensions,
-                        distance=Distance.COSINE,
-                        hnsw_config=HnswConfigDiff(m=16, ef_construct=100)
-                    )
-                }
-            )
-            click.echo(f"✅ Collection created")
+            if force and collection_exists:
+                # Force recreate: delete then create
+                click.echo(f"🔄 Recreating collection {coll_name}...")
+                ingester.client.delete_collection(coll_name)
+                collection_exists = False
+
+            if not collection_exists:
+                # Auto-create if doesn't exist
+                click.echo(f"📦 Creating collection {coll_name}...")
+                ingester.client.create_collection(
+                    collection_name=coll_name,
+                    vectors_config={
+                        config.default_vector_name: VectorParams(
+                            size=config.default_dimensions,
+                            distance=Distance.COSINE,
+                            hnsw_config=HnswConfigDiff(m=16, ef_construct=100)
+                        )
+                    }
+                )
+                click.echo(f"✅ Collection created")
     except Exception as e:
         click.echo(f"❌ Error with collection: {e}", err=True)
         return
@@ -128,7 +133,7 @@ def _index_phase(phase_name: str, force: bool = False, limit: int = None, collec
                 ingester.ingest_markdown_chunked(
                     md_file,
                     phase=phase,
-                    collection_name=collection_name
+                    base_collection=collection_name
                 )
                 total_indexed += 1
                 layer_badge = "[pattern]" if '.pattern.md' in str(md_file) else "[impl]"
@@ -678,14 +683,22 @@ def search(source, query, limit, sort_by, show_metadata, after, split_terms, ope
         elif source in ['develop', 'design', 'document']:
             filters['source'] = 'context'
             filters['phase'] = source
-            collection_name = registry.get_collection_by_type(project_root, 'context')
+            base_collection = registry.get_collection_by_type(project_root, 'context')
+            # Route to impl or pattern collection based on layer
+            if layer == 'pattern':
+                collection_name = f"{base_collection}_pattern"
+            else:  # layer == 'implementation' or 'both'
+                collection_name = f"{base_collection}_impl"
         else:  # source == 'context'
             filters['source'] = 'context'
-            collection_name = registry.get_collection_by_type(project_root, 'context')
+            base_collection = registry.get_collection_by_type(project_root, 'context')
+            # Route to impl or pattern collection based on layer
+            if layer == 'pattern':
+                collection_name = f"{base_collection}_pattern"
+            else:  # layer == 'implementation' or 'both'
+                collection_name = f"{base_collection}_impl"
 
-    # Add layer filter (only applies to develop phase context docs)
-    if layer != 'both' and source == 'develop':
-        filters['layer'] = layer
+    # Layer filter no longer needed - collection name determines layer
 
     if section:
         filters['section_type'] = section

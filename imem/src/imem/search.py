@@ -180,7 +180,7 @@ class ModularSearch:
         """
         if config.name not in self.loaded_models:
             logger.info(f"Loading model: {config.model_name}")
-            self.loaded_models[config.name] = SentenceTransformer(config.model_name)
+            self.loaded_models[config.name] = SentenceTransformer(config.model_name, trust_remote_code=True)
         return self.loaded_models[config.name]
     
     def search(self, query: str, config_name: str, limit: int = 10,

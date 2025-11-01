@@ -25,6 +25,7 @@ async def compose(collection_name: str, config_dict: dict,
         "discovery": {...},       # Optional
         "graph": {...},           # Optional (not yet implemented)
         "output": {...}           # Optional
+        "cross_project": bool     # Optional - query pattern collections across projects
     }
 
     Returns: {"results": [...]} or {"rendered": "..."}
@@ -34,15 +35,24 @@ async def compose(collection_name: str, config_dict: dict,
         client = QdrantClient(host=config.qdrant_host, port=config.qdrant_port)
 
     if encoder is None:
-        encoder = SentenceTransformer(config.default_model)
+        encoder = SentenceTransformer(config.default_model, trust_remote_code=True)
+
+    # BRAIN Query Routing: Determine which collection(s) to query
+    if config_dict.get('cross_project'):
+        # Cross-project: Query pattern collection
+        # TODO: Support querying multiple pattern collections across projects
+        query_collection = f"{collection_name}_pattern"
+    else:
+        # Same-project: Query impl collection (default)
+        query_collection = f"{collection_name}_impl"
 
     # Stage 1: Search (always happens - async for parallel queries)
-    results = await _execute_search(collection_name, config_dict['search'], client, encoder)
+    results = await _execute_search(query_collection, config_dict['search'], client, encoder)
 
     # Stage 2: Discovery (if requested - async for parallel enrichment)
     if config_dict.get('discovery'):
         results = await _enrich_with_discovery(
-            collection_name,
+            query_collection,
             results,
             config_dict['discovery'],
             client,
@@ -55,7 +65,7 @@ async def compose(collection_name: str, config_dict: dict,
     # Stage 3: Graph (if requested - sync, NetworkX has no async)
     if config_dict.get('graph'):
         results = _apply_graph_operations(
-            collection_name,
+            query_collection,
             results,
             config_dict['graph'],
             client,

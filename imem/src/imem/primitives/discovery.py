@@ -197,7 +197,7 @@ def get_temporal(collection_name: str, chunk_id: str,
         client = QdrantClient(host=config.qdrant_host, port=config.qdrant_port)
 
     if encoder is None:
-        encoder = SentenceTransformer(config.default_model)
+        encoder = SentenceTransformer(config.default_model, trust_remote_code=True)
 
     # Retrieve target chunk with vector
     target = client.retrieve(collection_name=collection_name, ids=[chunk_id], with_vectors=True)
@@ -281,7 +281,7 @@ def cross_phase_search(collection_name: str, chunk_id: str,
         client = QdrantClient(host=config.qdrant_host, port=config.qdrant_port)
 
     if encoder is None:
-        encoder = SentenceTransformer(config.default_model)
+        encoder = SentenceTransformer(config.default_model, trust_remote_code=True)
 
     # Retrieve target chunk with vector
     target = client.retrieve(collection_name=collection_name, ids=[chunk_id], with_vectors=True)
