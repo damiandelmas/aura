@@ -4,14 +4,16 @@ IMEM provides semantic search across changelogs and conversations using Qdrant v
 
 ## Core Concept
 
-IMEM indexes two sources:
-- **Changelogs** (`.context/develop/.changes/`, `.context/document/`) - What you built and documented
-- **Conversations** (TRACE exports) - How you got there
+IMEM indexes two sources with dual collections per project:
+- **Context collection** (`.context/develop/.changes/`, `.context/document/`) - What you built and documented
+- **Conversation collection** (TRACE exports) - How you got there
 
 Uses:
-- **E5-Large-v2**: 1024-dim embeddings for semantic understanding
+- **Nomic Embed v1.5**: 768-dim embeddings, 8k context (default for new collections)
+- **E5-Large-v2**: 1024-dim embeddings (legacy, auto-detected for existing collections)
 - **Qdrant**: Fast vector search with HNSW optimization (<100ms queries)
 - **Template-aware chunking**: H3 sections for changelogs, H2 for conversations
+- **Content filtering**: <20 char filter skips empty H2 parent headers
 - **Rich metadata**: Filter by phase, layer, section type, chunk type, role, file path
 
 ## Quick Start
@@ -64,15 +66,18 @@ imem service restart
 **Initialize project:**
 ```bash
 imem init
+# Creates dual collections: imem_<hash>_context and imem_<hash>_conversation
 # Indexes .context/develop/, .context/document/, .context/designate/
-# Creates HNSW-optimized Qdrant collection
+# HNSW-optimized with Nomic v1.5 embeddings
 # Chunks at H3 boundaries (decisions, constraints, patterns)
+# Auto-creates collections on first use (no --force needed initially)
 ```
 
 **Force re-index:**
 ```bash
 imem init --force
-# Recreates collection from scratch
+# Recreates collections from scratch
+# Note: --force now means "recreate" not "create if missing"
 ```
 
 **Include design phase:**
@@ -106,86 +111,82 @@ imem index-all-conversations --limit 10 --dry-run
 
 ## Searching Changelogs
 
-### Phase-Based Search
+### Unified Search Interface
 
-**Search develop phase (what we built):**
+**Search with source argument:**
 ```bash
-imem develop search "authentication pattern"
-# Searches .context/develop/.changes/
+imem search develop "authentication pattern"
+# Searches context collection, phase=develop
 # Returns H3 decision/constraint/pattern sections
+
+imem search context "database"
+# Searches all context sources (develop/design/document)
+
+imem search conversations "bug fix"
+# Searches conversation collection
 ```
 
 **Filter by section type:**
 ```bash
-imem develop search "database" --decisions
-imem develop search "API limits" --constraints
-imem develop search "retry logic" --patterns
+imem search develop "database" --decisions
+imem search develop "API limits" --constraints
+imem search develop "retry logic" --patterns
 ```
 
 **Filter by layer:**
 ```bash
-imem develop search "error handling" --pattern
+imem search develop "error handling" --pattern
 # Only searches .pattern.md files (language-agnostic)
-
-imem develop search "React hooks" --impl
-# Only searches implementation layer
 ```
 
 **Combined filters:**
 ```bash
-imem develop search "async operations" --decisions --pattern
+imem search develop "async operations" --decisions --pattern
 # Decisions from pattern layer only
-```
-
-### Global Search (Legacy)
-
-```bash
-imem search "authentication"
-# Searches all phases and types
-# Useful for broad exploration
 ```
 
 ## Searching Conversations
 
 **Basic search:**
 ```bash
-imem conversations search "bug in authentication"
-# Searches all conversation chunks (messages + patches)
+imem search conversations "bug in authentication"
+# Searches conversation collection
+# Returns messages + patches
 ```
 
 **Filter by chunk type:**
 ```bash
-imem conversations search "error handling" --messages-only
+imem search conversations "error handling" --messages-only
 # Only searches message text (excludes code patches)
 
-imem conversations search "bug fix" --patches-only
+imem search conversations "bug fix" --patches-only
 # Only searches code patches (excludes messages)
 ```
 
 **Filter by role:**
 ```bash
-imem conversations search "how do I" --user-only
+imem search conversations "how do I" --user-only
 # Only searches user messages
 
-imem conversations search "implementation approach" --assistant-only
+imem search conversations "implementation approach" --assistant-only
 # Only searches assistant responses
 ```
 
 **Filter by file:**
 ```bash
-imem conversations search "error" --file src/cli.py
+imem search conversations "error" --file src/cli.py
 # Only searches patches for src/cli.py
 ```
 
 **Filter by session:**
 ```bash
-imem conversations search "database" --session cb91d93d
+imem search conversations "database" --session cb91d93d
 # Searches specific conversation only
 ```
 
 **Combined filters:**
 ```bash
-imem conversations search "auth bug" --patches-only --session abc123
+imem search conversations "auth bug" --patches-only --session abc123
 # Code patches about auth bugs in specific conversation
 ```
 
@@ -311,23 +312,30 @@ imem conversations search "auth discussion" --messages-only --session <id>
 
 **"Find all decisions about X"**
 ```bash
-imem develop search "X" --decisions --limit 20
+imem search develop "X" --decisions --limit 20
 ```
 
 **"What did we decide in conversation Y?"**
 ```bash
-imem conversations search "decision" --session <id> --messages-only
+imem search conversations "decision" --session <id> --messages-only
 ```
 
 **"Show me all code patches for file.py"**
 ```bash
-imem conversations search "" --file src/file.py --patches-only
+imem search conversations "" --file src/file.py --patches-only
 ```
 
 **"Find language-agnostic patterns"**
 ```bash
-imem develop search "error handling" --patterns --pattern
+imem search develop "error handling" --patterns --pattern
 # Pattern layer only (*.pattern.md files)
+```
+
+**"Check collection status"**
+```bash
+imem collections list
+# Shows registered collections (context + conversation per project)
+# Plus orphaned collections ready for cleanup
 ```
 
 **"Search recent work"**
@@ -389,7 +397,8 @@ docker ps | grep qdrant
 
 **"Collection not found"**
 ```bash
-imem init  # Create collection and index changelogs
+imem init  # Create dual collections and index changelogs
+# Auto-creates on first use (no --force needed)
 ```
 
 **"No results for conversation search"**
@@ -397,8 +406,16 @@ imem init  # Create collection and index changelogs
 # Conversations not indexed yet
 imem index-all-conversations --limit 10
 
-# Verify indexing
-imem status
+# Check what's indexed
+imem collections list
+```
+
+**"Wrong collection being searched"**
+```bash
+# Verify source routing
+imem search develop "query"      # → context collection
+imem search conversations "query" # → conversation collection
+imem search context "query"       # → context collection (all phases)
 ```
 
 **"Filters not working (--patches-only returns nothing)"**
@@ -417,10 +434,10 @@ imem init --force  # Full re-index
 
 ## Architecture
 
-**Vector model:**
-- Model: `intfloat/e5-large-v2`
-- Dimensions: 1024
-- Optimized for semantic search
+**Vector models:**
+- Default (new collections): `nomic-ai/nomic-embed-text-v1.5` (768D, 8k tokens)
+- Legacy (auto-detected): `intfloat/e5-large-v2` (1024D, 512 tokens)
+- Smart fallback: Reads collection vector config to load correct model
 - CPU inference (~200ms per batch)
 
 **Qdrant configuration:**
@@ -431,6 +448,8 @@ imem init --force  # Full re-index
 
 **Chunking strategy:**
 - **Changelogs**: H3 boundaries (semantic units with Context/Solution/Rationale)
+  - Content-length filter: <20 chars → skips empty H2 parent headers
+  - Indexes substantive H2 sections (Overview, Request with prose)
 - **Conversations**: H2 boundaries (messages and patches)
 - Preserves complete decision/message context per chunk
 
@@ -472,6 +491,7 @@ FlexGraph enables flexible composition of discovery primitives for surgical know
 - Parameters: `section_types`, `order_by`, `limit`, `has_rationale`, `has_alternatives`
 - Example: Get top 3 Failures with rationale
 - Config: `{"siblings": {"section_types": ["Failures"], "limit": 3, "has_rationale": true}}`
+- Backward compatible: `{"siblings": true}` still works (converts to dict internally)
 
 **genealogy** - Origin conversation via session_id linking
 - Reconstructs discussion that led to decision
@@ -497,10 +517,12 @@ Four-stage execution:
 ### Templates
 
 **story-context.j2** - Narrative reconstruction with genealogical indicators
-- 🟢 Current thrust (zero later chunks)
-- ⚠️ Evolved (some later chunks)
-- ❌ Failed approaches (from Failures sections)
+- 🟢 Current thrust (zero later chunks, continuation_count = 0)
+- ⚠️ Evolved (1-2 later chunks, continuation_count = 1-2)
+- 🔴 Superseded (3+ later chunks, continuation_count >= 3)
+- ❌ Failed approaches (from Failures sections, explicit "Don't Suggest" warnings)
 - Section order: Failures → Patterns → Decisions
+- Temporal position detection: Counts chunks after target timestamp
 
 **timeline.j2** - Evolution timeline showing approach changes
 
@@ -517,23 +539,7 @@ See Common Workflows section above for practical examples of:
 
 System tracks composition patterns by hashing discovery config. Detects recurring usage (10/15/20/30 times) and suggests preset creation as slash commands. Preset library grows organically from proven patterns.
 
-## Roadmap
-
-**Planned (Next Agent):**
-- Symmetric CLI: `imem develop index`, `imem conversations index <id>`
-- Remove: `imem index-conversation`, `imem index-all-conversations`
-- See: `/home/axp/projects/fleet/hangar/code/aura/main/NEXT_AGENT_TODO.md`
-
-**Future:**
-- Date range filtering
-- Cross-project search
-- Hybrid search (vector + keyword)
-- Auto-indexing on file changes
-- Graph operations (PageRank, centrality)
-- More templates (pattern-library, comparison)
-
 ## See Also
 
 - `/trace` - Export conversations for indexing
 - `/log:develop` - Create indexed changelogs
-- `NEXT_AGENT_TODO.md` - Pending CLI refactor
