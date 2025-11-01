@@ -38,19 +38,21 @@ Ancient decision → Pattern face (archaeology on explicit request)
 
 ```
 Write time:
-  Decision created → Both faces stored
+  Changelog created → .md file
+  LLM pass → .pattern.md file (10% cost)
+  Both indexed with layer metadata
 
 Active period:
-  Queries → Serve implementation (current tech)
+  Queries → implementation layer (.md files)
 
 Supersession:
   New decision replaces old
   → Metadata: superseded=true
-  → Serving: Switch to pattern face
+  → Queries: pattern layer (.pattern.md files)
 
 Archive period:
-  Queries → Serve pattern (abstraction)
-  Explicit request → Implementation available
+  Queries → pattern layer (abstraction)
+  Explicit layer filter → implementation available
 ```
 
 **Property:** Natural decay without information loss.

@@ -98,6 +98,11 @@ imem graph compose '{
 
 **Property:** Zero storage. Graph exists during query, disappears after.
 
+**Scope flexibility:**
+- Query-scoped: Materialize k² edges on results (fast, adaptive)
+- Corpus-scoped: Compute full n² graph when needed (feasible with indexed metadata)
+- Hybrid: Precompute expensive metrics, materialize on-demand for queries
+
 ---
 
 ## Graph-Aware Serving
@@ -231,7 +236,7 @@ AI: imem graph compose '{
 
 **IMEM needs:**
 - Vector DB with indexed metadata (one system)
-- Runtime edge materialization O(k²) on results
+- Runtime edge materialization - O(k²) on query results or full corpus graphs when needed
 - Zero graph maintenance (implicit edges)
 - Topology-aware serving (graph position → context)
 

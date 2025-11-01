@@ -8,6 +8,10 @@ session_id: "fe0004ca-4912-4e0d-9f12-45786c2fd15e"
 
 ---
 
+**Implementation Status:** Git diff detection described below is architectural design. Current implementation uses continuation_count via semantic search to detect temporal position.
+
+---
+
 ## The Problem
 
 Changelogs document code at a point in time. Code evolves. Documentation becomes stale.

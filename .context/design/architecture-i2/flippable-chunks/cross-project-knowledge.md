@@ -71,22 +71,21 @@ Returns:
 
 ---
 
-## Authority Metric
+## Pattern Discovery
 
-**Validation count = edges from distinct projects.**
+Cross-project queries filter to pattern layer only.
 
-```
-Pattern in 1 project → Hypothesis
-Pattern in 3 projects → Validated approach
-Pattern in 5+ projects → Institutional wisdom
-```
+**Query capability:**
+- Semantic search across all projects
+- Filter: layer='pattern'
+- Returns: Language-agnostic abstractions
 
-**Cross-project PageRank:**
-- Nodes = patterns (not implementations)
-- Edges = "same pattern, different project"
-- Centrality = proven across domains
+**Value emerges from:**
+- Pattern reuse across projects
+- Shared solutions to common problems
+- Observable usage patterns
 
-**Authority emerges from reuse, not assertion.**
+**Future:** Authority metrics based on pattern similarity and validation count.
 
 ---
 

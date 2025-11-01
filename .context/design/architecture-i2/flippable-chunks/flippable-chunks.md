@@ -10,28 +10,24 @@ session_id: "090c7e16-cb85-45e5-a1f0-8dd53f191a40"
 
 ## The Concept
 
-Single chunk stores both implementation (tech-specific) and pattern (language-agnostic) content.
+Pattern layer created via separate .pattern.md files, not dual storage in same chunk.
 
-**Metadata flag determines which face serves:**
+**Pattern extraction workflow:**
 
-```typescript
-{
-  section_type: "Decision",
-  section_name: "Async Processing",
-
-  // Dual content
-  implementation: "Use Python asyncio with event loop...",
-  pattern: "Non-blocking I/O with callback queue...",
-
-  // Serving control
-  serving_mode: "implementation" | "pattern",
-  superseded: false,
-
-  // Standard metadata
-  session_id: "...",
-  timestamp: "..."
-}
 ```
+Write changelog normally (.md)
+    ↓
+Single LLM pass (10% cost)
+    ↓
+Generate .pattern.md (language-agnostic abstraction)
+    ↓
+Both files indexed with layer='implementation' or layer='pattern'
+```
+
+**Layer filtering determines what serves:**
+- Same project, active → implementation layer (.md files)
+- Superseded → pattern layer (.pattern.md files)
+- Cross-project → pattern layer only (.pattern.md files)
 
 ---
 

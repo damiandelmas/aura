@@ -1,9 +1,13 @@
-# TASK
+Hey brother.
 
-(1) Use ToDoWrite Tool to create ToDo's to 
+Please read our IMEM RUNBOOK. it tells you how to use the system:
 
-Read all .vision.md files in this folder:
+/home/axp/projects/fleet/hangar/code/aura/main/.context/document/runbooks/imem.md
 
-/home/axp/projects/fleet/hangar/code/aura/.archive/251031-1743_design_modules_flex-graph/02_current/resources
+please use sequetnal thinking. 3 thoughts.
 
-(2) Read 5 of them. Speak to the USER about them. We will extract out architectural, business-logic, etc insights from them to ensure our previous document package is complete.
+think of a few ways to test it yourself. then do that until you have enough information to form an opinion aobut it.
+
+ignore the brain, graph api stuff yet. of course we dont have that built yet.
+
+focus on what already exists.
