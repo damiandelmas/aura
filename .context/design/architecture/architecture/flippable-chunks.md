@@ -79,27 +79,19 @@ Project D ──→ Pattern Y ←── Project E
 
 ---
 
-## The Architecture
+## Serving Topology
 
 **Storage:**
-- Single chunk ID
-- Two content fields (implementation, pattern)
-- Serving mode (metadata flag)
+```
+Single chunk
+    ├── Implementation content
+    └── Pattern content
+Metadata flag: serving_mode
+```
 
-**Query-time:**
-- Resolve serving mode from context
-- Return appropriate face
-- Zero re-indexing
+**Query-time decision:**
+```
+Context → Determine mode → Serve appropriate face
+```
 
-**Graph-level:**
-- Pattern edges cross projects
-- Implementation edges within project
-- Different topologies, same substrate
-
----
-
-## Related Concepts
-
-See: [knowledge-graph.md](./knowledge-graph.md) - Cross-project edges
-See: [brain-persistence.md](./brain-persistence.md) - Validation tracking
-See: [../business-logic/USAGE-DRIVEN.md](../business-logic/USAGE-DRIVEN.md) - Observable patterns
+**Property:** Zero re-indexing (metadata flip, not data change).
