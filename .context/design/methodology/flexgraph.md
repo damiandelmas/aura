@@ -1,241 +1,230 @@
 # FlexGraph Methodology
 
-**Proposed Pattern for Query-Adaptive Graph Operations**
+**Core methodology for building AI-native memory systems that learn from usage**
 
-*Status: Exploratory - Core concepts validated, full system under development*
-
----
-
-## Core Principle
-
-**Hypothesis: AI agents compose graph operations at runtime via declarative config.**
-
-Traditional knowledge graphs: Build edges at write time, query fixed structure.
-FlexGraph: AI agents compose operations at runtime via single command.
-
-**Point of use:** `imem compose '{search, discovery, graph, output}'` → One call, full pipeline.
+*Status: Foundational principles validated, full system under development*
 
 ---
 
-## The Inversion
+## What FlexGraph Is
 
-```
-Traditional KG:
-Write → Build ALL edges (O(n²)) → Store graph → Query structure
+FlexGraph is the complete methodology for building memory systems where AI agents are both:
+- **Content creators** (write structured documents)
+- **Primary users** (query and compose knowledge)
 
-FlexGraph:
-Write → Store metadata only → Query → Build ephemeral graph (O(k²)) → Discard
-```
-
-**Key insight:** k << n (query 20 results, not 10,000 documents)
+**Not just:** Query-time graph construction
+**But:** The entire stack from content creation → knowledge persistence → intelligent retrieval → self-improvement
 
 ---
 
-## Requirements
+## The Foundation: Template-as-Schema
 
-For FlexGraph methodology to work, you need:
+**Core Principle:** AI agents write structured content, guaranteeing metadata compliance.
 
-### 1. Creation-Time Schema Enforcement
-
-**Problem:** Post-hoc metadata extraction is probabilistic (~70% accuracy)
-
-**Solution:** Template enforcement at document creation
-
-```markdown
-Template defines schema:
-## Decision
-- **Context**: (required field)
-- **Solution**: (required field)
-- **Rationale**: (optional field)
-
-AI generates content → Validates against template → Guaranteed metadata
+**FlexGraph approach:**
 ```
-
-**Result:** 100% metadata compliance (deterministic, not probabilistic)
+AI writes via template → Schema enforcement → 100% metadata accuracy → Deterministic operations
+```
 
 **Why this matters:**
-- Enables deterministic filtering: `WHERE has_context=true AND has_alternatives=true`
-- Competitors can't easily replicate (requires breaking change for existing users)
-- Foundation for all downstream operations (validated in practice)
+- Enables guaranteed metadata (no probabilistic extraction)
+- Foundation for all downstream intelligence
 
-### 2. Small Result Sets
+**Example:**
+```markdown
+## Decision
+- Context: (required field, always present)
+- Solution: (required field, always present)
+- Rationale: (optional field, known present/absent)
+```
 
-**Complexity trade-off:**
-- Precomputed KG: O(n²) at write time, O(1) at read time
-- FlexGraph: O(0) at write time, O(k²) at read time
+**Result:** Can query `WHERE has_rationale=true` deterministically
 
-**This works when:** k << n
-
-**Typical scenarios:**
-- n = 10,000 documents
-- k = 20-50 query results
-- O(k²) = 400-2,500 edge computations (~40-100ms)
-- O(n²) = 100,000,000 edges (hours to precompute)
-
-**1,000,000× efficiency gain**
-
-### 3. Metadata as Edge Predicates
-
-**Metadata dimensions become relationship types:**
-
-| Metadata Field | Edge Type | Discovery Predicate |
-|----------------|-----------|---------------------|
-| file_path | SIBLING | file_path == X |
-| session_id | GENEALOGY | session_id == Y |
-| timestamp + semantic | TEMPORAL | timestamp > Z ∧ similarity > 0.7 |
-| semantic similarity | SEMANTIC | cosine_similarity > 0.8 |
-
-**No explicit edges stored.** Relationships discovered via metadata queries.
+See: [business-logic/AI-FIRST-USER.md](../business-logic/AI-FIRST-USER.md)
 
 ---
 
-## Pattern: Query-Time Graph Construction
+## The Six Pillars
 
-### Workflow
+FlexGraph combines six architectural principles into a unified system:
 
-```
-1. Semantic Search → Top-k results (20-50 chunks)
-2. Build Graph:
-   - Nodes: Results
-   - Edges: Metadata relationships
-   - O(k²) complexity (~40-100ms)
-3. Apply Algorithm:
-   - PageRank → Authority ranking
-   - Centrality → Bridge detection
-   - Communities → Clustering
-4. Rerank Results
-5. Discard Graph
-```
+### 1. Entity Resolution
 
-### Ephemeral Property
+**Problem:** Terms drift over time ("jwt", "JWT", "jwt-tokens")
 
-**Graph lifecycle:**
-- Created: On query
-- Used: Single algorithm application
-- Destroyed: After ranking
+**FlexGraph Solution:**
+- Source stays as written (immutable)
+- Resolution map evolves separately
+- Queries expand at runtime (find all variants)
 
-**Optional persistence:**
-- Session graphs (reuse during conversation)
-- Canonical graphs (frequently accessed patterns)
-- Otherwise: ephemeral
+**Enables:** Complete recall despite inconsistent terminology
+
+See: [the-brain/entity-resolution.md](../design/.modules/the-brain/entity-resolution.md)
 
 ---
 
-## Edge Discovery Algorithms
+### 2. Schema Introspection
 
-### Chunk-Level Relationships
+**Problem:** Future AI sessions can't discover system capabilities
 
-**SIBLING** (Same Document):
-```python
-def discover_siblings(chunk_id):
-    chunk = get_chunk(chunk_id)
-    return filter(file_path == chunk.file_path)
-```
+**FlexGraph Solution:**
+- System introspects itself
+- Returns schema + examples programmatically
+- AI agents query capabilities, not docs
 
-**GENEALOGY** (Conversation Origin):
-```python
-def discover_genealogy(chunk_id):
-    chunk = get_chunk(chunk_id)
-    return filter(session_id == chunk.session_id)
-```
+**Enables:** Zero-friction onboarding for brother agents
 
-**TEMPORAL** (Evolution):
-```python
-def discover_temporal(chunk_id):
-    chunk = get_chunk(chunk_id)
-    return filter(
-        timestamp > chunk.timestamp
-        AND semantic_similarity(chunk) > 0.85
-    )
-```
-
-### Document-Level Relationships
-
-**SEQUENTIAL** (Project Narrative):
-```python
-def discover_sequential(doc_id):
-    doc = get_document(doc_id)
-    return filter(
-        filename_chronology_adjacent(doc.filename)
-        AND semantic_similarity > 0.7
-    )
-```
-
-**THEMATIC** (Cross-Phase):
-```python
-def discover_thematic(doc_id):
-    doc = get_document(doc_id)
-    return filter(
-        topic_keywords_overlap(doc.keywords)
-        AND different_phase(doc.phase)
-    )
-```
+See: [the-brain/schema-introspection.md](../design/.modules/the-brain/schema-introspection.md)
 
 ---
 
-## Graph Algorithms (Query-Adaptive)
+### 3. Knowledge Graph
 
-Same chunks, different insights based on query intent:
+**Problem:** Recomputing edges every query is wasteful when relationships are stable
 
-### PageRank: Authority Ranking
+**FlexGraph Solution:**
+- Metadata = edge predicates (file_path → siblings, session_id → genealogy)
+- Persist graph structure in lightweight store
+- Query-time reads graph instead of computing it
 
-**When:** "What's the most important pattern?"
+**Enables:** Graph algorithms (PageRank, centrality) + fast traversal
 
-**Algorithm:** PageRank weights nodes by incoming edges
-
-**Result:** Most-referenced chunks surface first
-
-**Use case:** Find canonical decisions
-
-### Betweenness Centrality: Bridge Detection
-
-**When:** "What connects topic A and B?"
-
-**Algorithm:** Centrality scores nodes on shortest paths
-
-**Result:** Bridge concepts surface
-
-**Use case:** Find architectural patterns connecting domains
-
-### Community Detection: Clustering
-
-**When:** "Group related concepts"
-
-**Algorithm:** Louvain communities
-
-**Result:** Natural semantic clusters
-
-**Use case:** Discover topic boundaries
-
-### Temporal Sort: Evolution Timeline
-
-**When:** "How did this decision evolve?"
-
-**Algorithm:** Topological sort on temporal edges
-
-**Result:** Chronological chain
-
-**Use case:** Trace decision genealogy
+See: [the-brain/knowledge-graph.md](../design/.modules/the-brain/knowledge-graph.md)
 
 ---
 
-## Complexity Analysis
+### 4. BRAIN Persistence
 
-| Scenario | Precomputed KG | Soft-Graph |
-|----------|----------------|------------|
-| **Write time** | O(n²) edges | O(0) |
-| **Storage** | O(n²) | O(0) |
-| **Query time** | O(edges) traversal | O(k²) construction |
-| **Maintenance** | O(n) rebuild | O(0) |
+**Problem:** Not all metadata ages the same
 
-**Where:**
-- n = corpus size (thousands)
-- k = result set (20-50)
+**FlexGraph Solution:**
+- Layer 1: Static metadata (what was created, never changes)
+- Layer 2: Learned metadata (what usage reveals, changes continuously)
+- Layer 3: Composed views (assembled at query time, ephemeral)
 
-**Trade-off:**
-- Slower queries (80-200ms vs <10ms)
-- Zero maintenance (vs continuous reindexing)
-- Query-adaptive (vs fixed structure)
+**Update frequencies:**
+- Real-time: reference_count, last_accessed (~1ms)
+- Nightly: PageRank, centrality (~5min batch)
+- Weekly: Entity resolution, supersession detection (LLM)
+
+**Enables:** Continuous learning without rewriting history
+
+See: [the-brain/brain-persistence.md](../design/.modules/the-brain/brain-persistence.md)
+See: [the-brain/adaptive-updates.md](../design/.modules/the-brain/adaptive-updates.md)
+
+---
+
+### 5. Graph-Informed Templates
+
+**Problem:** Template structure affects AI comprehension
+
+**FlexGraph Solution:**
+- Graph discovers relationships (centrality, temporal chains, failures)
+- Templates adapt structure to match relationships
+- AI comprehends context from presentation
+
+**Example:**
+- High centrality + temporal chain → Evolution template
+- Many failures + decision → Anti-pattern template
+
+**Enables:** Context-aware assembly where structure conveys meaning
+
+See: [the-brain/graph-templates.md](../design/.modules/the-brain/graph-templates.md)
+
+---
+
+### 6. Adaptive Learning
+
+**Problem:** Batching everything weekly wastes real-time signals, updating everything real-time is costly
+
+**FlexGraph Solution:**
+- Stratify by cost/latency/value
+- Real-time: Cheap, high-signal operations
+- Batch: Expensive algorithms run offline
+- LLM: Costly analysis runs infrequently
+
+**Enables:** Continuous learning without per-query penalty
+
+See: [the-brain/adaptive-updates.md](../design/.modules/the-brain/adaptive-updates.md)
+
+---
+
+## How They Fit Together
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Template-as-Schema (Foundation)                            │
+│ AI agents write structured docs → 100% metadata            │
+└─────────────────────────────────────────────────────────────┘
+                           ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Immutable Source (Primary Storage)                         │
+│ Changelogs as written + vectors                            │
+└─────────────────────────────────────────────────────────────┘
+                           ↓
+┌──────────────────────┬──────────────────────┬───────────────┐
+│ Knowledge Graph      │ BRAIN Persistence    │ Entity Map    │
+│ (Relationships)      │ (Learned Metadata)   │ (Vocabulary)  │
+│                      │                      │               │
+│ Persistent edges     │ Real-time stats      │ Term variants │
+│ Graph algorithms     │ Batch metrics        │ LLM clustering│
+└──────────────────────┴──────────────────────┴───────────────┘
+                           ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Compositional Primitives (Discovery Layer)                 │
+│ siblings · genealogy · temporal · cross_phase               │
+└─────────────────────────────────────────────────────────────┘
+                           ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Query-Time Composition (Flexible Assembly)                 │
+│ AI agents compose primitives → Graph-informed templates    │
+└─────────────────────────────────────────────────────────────┘
+                           ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Observable Usage (Self-Improvement)                        │
+│ Track patterns → Capture proven compositions → Presets     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Each layer enables the next. Remove any piece and the system degrades.**
+
+---
+
+## Compositional Primitives + Observable Usage
+
+**Core Innovation:** Don't prescribe query types. Provide primitives, observe usage, capture patterns.
+
+### Primitives (Orthogonal Building Blocks)
+
+| Primitive | Returns | Discovery |
+|-----------|---------|-----------|
+| siblings | Same document chunks | `filter(file_path=X)` |
+| genealogy | Origin conversation | `filter(session_id=Y)` |
+| temporal | Evolution over time | `semantic + timestamp` |
+| cross_phase | Related phase | `filter(phase=Z)` |
+
+**Key property:** Any combination valid (infinite compositions possible)
+
+### Observable Usage
+
+```
+1. AI agents compose freely
+   └─ genealogy + siblings + cross_phase
+
+2. System tracks patterns
+   └─ This composition used 30 times
+
+3. Proven pattern captured
+   └─ Becomes /explain-decision preset
+
+4. Preset library grows organically
+   └─ Self-improving system
+```
+
+**Not prescriptive. Usage-driven.**
+
+See: [business-logic/COMPOSITIONAL-PRIMITIVES.md](../business-logic/COMPOSITIONAL-PRIMITIVES.md)
+See: [business-logic/USAGE-DRIVEN.md](../business-logic/USAGE-DRIVEN.md)
 
 ---
 
@@ -243,50 +232,51 @@ Same chunks, different insights based on query intent:
 
 ### Ideal For:
 
-✅ **Evolving knowledge** (not static corpora)
-- Documents constantly added/updated
-- Relationships change over time
+✅ **AI-generated structured content**
+- Agents write documents via templates
+- Schema enforcement straightforward
+- 100% metadata guaranteed
+
+✅ **Evolving knowledge bases**
+- Constantly growing corpus
+- Relationships emerge over time
 - Traditional KG maintenance overhead unacceptable
 
-✅ **AI-generated content** (template compliance natural)
-- AI agents create structured documents
-- Schema enforcement straightforward
-- Metadata guaranteed
+✅ **Agentic workflows**
+- AI agents are primary users
+- Compositional flexibility needed
+- Self-improving systems valuable
 
-✅ **Flexible relationships** (not fixed schema)
-- New relationship types emerge
-- Query-specific graph structure
-- No schema migration needed
+✅ **Moderate latency tolerance**
+- 80-200ms query acceptable
+- Not millisecond API requirements
 
-✅ **Moderate latency tolerance** (80-200ms acceptable)
-- Not real-time systems
-- User queries (not API microseconds)
-- Latency acceptable for quality
+### Not Ideal For:
 
-### NOT Ideal For:
+❌ **Human-generated unstructured content**
+- Can't enforce template compliance
+- Post-hoc extraction necessary (~70% accuracy)
+- FlexGraph foundation breaks
 
 ❌ **Static document corpus**
 - One-time ingest, rarely updated
 - Precomputed KG amortizes well
+- FlexGraph advantages don't apply
 
-❌ **Human-generated unstructured content**
-- Can't enforce template compliance
-- Post-hoc extraction necessary
-- Metadata not guaranteed
+❌ **Fixed relationship schemas**
+- Known relationships upfront
+- No need for query-time adaptation
+- Traditional KG simpler
 
 ❌ **Millisecond latency requirements**
 - High-frequency API calls
-- Precomputed graph faster
-
-❌ **Fixed relationship schema**
-- Known relationships upfront
-- No query-time adaptation needed
+- Precomputed structures faster
 
 ---
 
 ## Domain Implementations
 
-FlexGraph is a **methodology**, not a product. Different domains implement it differently:
+FlexGraph is a **methodology**, not a product. Different domains apply it differently:
 
 ### IMEM (Coding Agents)
 
@@ -296,13 +286,15 @@ FlexGraph is a **methodology**, not a product. Different domains implement it di
 - Decisions (Context, Solution, Rationale)
 - Constraints (Description, Impact, Mitigation)
 - Failures (Attempted, Why Failed, Lesson)
+- Patterns (Pattern, When, Approach)
 
-**Metadata → Edges:**
-- file_path → siblings
-- session_id → genealogy
-- timestamp + semantic → temporal
+**Phases:** design → designate → develop → document
 
-**Use case:** Coding agent memory
+**Use Case:** Coding agent memory (explain decisions, trace evolution, find anti-patterns)
+
+**Status:** In development
+
+---
 
 ### WriteMem (Hypothetical)
 
@@ -313,12 +305,13 @@ FlexGraph is a **methodology**, not a product. Different domains implement it di
 - Drafts (Version, Changes, Rationale)
 - Citations (Source, Context, Reliability)
 
-**Metadata → Edges:**
-- draft_version → revision chain
-- section_id → structural
-- citation_id → reference graph
+**Phases:** brainstorm → outline → draft → revise
 
-**Use case:** Writing agent memory
+**Use Case:** Writing agent memory (draft evolution, citation network, style analysis)
+
+**Status:** Conceptual example
+
+---
 
 ### ResearchMem (Hypothetical)
 
@@ -329,453 +322,71 @@ FlexGraph is a **methodology**, not a product. Different domains implement it di
 - Experiments (Method, Result, Analysis)
 - Literature (Paper, Summary, Relevance)
 
-**Metadata → Edges:**
-- experiment_id → hypothesis testing
-- paper_doi → citation network
-- topic_tags → semantic clusters
+**Phases:** ideate → experiment → analyze → publish
 
-**Use case:** Research agent memory
+**Use Case:** Research agent memory (literature review, experiment lineage, hypothesis testing)
 
----
-
-## Properties Required for FlexGraph
-
-**Methodology checklist:**
-
-1. ✅ **Creation-time schema** (deterministic metadata)
-2. ✅ **Runtime edge discovery** (metadata → predicates)
-3. ✅ **Ephemeral graphs** (build per query, discard)
-4. ✅ **Query-adaptive** (different algorithms per intent)
-
-**NOT required:**
-- ❌ Specific template structure
-- ❌ Specific metadata fields
-- ❌ Specific edge types
-- ❌ Specific algorithms
-
-**The pattern is portable. The details are domain-specific.**
+**Status:** Conceptual example
 
 ---
 
-## Architectural Layers
-
-### L1: Methodology (This Document)
-
-**What:** Pattern for building query-time knowledge graphs
-**Who:** System architects, researchers
-**Content:** Principles, complexity analysis, when to use
-
-### L2: Domain Implementation
-
-**What:** Application of pattern to specific domain
-**Who:** Product builders
-**Content:** Template structure, metadata mapping, algorithms
-
-**Examples:**
-- `imem-architecture.md` (coding agents)
-- `writemem-architecture.md` (writing agents)
-
-### L3: Codebase
-
-**What:** Actual implementation
-**Who:** Developers
-**Content:** Python code, CLI, tests
-
-**Examples:**
-- `imem/src/` (IMEM implementation)
-- `writemem/src/` (WriteMem implementation)
-
----
-
-## The Proposed Innovation
-
-**Traditional knowledge graphs:**
-- Build structure at write time
-- Query fixed relationships
-- High maintenance overhead
-- O(n²) precomputation
-
-**FlexGraph (proposed approach):**
-- Build structure at query time
-- Discover relationships via metadata
-- Zero maintenance (hypothesis)
-- O(k²) on-demand construction
-- AI agents compose operations declaratively
-
-**Expected result:** Flexible, query-adaptive graph operations for agentic workflows.
-
-*To be validated: Whether graph operations provide meaningful improvements over metadata-based discovery alone.*
-
----
-
-## Compositional Philosophy
-
-**FlexGraph is not one pattern. It's compositional primitives that enable infinite combinations.**
-
-### Layer 1: Primitives (Building Blocks)
-
-FlexGraph provides composable primitives that can be combined ANY way:
-
-| Primitive | What It Returns | Discovery Method |
-|-----------|----------------|------------------|
-| `siblings` | Chunks from same document | `filter(file_path=X)` |
-| `genealogy` | Origin conversation | `filter(session_id=Y, source='conversation')` |
-| `temporal` | Evolution over time | `semantic_search + timestamp filter` |
-| `cross_phase` | Related phase chunks | `filter(phase=Z, keywords overlap)` |
-
-**Key property:** These primitives are orthogonal. Any combination is valid.
-
----
-
-### Layer 2: Infinite Compositions
-
-**Agents compose primitives flexibly based on query intent.**
-
-#### Composition Example A: Complete Story
-**Query:** "Explain the JWT authentication decision"
-
-**Composition:**
-```json
-{
-  "discovery": {
-    "genealogy": true,
-    "cross_phase": "design",
-    "siblings": {
-      "section_types": ["Decisions", "Failures", "Patterns"]
-    }
-  },
-  "output": {"template": "story"}
-}
-```
-
-**Returns:**
-1. Origin conversation (genealogy)
-2. Design decisions (cross_phase)
-3. What failed (siblings: Failures)
-4. What worked (siblings: Decisions)
-5. Patterns extracted (siblings: Patterns)
-
-**Structure:** Narrative reconstruction from ideation → implementation
-
----
-
-#### Composition Example B: Evolution Timeline
-**Query:** "How did the caching strategy evolve?"
-
-**Composition:**
-```json
-{
-  "discovery": {
-    "temporal": {"direction": "both"},
-    "siblings": {
-      "section_types": ["Patterns"],
-      "order_by": "timestamp"
-    }
-  },
-  "output": {"template": "timeline"}
-}
-```
-
-**Returns:**
-1. Earlier attempts (temporal: before)
-2. Current implementation (primary)
-3. Later refinements (temporal: after)
-4. Patterns extracted over time (siblings: Patterns)
-
-**Structure:** Chronological evolution showing how thinking changed
-
----
-
-#### Composition Example C: Anti-Pattern Search
-**Query:** "What approaches have we tried that didn't work?"
-
-**Composition:**
-```json
-{
-  "discovery": {
-    "siblings": {
-      "section_types": ["Failures"]
-    }
-  }
-}
-```
-
-**Returns:**
-- All Failures sections across documents
-- What was attempted, why it failed, lessons learned
-
-**Structure:** Cross-document failure compilation
-
----
-
-#### Composition Example D: Pattern Library
-**Query:** "Show me all reusable patterns for authentication"
-
-**Composition:**
-```json
-{
-  "discovery": {
-    "siblings": {
-      "section_types": ["Patterns"],
-      "order_by": "timestamp"
-    }
-  }
-}
-```
-
-**Returns:**
-- Patterns sections from all related documents
-- Ordered by recency (most recent first)
-
-**Structure:** Curated pattern library for domain
-
----
-
-#### Composition Example E: Design Journey
-**Query:** "What was the design thinking before implementation?"
-
-**Composition:**
-```json
-{
-  "discovery": {
-    "cross_phase": "design",
-    "siblings": {
-      "section_types": ["Decisions"],
-      "has_rationale": true
-    }
-  }
-}
-```
-
-**Returns:**
-- Abstract design decisions (cross_phase)
-- High-quality decisions with rationale (has_rationale filter)
-
-**Structure:** Pre-implementation design exploration
-
----
-
-#### Composition Example F: Constraint Analysis
-**Query:** "What constraints influenced this decision?"
-
-**Composition:**
-```json
-{
-  "discovery": {
-    "siblings": {
-      "section_types": ["Constraints", "Decisions"]
-    },
-    "genealogy": true
-  }
-}
-```
-
-**Returns:**
-- Constraint sections (limitations, trade-offs)
-- Related decisions (how constraints were addressed)
-- Origin conversation (where constraints emerged)
-
-**Structure:** Decision drivers and limitations
-
----
-
-### Layer 3: Observable Usage → Preset Library
-
-**FlexGraph is usage-driven, not prescriptive.**
-
-#### The Discovery Process
-
-1. **Flexible composition:** AI agents compose primitives ANY way
-2. **Usage observation:** System logs which compositions recur
-3. **Pattern recognition:** After 10-20 uses of same composition
-4. **Preset capture:** Proven pattern becomes slash command
-
-#### Example: Emergence of `/explain-decision`
-
-**Usage observation:**
-```
-Agent uses composition 30 times:
-{"genealogy": true, "siblings": {"section_types": ["Decisions", "Failures", "Patterns"]}}
-
-Queries that used this:
-- "Explain the debounce fix"
-- "Why did we choose JWT?"
-- "How does caching work?"
-- [27 more similar queries]
-```
-
-**Pattern recognized:** "Explain decision with full context" composition
-
-**Capture as preset:**
-```markdown
-# .claude/commands/explain-decision.md
-
-Find a decision and reconstruct complete context:
-- Origin conversation (how we got here)
-- Related failures (what we tried first)
-- Extracted patterns (reusable learnings)
-
-Usage: /explain-decision <query>
-
-Internally expands to:
-imem compose '{
-  "search": {"text": "$QUERY", "limit": 1},
-  "discovery": {
-    "genealogy": true,
-    "siblings": {"section_types": ["Decisions", "Failures", "Patterns"]}
-  },
-  "output": {"template": "story"}
-}'
-```
-
-**Result:** Proven pattern captured for reuse
-
----
-
-#### More Emergent Presets (Examples)
-
-**Pattern detected (20 uses):**
-```json
-{"temporal": true, "siblings": {"section_types": ["Patterns"]}}
-```
-→ Captured as `/evolution-trace`
-
-**Pattern detected (15 uses):**
-```json
-{"siblings": {"section_types": ["Failures"]}}
-```
-→ Captured as `/anti-patterns`
-
-**Pattern detected (12 uses):**
-```json
-{"cross_phase": "design"}
-```
-→ Captured as `/design-journey`
-
-**Pattern detected (10 uses):**
-```json
-{"siblings": {"section_types": ["Constraints"], "has_impact": true}}
-```
-→ Captured as `/constraint-analysis`
-
----
-
-### The Innovation: Compositional + Observable + Self-Improving
-
-**Traditional systems:**
-- Fixed query types
-- Predefined relationships
-- Static structure
+## The Innovation
+
+**Traditional knowledge systems:**
+- Build graphs at write time (O(n²))
+- Fixed relationship schemas
+- Manual curation required
+- Static query types
 - No learning from usage
 
-**FlexGraph:**
-- ✅ Compositional primitives (any combination valid)
-- ✅ Observable usage (track what agents do)
-- ✅ Self-improving (capture proven patterns)
-- ✅ Usage-driven presets (not prescriptive)
+**FlexGraph methodology:**
+- Template-as-schema foundation (100% metadata)
+- Query-time graph construction (O(k²), k << n)
+- Living vocabulary (entity resolution)
+- Self-describing (schema introspection)
+- Persistent relationships + learned metadata (BRAIN)
+- Compositional primitives (infinite combinations)
+- Observable usage (self-improving)
+- Multi-speed updates (adaptive learning)
 
-**The power hierarchy:**
-
-```
-Template-as-Schema (Foundation)
-    ↓ enables
-Deterministic Metadata (Primitives)
-    ↓ enables
-Compositional Flexibility (Any combination)
-    ↓ enables
-Observable Usage (Track patterns)
-    ↓ enables
-Self-Improving System (Capture proven patterns)
-```
-
-**Each layer builds on the previous.**
+**Result:** AI-native memory systems that preserve history, learn continuously, and improve from usage.
 
 ---
 
-### When to Use Compositional FlexGraph
+## Core Principles
 
-**Ideal for:**
+When building FlexGraph implementations:
 
-✅ **Evolving knowledge bases**
-- New composition patterns emerge with use
-- System learns what works
-- Preset library grows organically
+**Preserve:** Keep source immutable (archaeological integrity)
 
-✅ **AI agent workflows**
-- Agents compose primitives based on query intent
-- No manual pattern specification needed
-- Natural language queries → automatic composition
+**Learn:** Accumulate intelligence separately (usage patterns)
 
-✅ **Diverse query intents**
-- Same chunks, different compositions
-- "Explain decision" vs "Show evolution" vs "Find failures"
-- Flexibility without predefining all patterns
+**Expose:** Make capabilities discoverable (schema introspection)
 
-✅ **Self-improving systems**
-- Observable usage reveals useful patterns
-- Proven patterns captured automatically
-- System gets smarter with use
+**Compose:** Assemble views at runtime (ephemeral, not stored)
 
-**Not ideal for:**
+**Adapt:** Structure matches relationships (graph-informed)
 
-❌ **Static query types**
-- If only one composition ever needed
-- Flexibility unused
-- Simple search sufficient
+**Stratify:** Update at speeds matching value/cost (multi-speed)
 
-❌ **No usage observation**
-- If can't track agent behavior
-- Can't discover patterns
-- Preset library doesn't emerge
+**Observe:** Track usage, capture patterns (self-improving)
+
+See: [the-brain/VISION.md](../design/.modules/the-brain/VISION.md) for detailed principles
 
 ---
 
-### Domain Implementations with Composition
+## Related Concepts
 
-**IMEM (Coding Agents)**
+**Business Logic:**
+- [AI-FIRST-USER.md](../business-logic/AI-FIRST-USER.md) - User is AI agents
+- [IMMUTABLE-SOURCE.md](../business-logic/IMMUTABLE-SOURCE.md) - Source never changes
+- [COMPOSITIONAL-PRIMITIVES.md](../business-logic/COMPOSITIONAL-PRIMITIVES.md) - Building blocks over strategies
+- [USAGE-DRIVEN.md](../business-logic/USAGE-DRIVEN.md) - Learn from behavior
 
-Compositions naturally emerge:
-- Narrative reconstruction (genealogy + siblings)
-- Evolution timeline (temporal + patterns)
-- Anti-pattern search (failures only)
-- Design journey (cross-phase design)
-
-**WriteMem (Hypothetical)**
-
-Different compositions would emerge:
-- Draft evolution (temporal chain of revisions)
-- Citation network (reference traversal)
-- Style analysis (comparison across drafts)
-
-**ResearchMem (Hypothetical)**
-
-Yet different compositions:
-- Literature review (citation + semantic)
-- Experiment lineage (temporal + genealogy)
-- Hypothesis testing (cross-phase experiment → analysis)
-
-**Same primitives. Different emergent patterns per domain.**
+**Technical Details:**
+- [.modules/the-brain/](../design/.modules/the-brain/) - Six pillar implementations
+- [.modules/flex-graph/](../design/.modules/flex-graph/) - IMEM-specific architecture
 
 ---
 
-## Summary
-
-**Core Insight:** Compositional primitives enable flexible, usage-driven knowledge retrieval
-
-**Requirements:**
-1. Creation-time schema (guaranteed metadata) - *Validated*
-2. Compositional primitives (orthogonal building blocks) - *Core innovation*
-3. Observable usage (track agent patterns) - *Self-improving mechanism*
-
-**The Pattern:**
-Flexible composition → Observable usage → Preset capture → Self-improvement
-
-**When to use this approach:**
-- Evolving knowledge bases
-- AI-generated structured content
-- Diverse query intents
-- Self-improving systems
-
-**Status:** Methodology is domain-agnostic pattern. IMEM is first implementation (in development).
-
-*Next: Build primitives, enable flexible composition, observe usage patterns, capture presets.*
+**FlexGraph = The methodology. IMEM = First implementation.**
