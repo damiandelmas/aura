@@ -91,6 +91,8 @@ Cross-project queries filter to pattern layer only.
 
 ## Graph Topology
 
+**Future capability:** Cross-project edge detection based on pattern similarity.
+
 ```
 Project A ──→ "Non-blocking I/O" ←── Project B
 Project C ──→ "Non-blocking I/O"
@@ -100,7 +102,7 @@ Project D ──→ "Message Queue" ←── Project E
 Cross-project edges on pattern layer only
 ```
 
-**Pattern layer as knowledge bridge between projects.**
+**Design goal:** Pattern layer as knowledge bridge between projects.
 
 ---
 

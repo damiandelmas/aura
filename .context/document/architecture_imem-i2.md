@@ -130,14 +130,14 @@ imem search conversations "bug fix"
 imem search context "pattern"  # All context sources
 
 # With section filters
-imem search develop "database" --decisions
-imem search develop "error handling" --patterns
+imem search develop "database" --section "Decisions"
+imem search develop "error handling" --section "Patterns"
 
 # With session filter
 imem search conversations "implementation" --session abc12345
 
 # Search pattern layer only
-imem search develop "error handling" --pattern
+imem search develop "error handling" --layer pattern
 ```
 
 **Collection Lifecycle**

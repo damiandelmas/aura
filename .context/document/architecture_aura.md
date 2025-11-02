@@ -52,9 +52,9 @@ imem init               # Index changelogs
 ### Search Your Knowledge
 ```bash
 # Phase-based search
-imem develop search "authentication" --decisions
-imem search "decisions" --section "Decisions"
-imem search "context" --session abc123
+imem search develop "authentication" --section "Decisions"
+imem search develop "decisions" --section "Decisions"
+imem search conversations "context" --session abc123
 
 # Compositional retrieval (FlexGraph)
 imem compose '{"search": {"text": "JWT"}, "discovery": {"siblings": true, "genealogy": true}}'
@@ -130,7 +130,7 @@ my-project/
 ### Retrieving Knowledge
 ```
 1. Search changelogs
-   └→ imem develop search "query" --decisions
+   └→ imem search develop "query" --section "Decisions"
    └→ Returns: Section-level matches
 
 2. Compositional discovery (FlexGraph)
@@ -139,7 +139,7 @@ my-project/
    └→ Template rendering with genealogical indicators
 
 3. Find conversations
-   └→ imem conversations search "query" --messages-only
+   └→ imem search conversations "query"
    └→ Returns: Relevant conversation sections
 
 4. Drill down

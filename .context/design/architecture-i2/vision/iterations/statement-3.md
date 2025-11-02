@@ -171,30 +171,31 @@ This is like Git learning from how you use it and auto-creating aliases for comm
 - Get Python code, Node code, Go code all mixed
 - No way to filter for principles vs implementation
 
-### Your system with flippable chunks:
+### Your system with dual collections:
 ```python
-# Implementation face (current, same project)
-chunk.content = "Use Celery workers with Redis backend..."
-chunk.code_signatures = [Python code]
+# Implementation collection (_impl)
+changelog.md → "Use Celery workers with Redis backend..."
+              + code_signatures [Python code]
 
-# Pattern face (superseded, or cross-project query)
-chunk.pattern_content = "Message queue with worker pool pattern:
+# Pattern collection (_pattern)
+changelog.pattern.md → "Message queue with worker pool pattern:
 - Async task submission
 - Worker pool processing
 - Result retrieval"
+(LLM extracted, language-agnostic)
 ```
 
-**Query across projects with pattern layer filter**:
+**Query across projects with pattern collection**:
 ```python
-search("async processing", layer="pattern", scope="all_projects")
+search("async processing", collection="pattern", scope="all_projects")
 ```
 
 **Returns ONLY patterns, zero code**:
-- "Message queue with worker pool" (5 projects use this)
-- "Event-driven async I/O" (3 projects use this)
-- "Callback-based concurrency" (2 projects use this)
+- "Message queue with worker pool"
+- "Event-driven async I/O"
+- "Callback-based concurrency"
 
-**Authority = cross-project validation count**
+**Future:** Authority metrics from pattern similarity and reuse across projects.
 
 This enables institutional learning across tech stacks. No one else has this.
 
@@ -208,34 +209,36 @@ This enables institutional learning across tech stacks. No one else has this.
 
 ### Your system:
 
-**Recent chunk (2 weeks old)**:
+**Recent chunks (2 weeks old)**:
 ```
-serving_mode: "implementation"
+Query: implementation collection
 → AI sees: "Use asyncio with gather() for concurrent API calls"
+→ Full tech details, current code
 ```
 
-**Old chunk (6 months old, superseded)**:
+**Old chunks (6 months old, superseded)**:
 ```
-serving_mode: "pattern"
+BRAIN intelligence (planned): Routes query to pattern collection
 → AI sees: "Non-blocking I/O pattern for concurrent operations"
 → AI does NOT see: asyncio-specific code (might be outdated)
+→ Implementation available on explicit collection query
 ```
 
-**Ancient chunk (2 years old)**:
+**Ancient chunks (2 years old)**:
 ```
-serving_mode: "pattern"
+Query: pattern collection (language-agnostic)
 → AI sees: Abstract principle only
-→ Full implementation available on explicit archaeology request
+→ Full implementation in impl collection (archaeology mode)
 ```
 
-**Property**: Automatic abstraction over time
+**Property**: Progressive abstraction through collection routing
 
-Old decisions don't pollute with deprecated syntax. They serve as timeless principles.
+Old decisions don't pollute with deprecated syntax. Query pattern collection for timeless principles.
 
 This mimics how human memory works:
-- **Recent**: Episodic (specific details)
-- **Old**: Semantic (abstracted patterns)
-- **Ancient**: Principles (full detail on request)
+- **Recent**: Episodic (impl collection - specific details)
+- **Old**: Semantic (pattern collection - abstracted patterns)
+- **Ancient**: Principles (pattern collection, impl on request)
 
 **Neuroscience in a database. No one does this.**
 

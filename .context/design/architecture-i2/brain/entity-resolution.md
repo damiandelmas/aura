@@ -4,6 +4,10 @@ session_id: "090c7e16-cb85-45e5-a1f0-8dd53f191a40"
 
 # Entity Resolution: Living Vocabulary
 
+---
+**Implementation Status:** Architectural design. Standard knowledge graph protocol to be implemented.
+---
+
 **Write naturally, search precisely.**
 
 ---

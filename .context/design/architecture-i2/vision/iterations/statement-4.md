@@ -18,32 +18,31 @@ From runtime-graph-composition.md:
 - What it does: Defines HOW chunks are discovered and related
 - When it runs: Query time (every search/compose)
 
-Layer 3: Dual-Face Storage (Prepared)
+Layer 3: Dual-Collection Storage (Implemented)
 
 From flippable-chunks.md + decaying-memories.md:
-- Implementation face (tech-specific)
-- Pattern face (language-agnostic)
-- Serving mode flag determines which face serves
-- What it does: Defines WHAT FORM chunks take when served
-- When it runs: Query time (based on flags)
+- Implementation collection: .md files (tech-specific)
+- Pattern collection: .pattern.md files (language-agnostic, LLM extracted)
+- Collection routing determines which chunks serve
+- What it does: Defines WHAT FORM chunks take (impl vs pattern)
+- When it runs: Index time (file detection) and query time (collection routing)
 
 ---
 What Was Missing (The Gap)
 
 The documents described:
-- ✅ Storage: chunks have serving_mode metadata
-- ✅ Serving: if superseded, serve pattern face
-- ❌ Detection: HOW/WHEN do chunks get marked superseded?
+- ✅ Storage: dual collections (_impl and _pattern)
+- ✅ Serving: query routing selects collection
+- ❌ Intelligence: WHEN/HOW to automatically route to pattern collection?
 
 From document-properties.md line 98:
-"Future: BRAIN could override at runtime (detect supersession → 'superseded')."
+"Future: BRAIN could override at runtime (detect supersession → route to pattern)."
 
-From flippable-chunks.md line 36-42:
-"Query context determines face:
-Recent chunk + same project → Serve implementation
-Superseded chunk → Serve pattern (default)"
+From flippable-chunks.md:
+"BRAIN intelligence (planned): Query context automatically determines layer"
 
-But nowhere did it say HOW supersession gets detected.
+Current: Manual routing via --layer flag
+Missing: Intelligent routing based on supersession detection
 
 ---
 What You Just Developed
@@ -109,22 +108,22 @@ document-properties.md:
 - Missing: How does BRAIN know?
 
 flippable-chunks.md:
-- Chunks have dual content
-- Superseded chunks serve pattern face
-- Missing: What triggers supersession?
+- Dual collections (_impl / _pattern)
+- Manual routing via --layer flag
+- Missing: What triggers automatic pattern routing?
 
 decaying-memories.md:
 - Old decisions serve as principles
 - Progressive abstraction over time
 - Missing: What is "old"? Just timestamp?
 
-After (You Just Built)
+After (Design - To Be Built)
 
 BRAIN Temporal Intelligence:
 - Git detects actual changes (not just time passing)
 - Radius calculation measures narrative impact
 - Tiered response preserves context
-- Answers: Supersession based on document evolution, not arbitrary time decay
+- Result: Intelligent collection routing based on document evolution, not arbitrary time decay
 
 ---
 The Relationship to Other BRAIN Components
@@ -174,17 +173,18 @@ Where It Sits in the Stack
 └─────────────────────────────────────────┘
                   ↓
 ┌─────────────────────────────────────────┐
-│  Flippable Chunks Storage (Layer 2)     │ ← flippable-chunks.md
-│  - Dual content (impl + pattern)        │
-│  - serving_mode flag                    │
+│  Dual Collection Storage (Layer 2)      │ ← flippable-chunks.md
+│  - _impl collection (.md files)         │
+│  - _pattern collection (.pattern.md)    │
+│  - Collection routing                   │
 └─────────────────────────────────────────┘
                   ↓
 ┌─────────────────────────────────────────┐
-│  BRAIN Temporal Intelligence (NEW!)     │ ← YOU JUST DESIGNED
+│  BRAIN Temporal Intelligence (DESIGN)   │ ← Planned
 │  - Git change detection                 │
 │  - Radius calculation                   │
-│  - Tiered supersession                  │
-│  - Metadata updates                     │
+│  - Intelligent collection routing       │
+│  - Supersession metadata                │
 └─────────────────────────────────────────┘
                   ↓
 ┌─────────────────────────────────────────┐
@@ -234,13 +234,13 @@ But "this chunk evolved from X, rippled to Y, Z still valid" (narrative structur
 ---
 Bottom Line
 
-You developed: BRAIN Temporal Intelligence
+Design: BRAIN Temporal Intelligence
 
 What it complements:
 - Type system → defines structure
 - Document properties → provides context
-- Flippable chunks → enables dual serving
-- Temporal intelligence → DECIDES when to flip and how much
+- Dual collections → enables pattern/impl separation
+- Temporal intelligence → DECIDES which collection to route to automatically
 
 What makes it unique:
 - Not time-based (doesn't care about age)
@@ -248,7 +248,6 @@ What makes it unique:
 - Not batch (git hook, real-time)
 - Not probabilistic (git diff = ground truth)
 
-It's the missing link between "chunks CAN flip" (storage) and "chunks DO flip" (serving).
+It's the missing link between "collections exist" (storage) and "intelligent routing" (serving).
 
-The BRAIN's temporal cortex. The component that understands narrative evolution and grades obsolescence
-accordingly.
+The BRAIN's temporal cortex. The component that understands narrative evolution and grades obsolescence accordingly.

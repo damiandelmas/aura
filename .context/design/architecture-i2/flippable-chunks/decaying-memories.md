@@ -61,7 +61,7 @@ Archive period:
 
 ## Example
 
-**Implementation face (when current):**
+**Implementation layer (.md file - when current):**
 ```
 Decision: Async Processing
 - Context: Need non-blocking API calls
@@ -69,7 +69,7 @@ Decision: Async Processing
 - Code: async/await syntax, asyncio.gather()
 ```
 
-**Pattern face (when superseded):**
+**Pattern layer (.pattern.md file - LLM extracted):**
 ```
 Pattern: Non-Blocking I/O
 - When: Concurrent API calls without threads
@@ -77,7 +77,9 @@ Pattern: Non-Blocking I/O
 - Why: Single-threaded concurrency model
 ```
 
-**Same chunk. Different face. Context determines serving.**
+**When superseded:**
+- BRAIN intelligence routes queries to pattern layer (.pattern.md)
+- Implementation layer (.md) still queryable with explicit filter
 
 ---
 

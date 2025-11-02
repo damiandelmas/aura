@@ -61,13 +61,13 @@ The graph doesn't need to be built. It already exists. Latent in the metadata in
 - Old memories: Semantic (abstracted patterns, neocortex)
 
 **IMEM architecture:**
-- Recent chunks: Implementation face (specific tech details)
-- Old chunks: Pattern face (timeless principles)
-- Both preserved, context determines serving
+- Implementation layer: .md files (specific tech details)
+- Pattern layer: .pattern.md files (timeless principles via LLM extraction)
+- Both indexed in separate collections, query routing determines results
 
-Flippable chunks recreate biological memory consolidation in a database.
+Dual collections recreate biological memory consolidation in a database.
 
-Old decisions don't pollute queries with deprecated syntax. They serve as principles, not outdated code.
+Old decisions don't pollute queries with deprecated syntax. Query pattern collection for principles, not outdated code.
 
 ---
 

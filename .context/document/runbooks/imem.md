@@ -29,10 +29,10 @@ imem init
 imem index-conversation <session-id>
 
 # Search changelogs
-imem develop search "authentication decisions" --decisions
+imem search develop "authentication decisions" --section "Decisions"
 
 # Search conversations
-imem conversations search "bug fix" --patches-only
+imem search conversations "bug fix"
 
 # Compositional retrieval (FlexGraph)
 imem compose '{"search": {"text": "JWT"}, "discovery": {"siblings": true, "genealogy": true}}'
@@ -128,20 +128,20 @@ imem search conversations "bug fix"
 
 **Filter by section type:**
 ```bash
-imem search develop "database" --decisions
-imem search develop "API limits" --constraints
-imem search develop "retry logic" --patterns
+imem search develop "database" --section "Decisions"
+imem search develop "API limits" --section "Constraints"
+imem search develop "retry logic" --section "Patterns"
 ```
 
 **Filter by layer:**
 ```bash
-imem search develop "error handling" --pattern
+imem search develop "error handling" --layer pattern
 # Only searches .pattern.md files (language-agnostic)
 ```
 
 **Combined filters:**
 ```bash
-imem search develop "async operations" --decisions --pattern
+imem search develop "async operations" --section "Decisions" --layer pattern
 # Decisions from pattern layer only
 ```
 
@@ -154,29 +154,16 @@ imem search conversations "bug in authentication"
 # Returns messages + patches
 ```
 
-**Filter by chunk type:**
+**Filter by section type:**
 ```bash
-imem search conversations "error handling" --messages-only
-# Only searches message text (excludes code patches)
-
-imem search conversations "bug fix" --patches-only
-# Only searches code patches (excludes messages)
-```
-
-**Filter by role:**
-```bash
-imem search conversations "how do I" --user-only
+imem search conversations "error handling" --section "User Messages"
 # Only searches user messages
 
-imem search conversations "implementation approach" --assistant-only
-# Only searches assistant responses
+imem search conversations "bug fix" --section "Code Patches"
+# Only searches code patches
 ```
 
-**Filter by file:**
-```bash
-imem search conversations "error" --file src/cli.py
-# Only searches patches for src/cli.py
-```
+**Note:** Conversation chunks are indexed by H2 sections. Use `--section` to filter by section type (e.g., "Message 1: USER", "Code Patch 1: src/cli.py"). For surgical filtering, use compose with discovery primitives.
 
 **Filter by session:**
 ```bash
@@ -186,7 +173,7 @@ imem search conversations "database" --session cb91d93d
 
 **Combined filters:**
 ```bash
-imem search conversations "auth bug" --patches-only --session abc123
+imem search conversations "auth bug" --section "Code Patches" --session abc123
 # Code patches about auth bugs in specific conversation
 ```
 
@@ -287,10 +274,10 @@ imem index-conversation <session-id>
 **Search across both:**
 ```bash
 # Find decisions in changelogs
-imem develop search "auth decisions" --decisions
+imem search develop "auth decisions" --section "Decisions"
 
 # Find how we discussed it in conversation
-imem conversations search "auth discussion" --messages-only --session <id>
+imem search conversations "auth discussion" --session <id>
 ```
 
 ## Performance
@@ -312,22 +299,22 @@ imem conversations search "auth discussion" --messages-only --session <id>
 
 **"Find all decisions about X"**
 ```bash
-imem search develop "X" --decisions --limit 20
+imem search develop "X" --section "Decisions" --limit 20
 ```
 
 **"What did we decide in conversation Y?"**
 ```bash
-imem search conversations "decision" --session <id> --messages-only
+imem search conversations "decision" --session <id>
 ```
 
-**"Show me all code patches for file.py"**
+**"Show me all code patches"**
 ```bash
-imem search conversations "" --file src/file.py --patches-only
+imem search conversations "code" --section "Code Patches"
 ```
 
 **"Find language-agnostic patterns"**
 ```bash
-imem search develop "error handling" --patterns --pattern
+imem search develop "error handling" --section "Patterns" --layer pattern
 # Pattern layer only (*.pattern.md files)
 ```
 
@@ -418,11 +405,13 @@ imem search conversations "query" # → conversation collection
 imem search context "query"       # → context collection (all phases)
 ```
 
-**"Filters not working (--patches-only returns nothing)"**
+**"Filters not working (no section matches)"**
 ```bash
-# Old conversations don't have new metadata
-# Re-index to get chunk_type, role, file_path fields
-imem index-all-conversations --limit 100
+# Check what sections exist in your conversations
+imem search conversations "" --limit 5 --show-metadata
+
+# Conversations are chunked by H2 headers
+# Section names like "Message 1: USER", "Code Patch 1: src/cli.py"
 ```
 
 **"Stale changelog results"**
@@ -466,9 +455,9 @@ imem init --force  # Full re-index
 - Best: "secure token validation patterns"
 
 **Use section filters:**
-- `--decisions` for architectural choices
-- `--patterns` for reusable solutions
-- `--failures` for what didn't work
+- `--section "Decisions"` for architectural choices
+- `--section "Patterns"` for reusable solutions
+- `--section "Failures"` for what didn't work
 
 **Combine with TRACE:**
 - TRACE: Find conversations by time/content
@@ -477,7 +466,7 @@ imem init --force  # Full re-index
 
 **Pattern layer:**
 - `.pattern.md` files = language-agnostic knowledge
-- Use `--pattern` flag to filter to these only
+- Use `--layer pattern` flag to filter to these only
 - Useful for cross-project pattern learning
 
 ## FlexGraph Compositional Retrieval

@@ -338,7 +338,7 @@ Intelligent, compositional, self-improving memory system
 - [../database/type-system.md](../database/type-system.md) - Template-as-type-system
 - [../database/document-properties.md](../database/document-properties.md) - Frontmatter metadata
 - [../brain/runtime-graph-composition.md](../brain/runtime-graph-composition.md) - Implicit graph + composition
-- [../flippable-chunks/](../flippable-chunks/) - Dual-face architecture
+- [../flippable-chunks/](../flippable-chunks/) - Dual-collection architecture
 
 **Business Logic:**
 - AI-FIRST-USER - AI agents create + consume

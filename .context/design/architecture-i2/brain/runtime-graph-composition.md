@@ -193,6 +193,8 @@ BRAIN exposes metadata landscape before query.
 
 ## Complete Example
 
+**Note:** Commands shown below represent API design. Current implementation uses `imem compose` for compositional queries.
+
 **Query: "Find authoritative authentication decisions"**
 
 **Step 1: Schema introspection**

@@ -33,30 +33,31 @@ Both files indexed with layer='implementation' or layer='pattern'
 
 ## Serving Logic
 
-**Query context determines face:**
+**BRAIN intelligence (planned):**
+
+Query context automatically determines layer:
 
 ```
-Recent chunk + same project → Serve implementation
-Superseded chunk → Serve pattern (default)
-Cross-project query → Serve pattern only
-Explicit request → Serve either face
+Recent chunk + same project → Serve implementation layer
+Superseded chunk → Serve pattern layer (default)
+Cross-project query → Serve pattern layer only
+Explicit request → Override automatic selection
 ```
 
-**Property:** Zero re-indexing. Metadata toggle, not data change.
+**Current implementation:** Manual layer filtering via metadata (--pattern flag)
+
+**Property:** Both layers indexed. Intelligence layer adds automatic selection.
 
 ---
 
 ## Storage Topology
 
 ```
-Same chunk ID
-  ├── Implementation content (expires with tech)
-  └── Pattern content (eternal principles)
-
-Metadata flag: Which face to serve by default
+changelog.md → layer='implementation', indexed
+changelog.pattern.md → layer='pattern', indexed
 ```
 
-**Both preserved. Context selects.**
+**Both preserved as separate files. Query filter selects.**
 
 ---
 
