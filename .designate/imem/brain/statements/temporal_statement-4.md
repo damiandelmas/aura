@@ -1,52 +1,3 @@
-The Architecture Stack (What You Had)
-
-Layer 1: Storage Schema (Static)
-
-From type-system.md + document-properties.md:
-- Template declares types (Decision, Pattern, Failure)
-- Frontmatter provides context (category, session_id, timestamp)
-- Chunks stored with dual metadata
-- What it does: Defines WHAT gets stored and HOW it's structured
-- When it runs: Index time (once per document)
-
-Layer 2: Graph Traversal (Query-time)
-
-From runtime-graph-composition.md:
-- Primitives (siblings, genealogy, temporal, cross_phase)
-- Metadata predicates = edges
-- Ephemeral graph materialization
-- What it does: Defines HOW chunks are discovered and related
-- When it runs: Query time (every search/compose)
-
-Layer 3: Dual-Collection Storage (Implemented)
-
-From flippable-chunks.md + decaying-memories.md:
-- Implementation collection: .md files (tech-specific)
-- Pattern collection: .pattern.md files (language-agnostic, LLM extracted)
-- Collection routing determines which chunks serve
-- What it does: Defines WHAT FORM chunks take (impl vs pattern)
-- When it runs: Index time (file detection) and query time (collection routing)
-
----
-What Was Missing (The Gap)
-
-The documents described:
-- ✅ Storage: dual collections (_impl and _pattern)
-- ✅ Serving: query routing selects collection
-- ❌ Intelligence: WHEN/HOW to automatically route to pattern collection?
-
-From document-properties.md line 98:
-"Future: BRAIN could override at runtime (detect supersession → route to pattern)."
-
-From flippable-chunks.md:
-"BRAIN intelligence (planned): Query context automatically determines layer"
-
-Current: Manual routing via --layer flag
-Missing: Intelligent routing based on supersession detection
-
----
-What You Just Developed
-
 Layer 4: BRAIN Temporal Intelligence (Change Detection)
 
 The missing piece between storage and serving:
@@ -98,25 +49,6 @@ Components:
   - What it does: Records BRAIN decisions for serving layer
 
 ---
-How It Completes the Architecture
-
-Before (Documents Described)
-
-document-properties.md:
-- Chunks have status: "completed"
-- Future: BRAIN could mark "superseded"
-- Missing: How does BRAIN know?
-
-flippable-chunks.md:
-- Dual collections (_impl / _pattern)
-- Manual routing via --layer flag
-- Missing: What triggers automatic pattern routing?
-
-decaying-memories.md:
-- Old decisions serve as principles
-- Progressive abstraction over time
-- Missing: What is "old"? Just timestamp?
-
 After (Design - To Be Built)
 
 BRAIN Temporal Intelligence:
@@ -124,38 +56,6 @@ BRAIN Temporal Intelligence:
 - Radius calculation measures narrative impact
 - Tiered response preserves context
 - Result: Intelligent collection routing based on document evolution, not arbitrary time decay
-
----
-The Relationship to Other BRAIN Components
-
-You already designed BRAIN as having multiple subsystems:
-
-1. Entity Resolution (document-properties.md line 43-53)
-
-- LLM normalizes category at write-time
-- Canonical + variants
-- Status: Designed, not implemented
-
-2. Observable Usage (from earlier discussion)
-
-- Logs compose queries
-- Detects patterns
-- Suggests presets
-- Status: Designed, not implemented
-
-3. Supersession Detection ← YOU JUST DESIGNED THIS
-
-- Git-based change detection
-- Narrative radius calculation
-- Tiered obsolescence
-- Status: Just designed NOW
-
-4. Topology Cache (from earlier discussion)
-
-- Failure density
-- Chain length
-- Authority scores
-- Status: Designed, deferred
 
 ---
 Where It Sits in the Stack
@@ -230,24 +130,3 @@ This is the component that makes the system understand its own evolution.
 
 Not just "this chunk is old" (timestamp).
 But "this chunk evolved from X, rippled to Y, Z still valid" (narrative structure).
-
----
-Bottom Line
-
-Design: BRAIN Temporal Intelligence
-
-What it complements:
-- Type system → defines structure
-- Document properties → provides context
-- Dual collections → enables pattern/impl separation
-- Temporal intelligence → DECIDES which collection to route to automatically
-
-What makes it unique:
-- Not time-based (doesn't care about age)
-- Not binary (tiered response)
-- Not batch (git hook, real-time)
-- Not probabilistic (git diff = ground truth)
-
-It's the missing link between "collections exist" (storage) and "intelligent routing" (serving).
-
-The BRAIN's temporal cortex. The component that understands narrative evolution and grades obsolescence accordingly.
