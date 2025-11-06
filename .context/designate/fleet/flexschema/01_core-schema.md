@@ -2,9 +2,11 @@
 session_id: "034ba596-240e-4bc3-b71a-2194dafd9656"
 ---
 
-# CORE Enhancement: Universal Dimensional Foundation
+# CORE: Universal Dimensional Foundation
 
-**Architectural design for cross-domain semantic resolution.**
+**The coordinate system that makes FlexSchema universal.**
+
+FlexSchema methodology: Observation → Clustering → Emerged types. CORE provides the 6D space in which clustering happens, enabling cross-domain pattern transfer and instant semantic richness.
 
 ---
 
@@ -110,18 +112,17 @@ Together: Structural and semantic richness.
 
 ---
 
-## Decision Criteria
+## Implementation Status
 
-Pursue CORE enhancement if:
-- Cold start problem (new domains need schema immediately)
-- Cross-domain transfer needed (patterns from software → legal)
-- Query precision insufficient (need richer filtering)
-- AI construction valuable (agents building KGs, summaries, etc.)
+**Current:** Template system provides implicit CORE structure through H2/H3 parsing. Types emerge through template compliance.
 
-Current template system sufficient if:
-- Schema emergence acceptable (can wait for corpus)
-- Single domain focus (no transfer needed)
-- Template filtering adequate (section_type queries work)
+**CORE classifier:** Would make the coordinate system explicit, enabling:
+- Bootstrap without corpus (first doc fully typed)
+- Cross-domain transfer (shared coordinate foundation)
+- Confidence-aware resolution (epistemic dimension)
+- AI-augmented construction (structured input for agents)
+
+**Relationship:** Template system = implicit CORE. CORE classifier = explicit CORE. Both implement FlexSchema principles.
 
 ---
 
@@ -129,5 +130,5 @@ Current template system sufficient if:
 
 - [Hindley-Milner Conversation](../tiny-models/Claude-Hindley-Milner type system explained.md) — Intellectual foundation
 - [00_NAMESPACE.md](../00_NAMESPACE.md) — Term definitions
-- [00_architecture-vision.md](./00_architecture-vision.md) — System overview
-- [parameter-space/20_parameter-space-taxonomy.md](../parameter-space/20_parameter-space-taxonomy.md) — Current metadata
+- [00_architecture-vision.md](../vision/00_architecture-vision.md) — System overview
+- [parameter-space/20_parameter-space-taxonomy.md](../parameter-space/20_parameter-space-taxonomy.md) — Current implementation

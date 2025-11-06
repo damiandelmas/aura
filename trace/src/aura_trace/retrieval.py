@@ -414,23 +414,44 @@ class ConversationRetrieval:
             messages = self.get_messages(entries)
             for msg in messages:
                 if msg.get('role') in ['user', 'assistant']:
-                    # Extract text content
-                    text = ''
+                    # Extract ALL content (text, thinking, tool_use)
+                    text_parts = []
+                    thinking_parts = []
+                    tools_used = []
+
                     content = msg.get('content', [])
                     if isinstance(content, str):
-                        text = content
+                        text_parts.append(content)
                     elif isinstance(content, list):
                         for item in content:
-                            if isinstance(item, dict) and item.get('type') == 'text':
-                                text = item.get('text', '')
-                                break
+                            if isinstance(item, dict):
+                                item_type = item.get('type')
 
-                    if text:  # Only add if has text content
+                                if item_type == 'text':
+                                    text_parts.append(item.get('text', ''))
+
+                                elif item_type == 'thinking':
+                                    thinking_parts.append(item.get('thinking', ''))
+
+                                elif item_type == 'tool_use':
+                                    tools_used.append({
+                                        'name': item.get('name'),
+                                        'input': item.get('input', {}),
+                                        'id': item.get('id')
+                                    })
+
+                    # Combine all content
+                    full_text = '\n\n'.join(text_parts) if text_parts else ''
+
+                    # Only add if has any content
+                    if text_parts or thinking_parts or tools_used:
                         timeline.append({
                             'type': 'message',
                             'timestamp': msg.get('_timestamp'),
                             'role': msg.get('role'),
-                            'text': text,
+                            'text': full_text,
+                            'thinking': thinking_parts,
+                            'tools': tools_used,
                             'raw': msg
                         })
 

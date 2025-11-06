@@ -84,9 +84,9 @@ Universal retrieval interface. Query intent → Route to appropriate backend(s) 
 - Confidence scoring (epistemic dimension prevents over-resolution)
 - AI-augmented construction (structured input for agents)
 
-**Status:** Architectural design. Current system uses template parsing for similar effect.
+**Status:** Foundational to FlexSchema methodology. Current system implements implicitly via template parsing. Explicit CORE classifier would make coordinate system visible.
 
-**See:** [Hindley-Milner conversation](../tiny-models/Claude-Hindley-Milner type system explained.md)
+**See:** [CORE Schema](./flexschema/01_core-schema.md), [Hindley-Milner conversation](./tiny-models/Claude-Hindley-Milner type system explained.md)
 
 ---
 

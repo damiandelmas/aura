@@ -53,8 +53,8 @@ class ConversationFormatter:
             md.append("# Conversation\n")
 
         if metadata:
-            duration = metadata.get('duration_minutes', 0)
-            msg_count = metadata.get('message_count', 0)
+            duration = metadata.get('duration_minutes') or 0
+            msg_count = metadata.get('message_count') or 0
             md.append(f"**Duration:** {duration:.0f}min | **Messages:** {msg_count}\n")
 
         md.append("")  # Blank line
@@ -69,10 +69,43 @@ class ConversationFormatter:
             if event_type == 'message':
                 role = event.get('role', 'unknown').upper()
                 text = event.get('text', '')
+                thinking = event.get('thinking', [])
+                tools = event.get('tools', [])
 
                 # Each message = separate H2 section
                 md.append(f"## Message {message_num}: {role}\n")
-                md.append(f"{text}\n")
+
+                # Main text
+                if text:
+                    md.append(f"{text}\n")
+
+                # Thinking blocks
+                if thinking:
+                    md.append("### 🧠 Extended Thinking\n")
+                    for i, think in enumerate(thinking, 1):
+                        md.append(f"**Thought {i}:**\n{think}\n")
+
+                # Tool usage
+                if tools:
+                    md.append("### 🔧 Tools Used\n")
+                    for tool in tools:
+                        tool_name = tool.get('name', 'unknown')
+                        tool_input = tool.get('input', {})
+
+                        md.append(f"**{tool_name}**")
+
+                        # Format input based on tool type
+                        if isinstance(tool_input, dict):
+                            # Show key parameters
+                            for key, value in tool_input.items():
+                                if isinstance(value, str) and len(value) > 100:
+                                    value = value[:100] + "..."
+                                md.append(f"  - {key}: {value}")
+                        else:
+                            md.append(f"  Input: {str(tool_input)[:200]}")
+
+                        md.append("")  # Blank line between tools
+
                 md.append("")  # Blank line between sections
 
                 message_num += 1

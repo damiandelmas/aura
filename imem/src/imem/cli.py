@@ -150,7 +150,8 @@ def _index_phase(phase_name: str, force: bool = False, limit: int = None, collec
     return total_indexed
 
 
-def _index_conversations(force: bool = False, limit: int = None, collection_override: str = None):
+def _index_conversations(force: bool = False, limit: int = None, collection_override: str = None,
+                         project_filter: str = None, folder_path: str = None):
     """
     Index Claude Code conversations
 
@@ -158,6 +159,8 @@ def _index_conversations(force: bool = False, limit: int = None, collection_over
         force: If True, recreate collection
         limit: Optional limit for number of conversations
         collection_override: Optional collection name override for A/B testing
+        project_filter: If provided, filter conversations by project path (empty string = current project)
+        folder_path: If provided, search custom folder for conversations
     """
     from .ingest import EnhancedModularIngest
     import sys as _sys
@@ -219,14 +222,76 @@ def _index_conversations(force: bool = False, limit: int = None, collection_over
         click.echo(f"❌ Error with collection: {e}", err=True)
         return
 
-    # Find conversations
+    # Find conversations with filtering
     finder = ConversationFinder()
-    conversation_files = finder.list_all()
+
+    # Determine filter parameters
+    filter_project_path = None
+    filter_folder_path = None
+
+    if folder_path:
+        # Custom folder takes priority
+        filter_folder_path = Path(folder_path)
+        click.echo(f"🔍 Searching custom folder: {filter_folder_path}")
+    elif project_filter is not None:
+        if project_filter == "":
+            # Empty string means current project (DEFAULT behavior)
+            filter_project_path = project_root
+            click.echo(f"🔍 Indexing conversations for current project: {project_root.name}")
+        else:
+            # Specific project path provided
+            filter_project_path = Path(project_filter)
+            click.echo(f"🔍 Indexing conversations for project: {filter_project_path}")
+    else:
+        # None means --all-projects flag was used (EXPLICIT global search)
+        click.echo(f"🔍 Indexing conversations from ALL projects (--all-projects)")
+
+    conversation_files = finder.list_all(
+        project_filter=filter_project_path,
+        folder_path=filter_folder_path
+    )
+
+    # Get existing session IDs for incremental indexing
+    click.echo(f"🔍 Checking for existing sessions...")
+    existing_sessions = set()
+    try:
+        if collection_exists:
+            offset = None
+            while True:
+                points, next_offset = ingester.client.scroll(
+                    collection_name=collection_name,
+                    limit=100,
+                    offset=offset,
+                    with_payload=True
+                )
+
+                for point in points:
+                    session_id = point.payload.get('session_id')
+                    if session_id:
+                        existing_sessions.add(session_id)
+
+                if next_offset is None:
+                    break
+                offset = next_offset
+
+            click.echo(f"   Found {len(existing_sessions)} already indexed sessions")
+    except Exception as e:
+        click.echo(f"⚠️  Could not check existing sessions: {e}")
+
+    # Filter out already-indexed conversations
+    conversations_to_index = []
+    skipped_count = 0
+    for conv_file in conversation_files:
+        session_id = conv_file.stem
+        if session_id not in existing_sessions:
+            conversations_to_index.append(conv_file)
+        else:
+            skipped_count += 1
+
+    click.echo(f"📚 Indexing {len(conversations_to_index)} new conversations (skipping {skipped_count} existing)...")
 
     if limit:
-        conversation_files = conversation_files[:limit]
-
-    click.echo(f"📚 Indexing {len(conversation_files)} conversations...")
+        conversations_to_index = conversations_to_index[:limit]
 
     # Index each conversation (needs JSONL → markdown conversion)
     total_chunks = 0
@@ -240,7 +305,7 @@ def _index_conversations(force: bool = False, limit: int = None, collection_over
     retrieval = ConversationRetrieval()
     formatter = ConversationFormatter()
 
-    for i, conv_file in enumerate(conversation_files, 1):
+    for i, conv_file in enumerate(conversations_to_index, 1):
         session_id = conv_file.stem
 
         try:
@@ -282,17 +347,19 @@ def _index_conversations(force: bool = False, limit: int = None, collection_over
             if chunks:
                 total_chunks += chunks
                 success_count += 1
-                click.echo(f"  [{i}/{len(conversation_files)}] ✅ {session_id[:12]} ({chunks} chunks)")
+                click.echo(f"  [{i}/{len(conversations_to_index)}] ✅ {session_id[:12]} ({chunks} chunks)")
             else:
-                click.echo(f"  [{i}/{len(conversation_files)}] ⚠️  {session_id[:12]}: No chunks indexed")
+                click.echo(f"  [{i}/{len(conversations_to_index)}] ⚠️  {session_id[:12]}: No chunks indexed")
 
         except Exception as e:
-            click.echo(f"  [{i}/{len(conversation_files)}] ⚠️  {session_id[:12]}: {e}")
+            click.echo(f"  [{i}/{len(conversations_to_index)}] ⚠️  {session_id[:12]}: {e}")
 
     # Update registry with total chunks (not conversation count)
     registry.update_doc_count(project_root, 'conversation', total_chunks)
 
-    click.echo(f"\n🎉 Indexed {success_count}/{len(conversation_files)} conversations")
+    click.echo(f"\n🎉 Indexed {success_count}/{len(conversations_to_index)} new conversations ({total_chunks} chunks)")
+    if skipped_count > 0:
+        click.echo(f"   Skipped {skipped_count} already-indexed conversations")
     return success_count
 
 
@@ -386,7 +453,10 @@ def _execute_search(query: str, filters: dict, limit: int, after_date: str = Non
 @click.option('--force', is_flag=True, help='Recreate collection if exists')
 @click.option('--limit', type=int, help='Limit number of documents/conversations to index')
 @click.option('--collection', help='Override collection name (for A/B testing different models)')
-def index_source(source, force, limit, collection):
+@click.option('--all-projects', is_flag=True, help='Index conversations from ALL projects (default: current project only)')
+@click.option('--project', 'project_path', type=str, help='Index specific project path conversations')
+@click.option('--folder', type=str, help='Custom folder path to search for conversations')
+def index_source(source, force, limit, collection, all_projects, project_path, folder):
     """
     Index content from a specific source
 
@@ -395,16 +465,36 @@ def index_source(source, force, limit, collection):
       design        - .context/design/ phase
       document      - .context/document/ phase
       context       - All phases (develop + design + document)
-      conversations - Claude Code conversations (~/.claude/)
+      conversations - Claude Code conversations (DEFAULT: current project only)
 
     Examples:
       imem index develop
       imem index context --force
-      imem index conversations --limit 50
+      imem index conversations                           # Current project only (DEFAULT)
+      imem index conversations --limit 50                # First 50 from current project
+      imem index conversations --all-projects            # All projects
+      imem index conversations --project /path/to/project
+      imem index conversations --folder /custom/path
       imem index develop --collection imem_abc123_nomic  # A/B test with Nomic
     """
     if source == 'conversations':
-        _index_conversations(force=force, limit=limit, collection_override=collection)
+        # Determine project filter
+        # DEFAULT: Current project (project-scoped)
+        # EXPLICIT: --all-projects for global indexing
+        project_filter = ""  # Default to current project
+
+        if all_projects:
+            project_filter = None  # None signals global search
+        elif project_path:
+            project_filter = project_path
+
+        _index_conversations(
+            force=force,
+            limit=limit,
+            collection_override=collection,
+            project_filter=project_filter,
+            folder_path=folder
+        )
     else:
         _index_phase(phase_name=source, force=force, limit=limit, collection_override=collection)
 
@@ -990,6 +1080,190 @@ def collections_clean(dry_run):
                 click.echo(f"  ❌ Failed to delete {c.name}: {e}")
 
         click.echo(f"\n🎉 Cleaned up {len(orphaned)} collections")
+
+
+@imem.command('remove')
+@click.option('--session', type=str, help='Remove by session ID')
+@click.option('--project', type=str, help='Remove by project path')
+@click.option('--before', type=str, help='Remove conversations before date (YYYY-MM-DD)')
+@click.option('--source', type=click.Choice(['context', 'conversation']), help='Remove by source type')
+@click.option('--dry-run', is_flag=True, help='Preview what would be deleted')
+def remove_points(session, project, before, source, dry_run):
+    """Remove indexed content by filters
+
+    Examples:
+      imem remove --session abc123 --dry-run
+      imem remove --project /path/to/project
+      imem remove --before 2025-01-01
+      imem remove --source conversation --before 2024-12-01
+    """
+    from qdrant_client import QdrantClient
+    from qdrant_client.models import Filter, FieldCondition, MatchValue, Range
+    from datetime import datetime
+
+    # Build filter conditions
+    filter_conditions = []
+
+    if session:
+        filter_conditions.append(FieldCondition(key='session_id', match=MatchValue(value=session)))
+
+    if project:
+        # Note: project_path might not be in metadata, but file_path contains it
+        filter_conditions.append(FieldCondition(key='file_path', match=MatchValue(value=project)))
+
+    if before:
+        # Parse date and convert to timestamp
+        try:
+            date_obj = datetime.strptime(before, '%Y-%m-%d')
+            timestamp_str = date_obj.isoformat()
+            filter_conditions.append(
+                FieldCondition(
+                    key='timestamp',
+                    range=Range(lt=timestamp_str)
+                )
+            )
+        except ValueError:
+            click.echo(f"❌ Invalid date format: {before}. Use YYYY-MM-DD", err=True)
+            return
+
+    if source:
+        filter_conditions.append(FieldCondition(key='source', match=MatchValue(value=source)))
+
+    if not filter_conditions:
+        click.echo("❌ No filter specified. Use --session, --project, --before, or --source", err=True)
+        return
+
+    # Get collection info
+    registry = SimpleRegistry()
+    project_root = registry.get_project_root()
+
+    if not project_root:
+        click.echo("❌ Not in a registered project. Run 'imem init' first.", err=True)
+        return
+
+    collections = registry.get_project_info(project_root).get('collections')
+    if not collections:
+        click.echo("❌ No collections found for this project", err=True)
+        return
+
+    # Determine which collections to query
+    collection_names = []
+    if source == 'conversation':
+        collection_names = [collections['conversation']]
+    elif source == 'context':
+        collection_names = [collections['context']]
+    else:
+        # Query both
+        collection_names = [collections['context'], collections['conversation']]
+
+    client = QdrantClient(host='localhost', port=6334)
+
+    # Build Qdrant filter
+    qdrant_filter = Filter(must=filter_conditions)
+
+    total_points = 0
+    collection_counts = {}
+
+    # Preview matching points
+    click.echo("🔍 Searching for matching points...")
+    for coll_name in collection_names:
+        try:
+            if not client.collection_exists(coll_name):
+                continue
+
+            # Scroll through matching points
+            matching_points = []
+            offset = None
+
+            while True:
+                points, next_offset = client.scroll(
+                    collection_name=coll_name,
+                    scroll_filter=qdrant_filter,
+                    limit=100,
+                    offset=offset,
+                    with_payload=True
+                )
+
+                matching_points.extend(points)
+
+                if next_offset is None:
+                    break
+                offset = next_offset
+
+            if matching_points:
+                collection_counts[coll_name] = len(matching_points)
+                total_points += len(matching_points)
+
+        except Exception as e:
+            click.echo(f"⚠️  Error querying {coll_name}: {e}")
+
+    if total_points == 0:
+        click.echo("No matching points found")
+        return
+
+    # Display results
+    click.echo(f"\n📊 Found {total_points} matching points:")
+    for coll_name, count in collection_counts.items():
+        click.echo(f"   {coll_name}: {count} points")
+
+    # Show sample points
+    if dry_run or not dry_run:
+        click.echo("\n📋 Sample points:")
+        for coll_name in collection_names:
+            if coll_name not in collection_counts:
+                continue
+
+            points, _ = client.scroll(
+                collection_name=coll_name,
+                scroll_filter=qdrant_filter,
+                limit=3,
+                with_payload=True
+            )
+
+            for point in points:
+                session_id = point.payload.get('session_id', 'N/A')
+                section = point.payload.get('section_name', point.payload.get('section_type', 'N/A'))
+                click.echo(f"   - {session_id[:12] if session_id != 'N/A' else 'N/A'}: {section}")
+
+    if dry_run:
+        click.echo(f"\n📋 Dry run - would delete {total_points} points")
+        click.echo("Run without --dry-run to actually delete")
+        return
+
+    # Confirm deletion
+    if not click.confirm(f"\n⚠️  Delete {total_points} points?"):
+        click.echo("Cancelled")
+        return
+
+    # Perform deletion
+    click.echo("\n🗑️  Deleting points...")
+    deleted_count = 0
+
+    for coll_name in collection_counts.keys():
+        try:
+            # Delete using filter
+            result = client.delete(
+                collection_name=coll_name,
+                points_selector=qdrant_filter
+            )
+
+            click.echo(f"   ✅ Deleted from {coll_name}")
+            deleted_count += collection_counts[coll_name]
+
+        except Exception as e:
+            click.echo(f"   ❌ Failed to delete from {coll_name}: {e}")
+
+    click.echo(f"\n🎉 Deleted {deleted_count} points")
+
+    # Update registry doc counts
+    for coll_name in collection_counts.keys():
+        try:
+            info = client.get_collection(coll_name)
+            # Determine collection type from name
+            coll_type = 'conversation' if '_conversation' in coll_name else 'context'
+            registry.update_doc_count(project_root, coll_type, info.points_count)
+        except Exception as e:
+            click.echo(f"⚠️  Could not update registry for {coll_name}: {e}")
 
 
 @imem.group()

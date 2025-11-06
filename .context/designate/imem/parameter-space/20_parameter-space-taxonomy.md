@@ -8,7 +8,7 @@ session_id: "034ba596-240e-4bc3-b71a-2194dafd9656"
 
 **Context:** Current implementation. Template structure (H2/H3) provides type system. Frontmatter provides semantic context.
 
-**CORE dimensions:** Proposed enhancement. Would make typing explicit and universal. See [00_NAMESPACE.md](../00_NAMESPACE.md).
+**CORE dimensions:** Foundational to FlexSchema. Template system implements implicitly. See [CORE Schema](../flexschema/01_core-schema.md) and [00_NAMESPACE.md](../00_NAMESPACE.md).
 
 **Both approaches:** Rich metadata at index, enabling type-safe semantic search.
 

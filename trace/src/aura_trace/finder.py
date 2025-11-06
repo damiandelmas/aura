@@ -36,28 +36,129 @@ class ConversationFinder:
         logger.debug(f"Claude projects folder: {claude_folder}")
 
         return claude_folder
-    
-    def list_all(self) -> List[Path]:
-        """List all conversation files across all projects, sorted by modification time"""
-        if not self.conversation_folder.exists():
-            logger.warning(f"Claude conversation folder not found: {self.conversation_folder}")
-            return []
 
-        conversations = []
-        # Search all project folders
-        for project_folder in self.conversation_folder.iterdir():
+    def _find_project_folder_by_path(self, project_path: Path) -> Optional[Path]:
+        """Find Claude project folder that corresponds to a git project path
+
+        Claude stores projects as: ~/.claude/projects/<hash>/
+        We need to find which hash matches our project path.
+
+        Args:
+            project_path: Absolute path to git project root
+
+        Returns:
+            Path to Claude project folder, or None if not found
+        """
+        claude_projects_dir = Path.home() / '.claude' / 'projects'
+
+        if not claude_projects_dir.exists():
+            logger.warning(f"Claude projects directory not found: {claude_projects_dir}")
+            return None
+
+        project_path = project_path.resolve()
+
+        # Check each Claude project folder for matching path
+        for project_folder in claude_projects_dir.iterdir():
             if not project_folder.is_dir():
                 continue
 
-            # Look for JSONL files in each project
+            # Look for project.json which contains the project path
+            project_json = project_folder / 'project.json'
+            if project_json.exists():
+                try:
+                    import json
+                    with open(project_json, 'r') as f:
+                        data = json.load(f)
+                        stored_path = Path(data.get('path', '')).resolve()
+                        if stored_path == project_path:
+                            logger.debug(f"Found Claude project folder: {project_folder.name}")
+                            return project_folder
+                except Exception as e:
+                    logger.debug(f"Error reading {project_json}: {e}")
+                    continue
+
+        # Fallback: Match by converting folder name to path
+        # Claude folders are named: -home-user-path-to-project → /home/user/path/to/project
+        for project_folder in claude_projects_dir.iterdir():
+            if not project_folder.is_dir():
+                continue
+
+            # Convert folder name to path
+            folder_name = project_folder.name
+            if folder_name.startswith('-'):
+                # Convert: -home-user-projects-foo → /home/user/projects/foo
+                reconstructed_path = Path('/' + folder_name[1:].replace('-', '/'))
+
+                if reconstructed_path == project_path:
+                    logger.debug(f"Found Claude project folder by path reconstruction: {project_folder.name}")
+                    return project_folder
+
+        return None
+    
+    def list_all(self, project_filter: Optional[Path] = None, folder_path: Optional[Path] = None) -> List[Path]:
+        """List conversation files, optionally filtered by project or custom folder
+
+        Args:
+            project_filter: If provided, only return conversations from this project's git root
+            folder_path: If provided, search this custom folder instead of Claude projects
+
+        Returns:
+            List of conversation file paths, sorted by modification time (newest first)
+        """
+        conversations = []
+
+        # Custom folder search (highest priority)
+        if folder_path:
+            folder_path = Path(folder_path)
+            if not folder_path.exists():
+                logger.warning(f"Custom folder not found: {folder_path}")
+                return []
+
+            # Search for JSONL files in custom folder
+            for file_path in folder_path.rglob("*.jsonl"):
+                if file_path.is_file() and file_path.stat().st_size > 0:
+                    conversations.append(file_path)
+
+            logger.info(f"Found {len(conversations)} conversations in custom folder: {folder_path}")
+
+        # Project-specific search
+        elif project_filter:
+            project_filter = Path(project_filter).resolve()
+
+            # Find the Claude project folder that matches this git root
+            project_folder = self._find_project_folder_by_path(project_filter)
+            if not project_folder:
+                logger.warning(f"No Claude project folder found for: {project_filter}")
+                return []
+
+            # Search only this project's conversations
             for file_path in project_folder.glob("*.jsonl"):
                 if file_path.is_file() and file_path.stat().st_size > 0:
                     conversations.append(file_path)
 
+            logger.info(f"Found {len(conversations)} conversations for project: {project_filter.name}")
+
+        # Global search (default)
+        else:
+            if not self.conversation_folder.exists():
+                logger.warning(f"Claude conversation folder not found: {self.conversation_folder}")
+                return []
+
+            # Search all project folders
+            for project_folder in self.conversation_folder.iterdir():
+                if not project_folder.is_dir():
+                    continue
+
+                # Look for JSONL files in each project
+                for file_path in project_folder.glob("*.jsonl"):
+                    if file_path.is_file() and file_path.stat().st_size > 0:
+                        conversations.append(file_path)
+
+            logger.info(f"Found {len(conversations)} conversations across all projects")
+
         # Sort by modification time (newest first)
         conversations.sort(key=lambda f: f.stat().st_mtime, reverse=True)
 
-        logger.info(f"Found {len(conversations)} conversations across all projects")
         return conversations
 
     def find_by_session_id(self, session_id: str, search_globally: bool = True) -> Optional[Path]:
