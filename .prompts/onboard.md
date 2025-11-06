@@ -19,13 +19,12 @@
 ### MOST PROXIMATE
 
 **DOCUMENTS:**
-/home/axp/projects/fleet/hangar/code/aura/main/.context/design/.modules/flex-graph/02_current/flexgraph-methodology.md
-/home/axp/projects/fleet/hangar/code/aura/main/.context/design/.modules/flex-graph/02_current/imem-architecture.md
+
 
 ### END-STATE
 
 **DOCUMENTS:**
-/home/axp/projects/fleet/hangar/code/aura/main/.context/design/.modules/flex-graph/the-brain/00_vision.md
+/home/axp/projects/fleet/hangar/code/aura/main/.context/design/architecture-i2/vision/typed-vector-document-store.md
 
 ## DEVELOPMENT DOCUMENTS
 

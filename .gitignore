@@ -50,3 +50,7 @@ Thumbs.db
 
 # Git backup
 .git.old/
+
+# aura
+/.prompts
+/.testing

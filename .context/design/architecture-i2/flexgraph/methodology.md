@@ -211,56 +211,6 @@ Context Assembly: AI comprehends from presentation
 
 **Intelligence:** Structure aids comprehension, not just retrieval.
 
----
-
-## When To Use FlexGraph
-
-### Ideal For:
-
-✅ **AI-generated structured content**
-- Agents write via templates
-- Schema enforcement straightforward
-- Guaranteed metadata foundation
-
-✅ **Evolving knowledge bases**
-- Constantly growing corpus
-- Relationships emerge over time
-- Implicit graph > precomputed edges
-
-✅ **Agentic workflows**
-- AI agents primary users
-- Compositional flexibility needed
-- Self-describing systems valuable
-
-✅ **Moderate latency tolerance**
-- 80-200ms acceptable
-- Runtime composition overhead acceptable
-- Query-time intelligence worth it
-
-### Not Ideal For:
-
-❌ **Human-generated unstructured content**
-- Can't enforce template compliance
-- Post-hoc extraction probabilistic
-- Foundation assumption breaks
-
-❌ **Static document corpus**
-- One-time ingest, rarely updated
-- Precomputed structures amortize well
-- Runtime composition overhead wasted
-
-❌ **Fixed relationship schemas**
-- Known relationships upfront
-- No query-time adaptation needed
-- Traditional graph DB simpler
-
-❌ **Millisecond latency requirements**
-- High-frequency API calls
-- Precomputed structures faster
-- Runtime overhead unacceptable
-
----
-
 ## Design Questions
 
 When building features, ask:
