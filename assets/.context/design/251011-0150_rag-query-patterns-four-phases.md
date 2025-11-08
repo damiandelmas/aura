@@ -22,12 +22,12 @@ results = qdrant.search("course code normalization")
 # 1. Design exploration (5 approaches considered)
 # 2. Design decision (hybrid approach chosen)
 # 3. Implementation code (CSV parser)
-# 4. Ground truth data (courses.json)
+# 4. Staged plan data (courses.json)
 # 5. API documentation (GET /courses endpoint)
 
 # Developer must manually sort:
 # "Which is the decision?"
-# "Which is the canonical data?"
+# "Which is the staged plan?"
 # "Which is the implementation?"
 ```
 
@@ -95,27 +95,27 @@ results = qdrant.search(
 
 **Benefit**: Understand past decisions without digging through code
 
-### Query Pattern 2: Ground Truth Lookup
+### Query Pattern 2: Staged Plan Lookup
 
-**Use Case**: "What's the canonical specification?"
+**Use Case**: "What's the refined specification ready for implementation?"
 
 ```python
-# Find all authoritative specs
+# Find all staged plans
 results = qdrant.search(
   query="course schema",
   filter={'phase': 'designate'}
 )
 
 # Returns ONLY:
-# - courses.json (THE course definitions)
-# - phase-one-plan.md (THE implementation plan)
+# - courses.json (refined course definitions)
+# - phase-one-plan.md (refined implementation plan)
 # NOT:
 # - Design discussions about course schema
 # - Implementation of course imports
 # - Documentation about courses
 ```
 
-**Benefit**: Zero ambiguity about what's authoritative
+**Benefit**: Clear separation between exploration and refined plans
 
 ### Query Pattern 3: Implementation Tracing
 
@@ -227,7 +227,7 @@ Without phase filtering:
 - Time: 5-10 minutes
 
 With phase filtering:
-- User gets 1 document (ground truth)
+- User gets 1 document (staged plan)
 - Time: 30 seconds
 
 **Metric 3: Cognitive Load**
@@ -253,13 +253,13 @@ filter = {
 # Returns all architectural decisions with rationale
 ```
 
-**2. Finding Current Ground Truth**
+**2. Finding Staged Plans**
 ```python
 filter = {
   'phase': 'designate',
   'status': 'active'
 }
-# Returns all active canonical specs/plans
+# Returns all active staged specs/plans
 ```
 
 **3. Reviewing Completed Work**
@@ -334,7 +334,7 @@ qdrant.search(
   }
 )
 
-# Find all active ground truth specs
+# Find all active staged specs
 qdrant.search(
   query="schema specification",
   filter={
@@ -363,7 +363,7 @@ RAG returns:
 1. Design doc (decision + rationale) ✓
 2. Implementation changelog (code) ✗
 3. API docs (usage) ✗
-4. Ground truth plan (tasks) ✗
+4. Staged plan (tasks) ✗
 
 LLM context: 4 documents (3 irrelevant)
 Token usage: 8000 tokens (75% noise)

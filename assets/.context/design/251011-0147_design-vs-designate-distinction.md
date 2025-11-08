@@ -17,23 +17,23 @@ timestamp: "2025-10-11T01:47:00-0700"
 - **State**: Fluid, exploratory, may change
 - **Example**: "Should we use two schemas or one?"
 
-### Designate = Crystallized Ground Truth
+### Designate = Refined Plan Staging
 - **Input**: Design decisions (from design phase)
-- **Process**: Create authoritative specification
-- **Output**: THE plan, THE schema, THE canonical data
-- **State**: Authoritative, referenced by everyone
-- **Example**: `courses.json` = THE course list (not "a" course list)
+- **Process**: Refine into clear, actionable specifications
+- **Output**: Clear plans, schemas, refined specifications
+- **State**: Staged for implementation, clearly articulated
+- **Example**: `courses.json` = clearly defined course list ready for implementation
 
 ### The Critical Distinction
 
 **Design asks:** "What should we do?"
-**Designate declares:** "This is what we're doing."
+**Designate states:** "Here's the plan, clearly articulated."
 
 **Design explores:** Multiple approaches, trade-offs, alternatives
-**Designate specifies:** One approach, the chosen path, the plan
+**Designate refines:** Chosen approach into clear, implementable plan
 
 **Design produces:** Decisions, principles, rationale
-**Designate produces:** Plans, schemas, ground truth artifacts
+**Designate produces:** Plans, schemas, refined specifications
 
 ## Explored Ideas
 
@@ -147,10 +147,10 @@ Hybrid normalization - canonical codes + alias table
 - Principles established
 - **Audience**: Decision-makers, architects, future designers
 
-**Designate Phase (Authority):**
-- Single source of truth created
-- Authoritative specification written
-- Ground truth artifact produced
+**Designate Phase (Plan Staging):**
+- Clear, refined plans created
+- Specifications articulated for implementation
+- Ready-to-implement artifacts produced
 - **Audience**: Implementers, developers, systems
 
 ### When to Create Designate Artifacts
@@ -202,8 +202,8 @@ Hybrid normalization - canonical codes + alias table
 
 Without `phase:` field:
 ```python
-# Returns both design discussion AND ground truth
-# User must manually figure out which is authoritative
+# Returns both design discussion AND staged plans
+# User must manually figure out which is which
 results = qdrant.search("course codes")
 # → 251004-2050_course-code-normalization-strategy.md (design)
 # → courses.json conceptual discussion
@@ -211,12 +211,12 @@ results = qdrant.search("course codes")
 
 With `phase:` field:
 ```python
-# Returns ONLY ground truth
+# Returns ONLY staged plans
 results = qdrant.search(
   query="course codes",
   filter={'phase': 'designate'}
 )
-# → courses.json (THE canonical list)
+# → courses.json (refined, ready-to-implement list)
 ```
 
 ## References

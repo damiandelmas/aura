@@ -31,6 +31,11 @@ TRACE searches `~/.claude/projects/` for conversation intelligence:
 3. Use: `trace list --marker "unique phrase"`
 4. Returns session ID
 
+**When you need to load past session as context:**
+1. Find session ID (if needed)
+2. Use: `trace show chronicle <id>` or `/trace-show <id>`
+3. Chronicle outputs to stdout → Claude reads → context loaded
+
 **When you need to export for handoff:**
 1. Find session ID (if needed)
 2. Export chronicle: `trace export chronicle <id> -o context.md`
@@ -58,6 +63,20 @@ trace list --marker "$ARGUMENTS"
 /trace-find "simplified sys prompt"
 ```
 **Tip:** Use 2-4 word unique phrases from assistant messages
+
+**trace-show** - Load session context into current conversation
+**Args:** <session-id>
+**Action:** Load TRACE Context
+**Verb:** Load session
+```bash
+trace show chronicle <session-id>
+```
+**Examples:**
+```
+/trace-show 0a535859
+/trace-show dc3d19c9
+```
+**Tip:** Outputs chronicle to stdout - Claude reads and loads context immediately
 
 **trace-export** - Export chronicle for agent handoff
 **Args:** [session-id]

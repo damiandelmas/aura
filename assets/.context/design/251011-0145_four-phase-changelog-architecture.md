@@ -13,7 +13,7 @@ timestamp: "2025-10-11T01:45:00-0700"
 ### The Missing Link Identified
 - **Problem**: Existing IMEM template conflates work phase with domain category
 - **Discovery**: There's a critical gap between design decisions and implementation
-- **Solution**: "Designate" phase - where design crystallizes into ground truth
+- **Solution**: "Designate" phase - staging area for clear, refined plans
 
 ### Four Distinct Phases
 1. **Design** (Exploration & Decisions)
@@ -22,9 +22,11 @@ timestamp: "2025-10-11T01:45:00-0700"
    - Decision made, principles established
    - Output: Design changelog
 
-2. **Designate** (Planning)
-   - THE PLAN emerges from design
-   - Authoritative specifications created
+2. **Designate** (Plan Staging)
+   - Clearest articulation of plan/vision
+   - Staging area for refined designs ready for implementation
+   - Can include: vision, architectural plans, parameter space, namespace
+   - On same conceptual plane as design, but more refined
    - Output: Plans, schemas, roadmaps
 
 3. **Develop** (Implementation)

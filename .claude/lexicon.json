@@ -1,0 +1,23 @@
+{
+  "canonical_terms": {
+    "FlexSchema": "Universal schema library enabling cross-domain type resolution",
+    "FlexGraph": "Graph construction from Typed Vector Store (Ephemeral + Persistent)",
+    "CORE": "Six universal dimensions (Interrogative, Valence, Abstraction, Epistemic, Temporal, Structural)",
+    "Typed Vector Store": "Vector storage with section_type + document properties",
+    "Template-As-Schema": "H2/H3 markdown structure providing section_type metadata",
+    "IMEM": "Typed Vector Document Store",
+    "BRAIN": "Intelligence layer (FlexGraph, Entity Resolution, Temporal Cortex, Introspection)",
+    "FLEET": "Universal Knowledge Gateway (nexus, brain, trace, IMEM)",
+    "Three-Tier Gateway": "Tier 0 (raw), Tier 1 (registry), Tier 2 (qualifiers)"
+  },
+
+  "variants": {
+    "template": "Template-As-Schema",
+    "markdown template": "Template-As-Schema",
+    "H2/H3 structure": "Template-As-Schema",
+    "CORE Dimensions": "CORE",
+    "CORE Schema": "CORE",
+    "Three-Tier": "Three-Tier Gateway",
+    "Tier 0/1/2": "Three-Tier Gateway"
+  }
+}
