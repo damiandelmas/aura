@@ -1,1 +1,0 @@
-memories can hang in limbo. collected, held in staging, then upon USER validation utilized to create a 'true memory'.

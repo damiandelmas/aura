@@ -63,6 +63,7 @@ Intelligence Stack
 
 Layer 1: Structure Creation (Foundation Models)
 Raw HTML/URL → GPT-4 → Structured markdown
+*note* this is usually the AI Agent that one is using; Claude Code, Codex, Gemini CLI.
 Cost: $0.01-0.02 per document (one-time)
 When: Initial semantic understanding needed
 
