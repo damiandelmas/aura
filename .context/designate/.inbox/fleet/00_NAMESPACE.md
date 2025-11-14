@@ -67,6 +67,8 @@ Universal retrieval interface. Query intent → Route to appropriate backend(s) 
 
 ## CORE Dimensions (Architectural Design)
 
+**NOTE: THIS IS HYPOTHETICAL! We may be better off juse using an LLM to resolve TYPE to our schema without having this 'objective' layer**
+
 **Six universal dimensions for chunk classification:**
 
 - **Interrogative:** WHO | WHAT | WHERE | WHEN | WHY | HOW

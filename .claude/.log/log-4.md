@@ -1,3 +1,5 @@
+## Nexus Brainstorm
+
 annoying nexus brainstorm 1
 e4f01f41-e723-411f-b3b7-92ea48646cb9
 
@@ -7,8 +9,12 @@ annoying nexus brainstorm 2
 Knowledge System Architecture
 8e6692d0-d77b-4eee-8069-1eafd1f6cd39
 
+## Lineage Test
+
 lineage test
 c069442b-9b56-4ea8-bcb6-d3ee21e4acbf
+
+## Others
 
 python frontmatter
 c5383e9c-9894-4584-9edd-1cf8aaebaca1
@@ -24,6 +30,8 @@ docling
     their actual prompt
     use for identifying chunks for imem
 5ec1a14f-f07a-4f1e-af66-f35067d657ec
+    #task
+    find more enterprise prompts
 
 markdown parser
 #best
@@ -41,3 +49,5 @@ art + 3 tiers original
 conversation chunks
 08a69e59-12d9-4984-ad66-f06aec5b4af1
 
+conversation changes
+0f556f6f-115c-4d23-ab6c-f612c52c7fe6
