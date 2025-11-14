@@ -56,7 +56,7 @@ session_id: c5383e9c-9894-4584-9edd-1cf8aaebaca1
 │    else:                                           │
 │      tier0_content = summary                      │
 │                                                    │
-│ 3. Parse content (BRAIN intelligence)             │
+│ 3. Parse content (MIND intelligence)             │
 │    - Schema evolution                             │
 │    - Entity resolution                            │
 │                                                    │
@@ -146,7 +146,7 @@ ingest_to_qdrant(summary, post.metadata)
 
 # 2. Option B: Fetch full content (deep)
 full_content = WebFetch(post['source'])
-parsed = parse_with_brain_intelligence(full_content)
+parsed = parse_with_mind_intelligence(full_content)
 ingest_to_qdrant(parsed, post.metadata)
 
 ---

@@ -68,10 +68,10 @@
 
   Language-agnostic: Markdown summaries + retrieval pointers work for any source type.
 
-> '/home/axp/projects/brain/60_aesthetics/registry.md' this is a pretty decent implementaiton of that. What do 
+> '/home/axp/projects/mind/60_aesthetics/registry.md' this is a pretty decent implementaiton of that. What do 
 u think? 
 
-● Read(~/projects/brain/60_aesthetics/registry.md)
+● Read(~/projects/mind/60_aesthetics/registry.md)
   ⎿  Read 398 lines
 
 ● Solid practical implementation. Core two-tier intact.
@@ -129,9 +129,9 @@ u think?
 
   Ship it. Refine only if IMEM search quality degrades or you add non-URL sources.
 
-> its probably fine as it is. '/home/axp/projects/brain/60_aesthetics/collection.md' 
+> its probably fine as it is. '/home/axp/projects/mind/60_aesthetics/collection.md' 
 
-● Read(~/projects/brain/60_aesthetics/collection.md)
+● Read(~/projects/mind/60_aesthetics/collection.md)
   ⎿  Read 17 lines
 
 ● Smart separation. Registry vs. Collection.

@@ -31,12 +31,12 @@
 
 ## Architectural Sketch
 
-**Three-Tier + BRAIN**
+**Three-Tier + MIND**
 ```
 Tier 0: Raw sources
 Tier 1: Normalized registry
 Tier 2: Per-project qualification
-BRAIN: Orthogonal intelligence (schema evolution, graphs, temporal validation)
+MIND: Orthogonal intelligence (schema evolution, graphs, temporal validation)
 ```
 
 **CORE Flow**

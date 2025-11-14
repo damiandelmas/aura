@@ -58,7 +58,7 @@ Chunks stored with section_type + metadata
 ```
 Query from different domain (e.g., legal project)
   ↓
-BRAIN resolution engine:
+MIND resolution engine:
   - Reads chunk's section_type="Decision"
   - Looks up software.Decision CORE signature
   - Matches against legal schema templates

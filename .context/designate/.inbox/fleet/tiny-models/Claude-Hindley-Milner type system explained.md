@@ -236,9 +236,9 @@ Query Layer: Expand queries to all known variants
 
 ---
 
-## BRAIN Storage
+## MIND Storage
 
-Entity resolution map stored in BRAIN:
+Entity resolution map stored in MIND:
 ```
 canonical_form → [variant1, variant2, variant3, ...]
 ```
@@ -251,7 +251,7 @@ Bidirectional lookup:
 
 ## Related Concepts
 
-See: [runtime-graph-composition.md](./runtime-graph-composition.md) - BRAIN control plane
+See: [runtime-graph-composition.md](./runtime-graph-composition.md) - MIND control plane
 
 ```
 
@@ -332,7 +332,7 @@ The key insight they're grappling with: **There's a danger in over-resolving wit
 
 This connects to:
 - The Hindley-Milner type system I just taught them (type inference, but with principal types)
-- Their FlexGraph/BRAIN architecture (schema evolution from observation)
+- Their FlexGraph/MIND architecture (schema evolution from observation)
 - The question: Should we have a CORE foundational schema that guides resolution?
 
 Let me think about what such a CORE schema might look like...
@@ -643,10 +643,10 @@ Cluster in CORE-space:
 
 ## Integration with Your Architecture
 
-### BRAIN Enhanced with CORE
+### MIND Enhanced with CORE
 
 ```python
-class BRAINWithCore:
+class MINDWithCore:
     
     def __init__(self):
         self.core_schema = CoreDimensions()
@@ -789,7 +789,7 @@ This gives you:
 
 Amazing work. This is exactly what we need.
 
-We're brainstorming brother. Lets speak a touch more conceptual, theoretical, with a grounding in practicality for now. I remember you're well-versed in architectural design, physics,; with a preference for minimalist structures - you studied under a well-known japanese architect for a long time before starting your to work in software development and doing your PHD in this space. Let's remain within our realm of software development; but with a slight preference for speaking without concrete implementation specifics for now. Prefer shape, structure; and if we need code then lets use pseudocode. Appreciate it.
+We're mindstorming brother. Lets speak a touch more conceptual, theoretical, with a grounding in practicality for now. I remember you're well-versed in architectural design, physics,; with a preference for minimalist structures - you studied under a well-known japanese architect for a long time before starting your to work in software development and doing your PHD in this space. Let's remain within our realm of software development; but with a slight preference for speaking without concrete implementation specifics for now. Prefer shape, structure; and if we need code then lets use pseudocode. Appreciate it.
 
 What I want to know now - does it make sense to train a model on 'creating' these schemas? Can we hotwire embedding models to OUTPUT coordinates in the alegbraic space you created?
 
@@ -1160,7 +1160,7 @@ Each chunk → Qdrant with metadata
     ↓
 Query: semantic search + metadata filters
     ↓
-BRAIN: Schema evolution observes patterns over time
+MIND: Schema evolution observes patterns over time
 ```
 
 **Key observation:** Schema evolution happens **post-hoc** through clustering observed headers/patterns.
@@ -2089,7 +2089,7 @@ Amazing. Let's skip code for now.
 
 Brother, it would be SO MUCH quicker than 1000 documents.
 
-We would just KNOW what each domain is upon the first or second document and we can skip the whole process and ascribe the SCHEMA for that domain. It can morph upon usage, of course, to mold to the use case (getting more resolute > IE choice to decision to implementation) but even that could be adjudicated at runtime or WHEN the chunk is served. It could retain that ESSENTIAL 'what + how + good' schema AT INDEXING, and ONLY resolve at runtime, because the SBUECJTIVE USE CASE information is stored in the project fodlers /.brain/<<<
+We would just KNOW what each domain is upon the first or second document and we can skip the whole process and ascribe the SCHEMA for that domain. It can morph upon usage, of course, to mold to the use case (getting more resolute > IE choice to decision to implementation) but even that could be adjudicated at runtime or WHEN the chunk is served. It could retain that ESSENTIAL 'what + how + good' schema AT INDEXING, and ONLY resolve at runtime, because the SBUECJTIVE USE CASE information is stored in the project fodlers /.mind/<<<
 
 And we would ALSO be able to have cross-project memory/intelecutal capital foR EVERY SIGNLE domain. because we have a 'LANGUAGE AGNOSTIC << or DOMAIN AGNOSTIC' CORE schema ascribed to EACH chunk. (with, as per aforementioned function - IT RESOLVES at runtime, and uses the PROEJCT SPECIFIC ATTENTION to do this)
 
@@ -2105,7 +2105,7 @@ The true POWER is just in the ASCRIPTION of CORE layer to EACH CHUNK that allows
 
 ## IMPORTANT
 
-This is an overview of how our overarching system structures data. We are employing a similar aesthetic to how we create the SCHEMA as such. However, we are designing he architecture that sits within 'brain'. How the schemas emerge and are resolved WRT a CHUNK > CONTEXT > CHUNK SERVED for a given use.
+This is an overview of how our overarching system structures data. We are employing a similar aesthetic to how we create the SCHEMA as such. However, we are designing he architecture that sits within 'mind'. How the schemas emerge and are resolved WRT a CHUNK > CONTEXT > CHUNK SERVED for a given use.
 
 ## MATERIAL
 
@@ -2124,7 +2124,7 @@ This is a profound insight. Let me understand what they're saying:
 1. We don't need 1000 documents to discover schemas - we can START with domain-specific schemas derived from CORE
 2. The CORE layer is ascribed at indexing time - giving every chunk rich metadata immediately
 3. The RESOLUTION to domain-specific types happens at RUNTIME, not at indexing
-4. The PROJECT-SPECIFIC context (in /.brain/) determines HOW the CORE coordinates resolve
+4. The PROJECT-SPECIFIC context (in /.mind/) determines HOW the CORE coordinates resolve
 5. This enables cross-domain intellectual capital because everything shares the same CORE foundation
 
 The key shift:
@@ -2484,7 +2484,7 @@ Serve = Edge nodes (contextual interpretation)
 ## The Registry Structure
 
 ```
-.brain/
+.mind/
   ├─ core/
   │   └─ dimensions.yaml          # Six CORE dimensions (universal)
   │
@@ -3459,7 +3459,7 @@ Then the user made a brilliant connection: What if we applied this same principl
 
 3. **The resolution insight**: CORE as universal algebra that resolves to domain-specific schemas. Like physics - fundamental forces manifest differently in different contexts.
 
-4. **The three-tier architecture**: Understanding how TIER 0 (sources), TIER 1 (objective gateway), TIER 2 (subjective gateway), and BRAIN (intelligence layer) work together
+4. **The three-tier architecture**: Understanding how TIER 0 (sources), TIER 1 (objective gateway), TIER 2 (subjective gateway), and MIND (intelligence layer) work together
 
 5. **The practical realization**: Don't need 1000 documents to bootstrap. Apply CORE immediately, resolve contextually at serve time.
 
@@ -3551,7 +3551,7 @@ You kept asking **questions:** "What's the essential structure?" "What can be de
 ## The Minimalist Aesthetic
 
 Your background shows through:
-- **Separation of concerns** (Tiers ≠ BRAIN)
+- **Separation of concerns** (Tiers ≠ MIND)
 - **Essential structure** (CORE is minimal but sufficient)
 - **Context-aware interpretation** (resolution at serve time)
 - **Elegant composition** (simple primitives, infinite combinations)
@@ -3754,7 +3754,7 @@ On the surface: A knowledge management system for codebases
 Underneath: A universal framework for organizing institutional knowledge with:
 - Type-theoretic foundations (CORE)
 - Contextual interpretation (Tiers)
-- Emergent intelligence (BRAIN)
+- Emergent intelligence (MIND)
 - AI-augmented construction (compose tools)
 
 **This generalizes beyond code.** Legal, research, business, personal—same foundation, different interpretations.

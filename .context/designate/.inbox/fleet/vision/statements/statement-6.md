@@ -8,7 +8,7 @@ TIER 1: Objective Gateway (Normalization to Markdown)
 ↓
 TIER 2: Subjective Gateway (Per-Project Qualification)
 ⊥
-BRAIN: Intelligence Layer (Orthogonal)
+MIND: Intelligence Layer (Orthogonal)
 
 ---
 TIER 0: The Things Themselves
@@ -57,7 +57,7 @@ TIER 2: Subjective Gateway (Qualification)
 Per-project wrappers that QUALIFY at point of serve
 
 Structure:
-project-barbar/.brain/references/
+project-barbar/.mind/references/
 anthropic-hooks.md:
     ref: tier1-anthropic-hooks
     attention: 0.9
@@ -79,7 +79,7 @@ Authority at serve:
 - npta queries auth → barbar-auth-log served as "reference example"
 
 ---
-BRAIN: Intelligence Layer (Orthogonal)
+MIND: Intelligence Layer (Orthogonal)
 
 Operates ACROSS tiers, not IN the stack
 
@@ -141,7 +141,7 @@ swappable, interface unchanged
 
 5. Intelligence Independent of Storage
 
-BRAIN operates on metadata regardless of:
+MIND operates on metadata regardless of:
 - Qdrant vs Elasticsearch vs Neo4j
 - Summary vs full content
 - Ingested vs not ingested
@@ -151,9 +151,9 @@ The Architecture in Motion
 
 Query: "Auth patterns barbar used, high confidence"
 ↓
-Tier 2: Filter barbar/.brain/ for auth + high attention
+Tier 2: Filter barbar/.mind/ for auth + high attention
 ↓
-BRAIN: Entity resolution (auth → [jwt, oauth, hooks])
+MIND: Entity resolution (auth → [jwt, oauth, hooks])
         Schema evolution (pattern type discovered)
         Graph composition (PageRank for authority)
 ↓
@@ -161,7 +161,7 @@ Tier 1: Retrieve entries with mixed retrieval methods
 ↓
 Tier 0: Execute retrievals (webfetch, qdrant, filesystem)
 ↓
-BRAIN: Temporal cortex (drift detection)
+MIND: Temporal cortex (drift detection)
         Introspection (qualify at serve)
 ↓
 Results: Unified, contextualized, enriched
@@ -172,7 +172,7 @@ Why It's Architecturally Powerful
 
 Separation of concerns:
 - Tiers = data (what exists, how wrapped, who accesses)
-- BRAIN = intelligence (how to understand, serve, validate)
+- MIND = intelligence (how to understand, serve, validate)
 
 Clean abstraction:
 - Data layer is dumb (markdown + frontmatter)

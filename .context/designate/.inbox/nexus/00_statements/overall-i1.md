@@ -29,7 +29,7 @@ design → designate → develop → document
 
 ```
 
-### 5. BRAIN (Intelligence Layer)
+### 5. MIND (Intelligence Layer)
 ```
 Operations: Schema evolution, entity resolution, graph materialization, validation
 Independence: Works regardless of backend (Qdrant/Neo4j/ES/filesystem)
@@ -62,7 +62,7 @@ Same source = different authority per project/context
          │            │                  │
     2: Qualification  │            develop (validated)
          │            │                  │
-         │       BRAIN (orthogonal)     document (static)
+         │       MIND (orthogonal)     document (static)
          │            │                  │
          └────────────┴──────────────────┘
                       │
@@ -116,7 +116,7 @@ Results → Metadata predicates (session_id, timestamp, file_path) → Edges →
 **Property 1: Separation**
 - Tiers = data concerns (what exists, how wrapped, who uses)
 - Phases = knowledge concerns (exploration, plan, ground truth, reference)
-- BRAIN = intelligence concerns (understanding, serving, validating)
+- MIND = intelligence concerns (understanding, serving, validating)
 - All orthogonal
 
 **Property 2: Emergence**
@@ -157,6 +157,6 @@ Results → Metadata predicates (session_id, timestamp, file_path) → Edges →
 
 **Git validates all claims.**
 
-**BRAIN operates independently.**
+**MIND operates independently.**
 
 **Context determines meaning.**

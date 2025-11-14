@@ -29,7 +29,7 @@ Tier 2: Subjective relationship TO thing
 - Same source, different authority per project
 
 **4. HARMONIOUS LAYERS USE NEXUS**
-- IMEM (institutional memory with BRAIN capabilities)
+- IMEM (institutional memory with MIND capabilities)
 - TRACE (session genealogy)
 - PROCESS (four-phase workflow)
 - All exploit NEXUS infrastructure, provide specialized capabilities
@@ -62,7 +62,7 @@ Tier 2: Subjective relationship TO thing
     ┌────┴────┐
     │         │
    IMEM     TRACE
-  (BRAIN)  (genealogy)
+  (MIND)  (genealogy)
 ```
 
 ---
@@ -71,7 +71,7 @@ Tier 2: Subjective relationship TO thing
 
 **Property 1: Separation of Concerns**
 - NEXUS = Universal wrapper (tiers, visibility, authority)
-- Harmonious layers = Specialized capabilities (IMEM/BRAIN, TRACE, PROCESS)
+- Harmonious layers = Specialized capabilities (IMEM/MIND, TRACE, PROCESS)
 
 **Property 2: Contextual Authority**
 ```
@@ -87,7 +87,7 @@ No content processing required for visibility.
 **Property 4: Selective Depth**
 ```
 NEXUS: All sources, metadata, visibility (universal)
-IMEM: Selected sources, full indexing, BRAIN intelligence (deep)
+IMEM: Selected sources, full indexing, MIND intelligence (deep)
 TRACE: Session genealogy, temporal linkage (specialized)
 ```
 Visibility everywhere. Depth selectively.
@@ -134,7 +134,7 @@ Result: Truth grounded
 ```
 NEXUS wraps all interactions regardless of:
   - Retrieval method (IMEM, WebFetch, Read, Git)
-  - Intelligence layer (BRAIN for IMEM)
+  - Intelligence layer (MIND for IMEM)
   - Methodology (PROCESS, research, agile)
 ```
 Harmonious layers are pluggable.
@@ -187,6 +187,6 @@ Superset → Subset relationship.
 
 **NEXUS wraps all interactions.**
 
-**BRAIN is IMEM's intelligence.**
+**MIND is IMEM's intelligence.**
 
 **The network is the foundation.**

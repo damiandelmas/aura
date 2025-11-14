@@ -30,7 +30,7 @@ session_id: c5383e9c-9894-4584-9edd-1cf8aaebaca1
 └────────────────────────────────────────────────┘
             ↓
 ┌─ TIER 2: SUBJECTIVE GATEWAY(S) ───────────────┐
-│ PER-PROJECT REGISTRIES (project-x/.brain/)    │
+│ PER-PROJECT REGISTRIES (project-x/.mind/)    │
 │                                                │
 │ • Intention-specific wrapper                   │
 │ • Points to Tier 1 objective entry             │
@@ -74,7 +74,7 @@ Lives in: `GLOBAL_REGISTRY/anthropic-hooks.md`
 
 ### Tier 2 (Subjective - MULTIPLE project entries)
 
-#### project-barbar/.brain/wrappers/anthropic-hooks.md:
+#### project-barbar/.mind/wrappers/anthropic-hooks.md:
 
 - **objective_ref:** anthropic-hooks-official
 - **added:** 2025-01-15
@@ -90,7 +90,7 @@ Lives in: `GLOBAL_REGISTRY/anthropic-hooks.md`
   ```
 - **status:** implemented
 
-#### project-npta/.brain/wrappers/anthropic-hooks.md:
+#### project-npta/.mind/wrappers/anthropic-hooks.md:
 
 - **objective_ref:** anthropic-hooks-official
 - **added:** 2025-01-20
@@ -106,7 +106,7 @@ Lives in: `GLOBAL_REGISTRY/anthropic-hooks.md`
   ```
 - **status:** researching
 
-#### project-orca/.brain/wrappers/anthropic-hooks.md:
+#### project-orca/.mind/wrappers/anthropic-hooks.md:
 
 - **objective_ref:** anthropic-hooks-official
 - **added:** 2025-01-18
@@ -252,7 +252,7 @@ Create objective entry in GLOBAL_REGISTRY:
 ```
 project-barbar accesses for security purpose:
 ↓
-Create subjective wrapper in project-barbar/.brain/:
+Create subjective wrapper in project-barbar/.mind/:
   - objective_ref: anthropic-hooks-official
   - purpose: "block dangerous bash"
   - attention: 0.0 (initial)
@@ -411,7 +411,7 @@ Tier 0: Thing itself
     ↑
 Tier 1: ONE global objective wrapper (external registry)
     ↑
-Tier 2: MANY subjective wrappers (project-x/.brain/, project-y/.brain/, ...)
+Tier 2: MANY subjective wrappers (project-x/.mind/, project-y/.mind/, ...)
 ```
 
 **Properties:**
@@ -451,7 +451,7 @@ GLOBAL_REGISTRY/               # Tier 1 (one per source)
 ├── jwt-guide.md
 └── aura-design-log.md
 
-project-barbar/.brain/         # Tier 2 (barbar's view)
+project-barbar/.mind/         # Tier 2 (barbar's view)
 ├── wrappers/
 │   ├── anthropic-hooks.md
 │   ├── jwt-guide.md
@@ -459,7 +459,7 @@ project-barbar/.brain/         # Tier 2 (barbar's view)
 ├── attention_density.json
 └── schemas/barbar-auth.json
 
-project-npta/.brain/           # Tier 2 (npta's view)
+project-npta/.mind/           # Tier 2 (npta's view)
 ├── wrappers/
 │   └── anthropic-hooks.md
 └── schemas/npta-compliance.json
@@ -512,7 +512,7 @@ motivation: thought it would solve our issue with querying our SQL database
 
 **What is NOT IN THIS:**
 - status, count + patterns, attention etc.
-- ALL OF THAT is held in the 'BRAIN'.
+- ALL OF THAT is held in the 'MIND'.
 - We DO NOT, EVER, include analytics OF KNOWLEDGE OR REPOS ETC IN THEIR isolated entry.
 - This would be a COMPLETE AND UTTER disrespect of separation of concerns.
 
@@ -539,7 +539,7 @@ time_created: valid time
 
 #### A. PROJECT REGISTRY (Ground Truth)
 ```
-project-x/.brain/
+project-x/.mind/
 ├── project_schema.json          # Emergent schema (cached/runtime)
 ├── analytics/
 │   ├── attention_density.json   # ALL analytics here
@@ -578,7 +578,7 @@ motivation: "revisited for performance optimization"
 - Why I accessed it each time
 - Contextual keywords per access
 
-#### /.brain/ Analytics (computed):
+#### /.mind/ Analytics (computed):
 - attention weights
 - access counts
 - usage patterns
@@ -592,10 +592,10 @@ motivation: "revisited for performance optimization"
 **✅ Reference entry:** Narrative intent, context
 **❌ Reference entry:** Analytics, computed metrics
 
-**✅ /.brain/ analytics:** Attention, patterns, counts
-**❌ /.brain/ analytics:** Intent narratives
+**✅ /.mind/ analytics:** Attention, patterns, counts
+**❌ /.mind/ analytics:** Intent narratives
 
-**Reference = qualitative, /.brain/ = quantitative**
+**Reference = qualitative, /.mind/ = quantitative**
 
 ---
 
@@ -611,7 +611,7 @@ motivation: "revisited for performance optimization"
 
 #### 2. Separation is profound
 - Reference = qualitative (what I was thinking)
-- .brain/ = quantitative (what actually happened)
+- .mind/ = quantitative (what actually happened)
 - Intent ≠ outcome, both truths preserved
 - Respects that "I accessed this for X" but analytics show "actually used for Y"
 
@@ -627,10 +627,10 @@ motivation: "revisited for performance optimization"
 - Each project builds its own understanding
 - No forced centralization, but discoverable cross-pollination
 
-#### 5. .brain/ owns emergence
+#### 5. .mind/ owns emergence
 - Schema, attention, patterns computed there
 - References are dumb logs
-- Could rebuild .brain/ from references (archaeological soundness)
+- Could rebuild .mind/ from references (archaeological soundness)
 - Intelligence layer separate from data layer
 
 ---
@@ -648,7 +648,7 @@ motivation: "revisited for performance optimization"
 - Data tells you, you don't declare it
 
 #### Introspection as interface
-- "accessed VIA introspect" → .brain/ is black box with clean API
+- "accessed VIA introspect" → .mind/ is black box with clean API
 - Don't read files directly, query schema/analytics
 - Encapsulation preserved
 
@@ -673,7 +673,7 @@ Query: "Who else uses anthropic-hooks?"
 
 #### 3. Entity resolution for keywords?
 - References stay raw: "SQL" vs "sql" vs "database-sql"
-- .brain/ canonicalizes via entity resolution
+- .mind/ canonicalizes via entity resolution
 - Keeps references pure, intelligence computed
 
 #### 4. Connection to emerged schema?
@@ -687,7 +687,7 @@ Query: "Who else uses anthropic-hooks?"
 
 This treats knowledge work like **version control:**
 - **References** = commits (immutable, append-only, capture moment)
-- **.brain/** = log analysis (patterns, graphs, insights)
+- **.mind/** = log analysis (patterns, graphs, insights)
 - **Tier 1** = remote repo (shared, objective)
 - **Tier 2** = local branches (per-project, subjective)
 
@@ -695,7 +695,7 @@ Or like a **library system:**
 - **Tier 0** = books (exist)
 - **Tier 1** = catalog cards (describe objectively)
 - **Tier 2** = checkout slips (who, when, why)
-- **.brain/** = librarian analytics (popular topics, usage patterns)
+- **.mind/** = librarian analytics (popular topics, usage patterns)
 
 ---
 

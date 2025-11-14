@@ -124,7 +124,7 @@ Cross-project edges on pattern layer only
 
 ---
 
-## BRAIN Integration
+## MIND Integration
 
 **Pattern extraction:**
 - Superseded implementation → Pattern abstraction
@@ -144,4 +144,4 @@ Cross-project edges on pattern layer only
 
 See: [flippable-chunks.md](./flippable-chunks.md) - Dual-face architecture
 See: [decaying-memories.md](./decaying-memories.md) - Progressive abstraction
-See: [../brain/runtime-graph-composition.md](../brain/runtime-graph-composition.md) - Cross-project graph composition
+See: [../mind/runtime-graph-composition.md](../mind/runtime-graph-composition.md) - Cross-project graph composition

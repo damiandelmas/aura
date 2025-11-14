@@ -24,9 +24,9 @@ Core principle: Authority is not intrinsic to sources. It's determined by Tier 2
 
 ---
 
-## Intelligence Layer (BRAIN)
+## Intelligence Layer (MIND)
 
-### **BRAIN**
+### **MIND**
 Intelligence architecture operating ACROSS storage layer. Consists of: Schema Evolution, Entity Resolution, Runtime Graphs, Introspection, Temporal Cortex. Backend-agnostic—works regardless of retrieval method.
 
 ### **Schema Evolution**
@@ -61,7 +61,7 @@ Data organization pattern. Normalize heterogeneous sources (Tier 0→1) → Obje
 Reality grounding methodology. Track code via git → Compare docs vs implementation → Detect drift → Compute divergence radius → Graduated serving based on divergence. Code is source of truth.
 
 ### **Metadata Network Orchestration**
-Universal retrieval interface. Query intent → Route to appropriate backend(s) (IMEM, Graphiti, WebFetch, filesystem) → Execute retrieval → Enrich with BRAIN intelligence → Serve with qualification. Backend-agnostic.
+Universal retrieval interface. Query intent → Route to appropriate backend(s) (IMEM, Graphiti, WebFetch, filesystem) → Execute retrieval → Enrich with MIND intelligence → Serve with qualification. Backend-agnostic.
 
 ---
 
@@ -98,7 +98,7 @@ Universal retrieval interface. Query intent → Route to appropriate backend(s) 
 Typed vector document store. Implements FlexGraph methodology internally. Provides: vector similarity search, parameter space metadata, runtime graph composition. One retrieval backend among many (equal to Graphiti, WebFetch, etc.).
 
 ### **Parameter Space**
-~30-35 metadata dimensions per vectorized chunk: id, embedding, section_type, section_name, category, subtype, session_id, timestamp, keywords, status, has_* fields, word_count, etc. Foundation for all BRAIN operations.
+~30-35 metadata dimensions per vectorized chunk: id, embedding, section_type, section_name, category, subtype, session_id, timestamp, keywords, status, has_* fields, word_count, etc. Foundation for all MIND operations.
 
 ### **Template System**
 Markdown structure as type system. H2 headers declare types (Decision, Pattern, Failure). H3 instances have required/optional fields. MarkdownNodeParser extracts structure → section_type metadata. Template IS the database schema.
@@ -149,7 +149,7 @@ Authority determined by context at serve time, not declared upfront. Tier 2 qual
 Markdown structure defines database schema. Write `## Decisions`, you declare Decision type. Write `### Use JWT` with `- Context:`, you instantiate with required fields.
 
 ### **Retrieval-Agnostic Intelligence**
-BRAIN operations work across any backend. Swap Qdrant for Pinecone, add Neo4j—intelligence persists. Metadata Network abstracts retrieval method.
+MIND operations work across any backend. Swap Qdrant for Pinecone, add Neo4j—intelligence persists. Metadata Network abstracts retrieval method.
 
 ### **Truth Through Implementation**
 Documentation validated against code. Git diffs reveal divergence. Temporal Cortex detects drift. Serve based on validation state. Code = ground truth.
@@ -165,7 +165,7 @@ Not every changelog has every type. Not every instance uses every optional field
 
 **Storage:** [three-tier/](./three-tier/), [architecture-i2/database/](./architecture-i2/database/)
 
-**Intelligence:** [architecture-i2/brain/](./architecture-i2/brain/)
+**Intelligence:** [architecture-i2/mind/](./architecture-i2/mind/)
 
 **Methodologies:** [architecture-i2/flexgraph/](./architecture-i2/flexgraph/)
 

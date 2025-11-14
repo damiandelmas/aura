@@ -41,7 +41,7 @@ Structured preservation at write-time enables cheaper, higher-quality knowledge 
 - **Tier 1**: Objective registries ABOUT sources
 - **Tier 2**: Subjective gateways - authority at serve time
 
-### BRAIN Intelligence (Orthogonal)
+### MIND Intelligence (Orthogonal)
 
 1. **Schema Evolution**: Observe → Cluster → Emerge types
 2. **Entity Resolution**: Variants → Canonical → Query expansion

@@ -95,7 +95,7 @@ status: "completed"  # or "in-progress", "archived", "reverted"
 
 Currently: Mostly "completed" (limited utility).
 
-Future: BRAIN could override at runtime (detect supersession → "superseded").
+Future: MIND could override at runtime (detect supersession → "superseded").
 
 ---
 

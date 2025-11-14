@@ -1,4 +1,4 @@
-Layer 4: BRAIN Temporal Intelligence (Change Detection)
+Layer 4: MIND Temporal Intelligence (Change Detection)
 
 The missing piece between storage and serving:
 
@@ -12,7 +12,7 @@ You just built the missing layer:
 
 Layer 1 (Storage): Chunks with dual content + serving_mode flag
                             ↓
-Layer 4 (BRAIN Intelligence): Git-based change detection
+Layer 4 (MIND Intelligence): Git-based change detection
     - Detects: Which chunks changed (git diff)
     - Analyzes: Narrative distance (radius calculation)
     - Decides: Supersession tier (flip/hint/soften)
@@ -23,7 +23,7 @@ Layer 3 (Serving): Serve based on updated flags + hints
 ---
 The Specific Innovation
 
-BRAIN Supersession Detection System
+MIND Supersession Detection System
 
 Components:
 
@@ -46,12 +46,12 @@ Components:
   - Updates chunk metadata in Qdrant
   - Logs supersession in registry
   - Tracks reason from git diff
-  - What it does: Records BRAIN decisions for serving layer
+  - What it does: Records MIND decisions for serving layer
 
 ---
 After (Design - To Be Built)
 
-BRAIN Temporal Intelligence:
+MIND Temporal Intelligence:
 - Git detects actual changes (not just time passing)
 - Radius calculation measures narrative impact
 - Tiered response preserves context
@@ -80,7 +80,7 @@ Where It Sits in the Stack
 └─────────────────────────────────────────┘
                   ↓
 ┌─────────────────────────────────────────┐
-│  BRAIN Temporal Intelligence (DESIGN)   │ ← Planned
+│  MIND Temporal Intelligence (DESIGN)   │ ← Planned
 │  - Git change detection                 │
 │  - Radius calculation                   │
 │  - Intelligent collection routing       │
@@ -117,11 +117,11 @@ You just added the DYNAMIC layer:
 ---
 The Conceptual Breakthrough
 
-Previous BRAIN components (entity resolution, observable usage):
+Previous MIND components (entity resolution, observable usage):
 - Learn from DATA (entity variants, usage patterns)
 - Improve QUERIES (expand search, suggest presets)
 
-This BRAIN component (supersession detection):
+This MIND component (supersession detection):
 - Learns from CHANGE (git history)
 - Improves CONTEXT (narrative distance, tiered response)
 - Temporal awareness (not just what, but WHEN and HOW FAR)

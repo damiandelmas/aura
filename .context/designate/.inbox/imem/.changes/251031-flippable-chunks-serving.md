@@ -4,11 +4,11 @@ session_id: "4073f617-cac9-43a2-9362-de4411e42744"
 
 #### Flippable Chunks: Serving-Time Intelligence
 
-**Decision: Pattern chunks hidden from retrieval, served by BRAIN decision matrix**
+**Decision: Pattern chunks hidden from retrieval, served by MIND decision matrix**
 
 **Why:**
 - Single retrieval path (implementation embeddings only)
-- BRAIN becomes serving middleware (intelligence layer)
+- MIND becomes serving middleware (intelligence layer)
 - Zero re-indexing (metadata-driven swap)
 - Centralized decay logic (not scattered)
 
@@ -22,7 +22,7 @@ session_id: "4073f617-cac9-43a2-9362-de4411e42744"
 }
 ```
 
-**BRAIN serving matrix:**
+**MIND serving matrix:**
 ```
 Superseded → pattern
 Cross-project → pattern
@@ -32,13 +32,13 @@ Default → implementation
 
 **Flow:**
 ```
-Query → Vector DB (impl) → BRAIN swap logic → Return content
+Query → Vector DB (impl) → MIND swap logic → Return content
 ```
 
 **Result:**
 - Template writes both faces (single creation)
 - Vector DB retrieves one (implementation embedding)
-- BRAIN swaps content (serving intelligence)
+- MIND swaps content (serving intelligence)
 - Observable usage → adaptive thresholds
 
 **Architectural shift: Pattern content is serving-time transformation, not retrieval-time alternative.**

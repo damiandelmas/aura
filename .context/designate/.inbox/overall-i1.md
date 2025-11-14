@@ -66,7 +66,7 @@ Same source = different authority per project/context
          │            │            │
       PROCESS      IMEM        TRACE
     (four-phase) (memory)   (genealogy)
-         │         BRAIN          │
+         │         MIND          │
          │      (introspect,      │
          │       compose)         │
          └────────────┴───────────┘
@@ -88,7 +88,7 @@ Same source = different authority per project/context
 
 **IMEM (Institutional Memory)**
 - Uses MANAGE (tier wrapping for indexed content)
-- Provides BRAIN capabilities (introspect, compose)
+- Provides MIND capabilities (introspect, compose)
 - Consumed via USE
 - One retrieval method among many
 
@@ -140,7 +140,7 @@ Results → Metadata predicates (session_id, timestamp, file_path) → Edges →
 **Property 1: Separation**
 - Tiers = data concerns (what exists, how wrapped, who uses)
 - CREATE/MANAGE/USE = core system (entry, wrapper, consumption)
-- BRAIN = IMEM intelligence (introspect, compose - harmonious layer)
+- MIND = IMEM intelligence (introspect, compose - harmonious layer)
 - PROCESS = methodology concerns (how artifacts are produced)
 - All orthogonal
 
@@ -165,7 +165,7 @@ Results → Metadata predicates (session_id, timestamp, file_path) → Edges →
 - PROCESS exploits core (produces artifacts)
 - Core exploits PROCESS (gets structured metadata)
 - IMEM exploits MANAGE (uses tier wrapping)
-- MANAGE exploits IMEM (quality retrieval via BRAIN)
+- MANAGE exploits IMEM (quality retrieval via MIND)
 - All harmonious layers: integrated but architecturally separate
 
 ---
@@ -184,7 +184,7 @@ Results → Metadata predicates (session_id, timestamp, file_path) → Edges →
 
 **Git validates all claims.**
 
-**BRAIN is IMEM's intelligence layer.**
+**MIND is IMEM's intelligence layer.**
 
 **Context determines meaning.**
 

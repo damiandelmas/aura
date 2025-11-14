@@ -25,7 +25,7 @@ session_id: c5383e9c-9894-4584-9edd-1cf8aaebaca1
   Tier 1/2 registries → NOT necessarily in Qdrant
 
   Query: "What sources reference anthropic-hooks across all projects?"
-  → Filesystem scan: project-*/.brain/references/*.md
+  → Filesystem scan: project-*/.mind/references/*.md
   → Returns: reference entries (usage logs, not content)
 
   What's NOT in Qdrant:
@@ -67,7 +67,7 @@ session_id: c5383e9c-9894-4584-9edd-1cf8aaebaca1
   → python-frontmatter (registry query)
   # Scan Tier 2 references
   for project in projects:
-      for ref in (project / ".brain/references").glob("*.md"):
+      for ref in (project / ".mind/references").glob("*.md"):
           post = frontmatter.load(ref)
           if post['ref'] == 'anthropic-hooks-official':
               print(f"{project.name}: {post['purpose']}")
@@ -271,7 +271,7 @@ or we would just mirror it using python-frontmatter?
 
   # Sync Tier 2 to Qdrant
   for project in projects:
-      for ref in (project / ".brain/references").glob("*.md"):
+      for ref in (project / ".mind/references").glob("*.md"):
           post = frontmatter.load(ref)
           qdrant.upsert(
               collection='references',

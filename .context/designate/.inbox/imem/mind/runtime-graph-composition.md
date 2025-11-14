@@ -2,7 +2,7 @@
 session_id: "090c7e16-cb85-45e5-a1f0-8dd53f191a40"
 ---
 
-# BRAIN: Runtime Graph Composition
+# MIND: Runtime Graph Composition
 
 **The control plane for document space.**
 
@@ -12,7 +12,7 @@ session_id: "090c7e16-cb85-45e5-a1f0-8dd53f191a40"
 
 Metadata index = implicit knowledge graph.
 
-BRAIN exposes this graph via runtime APIs. No separate graph storage. Metadata predicates (file_path, session_id, timestamp) ARE traversable edges. Query the index, materialize relationships on demand.
+MIND exposes this graph via runtime APIs. No separate graph storage. Metadata predicates (file_path, session_id, timestamp) ARE traversable edges. Query the index, materialize relationships on demand.
 
 **The shift:** Not "build a graph DB" but "query metadata as graph."
 
@@ -123,7 +123,7 @@ AI sees relationships programmatically, not inferred. Template selection driven 
 
 ---
 
-## BRAIN: The Control Plane
+## MIND: The Control Plane
 
 **Manager of document space runtime/control/map.**
 
@@ -137,7 +137,7 @@ AI sees relationships programmatically, not inferred. Template selection driven 
 **Schema introspection:**
 - Expose complete metadata landscape before query
 - AI asks: "What can I filter on? What relationships exist?"
-- BRAIN responds with schema map
+- MIND responds with schema map
 - Zero guessing, full discovery
 
 ### Storage Layer
@@ -172,14 +172,14 @@ AI sees relationships programmatically, not inferred. Template selection driven 
 
 ## Schema Introspection
 
-BRAIN exposes metadata landscape before query.
+MIND exposes metadata landscape before query.
 
 **AI workflow:**
 ```
 1. AI: "What metadata exists?"
-2. BRAIN: Returns schema map (all indexed fields)
+2. MIND: Returns schema map (all indexed fields)
 3. AI: Constructs precise query from schema
-4. BRAIN: Executes query
+4. MIND: Executes query
 ```
 
 **Available metadata:**
@@ -200,7 +200,7 @@ BRAIN exposes metadata landscape before query.
 **Step 1: Schema introspection**
 ```
 AI: imem schema
-BRAIN: Returns available filters (section_type, category, etc.)
+MIND: Returns available filters (section_type, category, etc.)
 ```
 
 **Step 2: Graph composition**
@@ -213,7 +213,7 @@ AI: imem graph compose '{
 }'
 ```
 
-**Step 3: BRAIN executes**
+**Step 3: MIND executes**
 - Query vector DB: 20 auth decisions
 - Materialize edges from metadata (siblings, genealogy)
 - Build graph (ephemeral)

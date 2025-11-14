@@ -78,7 +78,7 @@ Pattern: Non-Blocking I/O
 ```
 
 **When superseded:**
-- BRAIN intelligence routes queries to pattern layer (.pattern.md)
+- MIND intelligence routes queries to pattern layer (.pattern.md)
 - Implementation layer (.md) still queryable with explicit filter
 
 ---
@@ -102,7 +102,7 @@ Pattern: Non-Blocking I/O
 
 ---
 
-## BRAIN Integration
+## MIND Integration
 
 **Supersession detection:**
 - Temporal edges + semantic similarity
@@ -122,4 +122,4 @@ Pattern: Non-Blocking I/O
 
 See: [flippable-chunks.md](./flippable-chunks.md) - Dual-face architecture
 See: [cross-project-knowledge.md](./cross-project-knowledge.md) - Pattern bridging
-See: [../brain/runtime-graph-composition.md](../brain/runtime-graph-composition.md) - Supersession detection
+See: [../mind/runtime-graph-composition.md](../mind/runtime-graph-composition.md) - Supersession detection

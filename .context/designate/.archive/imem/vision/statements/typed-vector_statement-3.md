@@ -138,7 +138,7 @@ Query: implementation collection
 
 **Old chunks (6 months old, superseded)**:
 ```
-BRAIN intelligence (planned): Routes query to pattern collection
+MIND intelligence (planned): Routes query to pattern collection
 → AI sees: "Non-blocking I/O pattern for concurrent operations"
 → AI does NOT see: asyncio-specific code (might be outdated)
 → Implementation available on explicit collection query

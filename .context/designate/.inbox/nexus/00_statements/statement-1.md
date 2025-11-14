@@ -5,7 +5,7 @@
 **1. PROJECT**
 - Boundary: Git repo (.git directory)
 - Isolation: Per-project knowledge stays isolated
-- Portability: .nexus/ or .brain/.nexus/ travels with repo
+- Portability: .nexus/ or .mind/.nexus/ travels with repo
 
 **2. CORPUS**
 - Documents: All .md files (four-phase lifecycle)
@@ -50,7 +50,7 @@ tags: [official, documentation]
 [Summary of Tier 0 content]
 
 Tier 2: Project Context
-- Per-project wrappers in .brain/ or .nexus/
+- Per-project wrappers in .mind/ or .nexus/
 - Qualify sources at serve time
 ---
 ref: tier1-entry-id

@@ -33,7 +33,7 @@ Both files indexed with layer='implementation' or layer='pattern'
 
 ## Serving Logic
 
-**BRAIN intelligence (planned):**
+**MIND intelligence (planned):**
 
 Query context automatically determines layer:
 

@@ -58,9 +58,9 @@ Query Layer: Expand queries to all known variants
 
 ---
 
-## BRAIN Storage
+## MIND Storage
 
-Entity resolution map stored in BRAIN:
+Entity resolution map stored in MIND:
 ```
 canonical_form → [variant1, variant2, variant3, ...]
 ```
@@ -73,4 +73,4 @@ Bidirectional lookup:
 
 ## Related Concepts
 
-See: [runtime-graph-composition.md](./runtime-graph-composition.md) - BRAIN control plane
+See: [runtime-graph-composition.md](./runtime-graph-composition.md) - MIND control plane

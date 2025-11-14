@@ -64,7 +64,7 @@ design → designate → develop → document
          │            │            │
       PROCESS      IMEM        TRACE
     (four-phase)  (memory)  (genealogy)
-         │         BRAIN         │
+         │         MIND         │
          │      (introspect,     │
          │       compose)        │
          └────────────┴──────────┘
@@ -164,7 +164,7 @@ Complete genealogy enables:
 
 **Insight 5: Harmonious Layers**
 - PROCESS (four-phase) produces artifacts
-- IMEM (with BRAIN) provides deep retrieval
+- IMEM (with MIND) provides deep retrieval
 - TRACE provides genealogy
 - All use MANAGE (via NEXUS), all separate from core
 

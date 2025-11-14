@@ -23,7 +23,7 @@ A knowledge system that preserves structure during creation instead of extractin
 └─ Tier 2: Project qualifiers (contextual authority)
 ```
 
-#### BRAIN (Orthogonal intelligence)
+#### MIND (Orthogonal intelligence)
 ```
 ├─ Schema evolution
 ├─ Entity resolution

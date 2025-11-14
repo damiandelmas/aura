@@ -20,11 +20,11 @@ Tier 2: Subjective qualifiers (per-project gateways)
 
 ---
 
-### **BRAIN**
+### **MIND**
 
 
 ```
-┌─ BRAIN operates ACROSS storage ────────┐
+┌─ MIND operates ACROSS storage ────────┐
 │                                         │
 │  FlexSchema: Pattern → emerged types   │
 │  FlexGraph: Metadata → implicit edges  │
@@ -94,4 +94,4 @@ Documentation claims → Git tracks code changes → Detect drift → Serve base
 
 ### **Metadata Network Orchestration**
 
-Query intent → Discover sources (Tier 1) → Route to appropriate backend → Execute retrieval → Enrich with BRAIN intelligence → Serve with qualification
+Query intent → Discover sources (Tier 1) → Route to appropriate backend → Execute retrieval → Enrich with MIND intelligence → Serve with qualification

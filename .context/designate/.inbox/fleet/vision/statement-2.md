@@ -15,7 +15,7 @@ The universal knowledge foundation hypothesis aligns with architectural vision s
 ### Vision Statements
 
 ```text
-Template → Typed chunks → Metadata = graph → BRAIN intelligence → Contextual serve
+Template → Typed chunks → Metadata = graph → MIND intelligence → Contextual serve
 ```
 
 ---
@@ -68,9 +68,9 @@ Universal Knowledge Foundation = AURA/IMEM at different abstraction level
 
 ### Statements describe
 
-- **Implementation mechanics** (template, metadata, BRAIN)
+- **Implementation mechanics** (template, metadata, MIND)
 - **Three-tier data architecture** (Tier 0/1/2)
-- **Intelligence orthogonality** (BRAIN across tiers)
+- **Intelligence orthogonality** (MIND across tiers)
 
 ### Perspective
 

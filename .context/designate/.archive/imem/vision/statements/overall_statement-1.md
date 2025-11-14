@@ -36,7 +36,7 @@ session_id: "090c7e16-cb85-45e5-a1f0-8dd53f191a40"
 
 ---
 
-## BRAIN: Control Plane
+## MIND: Control Plane
 
 Manager of document space.
 

@@ -158,7 +158,7 @@ Radius 2: Full content + temporal framing
 
 ---
 
-## BRAIN Integration
+## MIND Integration
 
 **Temporal Cortex triggers on code commits:**
 

@@ -26,9 +26,9 @@ I. STORAGE ARCHITECTURE (Where Things Live)
 Purpose: Data organization and access patterns
 
 ---
-II. INTELLIGENCE LAYER (.brain/ - What Makes Sense of It)
+II. INTELLIGENCE LAYER (.mind/ - What Makes Sense of It)
 
-BRAIN operates ACROSS tiers:
+MIND operates ACROSS tiers:
 
 ├─ Schema Evolution: Type-level pattern detection
 ├─ Entity Resolution: Canonical form mapping
@@ -87,7 +87,7 @@ Three Separate Concerns:
 - Tier 1: Objective wrapper (markdown)
 - Tier 2: Subjective qualifier (per-project)
 
-2. INTELLIGENCE (BRAIN)
+2. INTELLIGENCE (MIND)
 
 - Schema/entity emergence
 - Graph materialization
@@ -111,7 +111,7 @@ in three tiers"
 START SAYING:
 
 ✅ Storage: Tier 0 sources wrapped by Tier 1 registries, qualified by Tier 2 gateways✅ Retrieval:
-Metadata network routes to appropriate backend (Qdrant/webfetch/filesystem)✅ Intelligence: BRAIN
+Metadata network routes to appropriate backend (Qdrant/webfetch/filesystem)✅ Intelligence: MIND
 operates across all storage, adding schema/graph/validation✅ Parameters: Rich metadata per chunk
 enables graph construction and serving logic
 
@@ -125,7 +125,7 @@ CONCRETE FLOW
     → Markdown entry: source, retrieval_method, authority
 
 3. PROJECT GATEWAY (Tier 2)
-    → barbar/.brain/: ref, attention, serve_as
+    → barbar/.mind/: ref, attention, serve_as
 
 4. INGEST TO VECTOR DB
     → Parse Tier 1 → Fetch Tier 0 → Vectorize → Store in Qdrant
@@ -135,7 +135,7 @@ CONCRETE FLOW
     → Qdrant semantic search + metadata filters
     → Returns k chunks with parameter space metadata
 
-6. BRAIN ENRICHMENT
+6. MIND ENRICHMENT
     → Materialize graph from metadata predicates
     → Compute PageRank, detect supersession
     → Qualify authority via Tier 2 context
@@ -150,7 +150,7 @@ KEY PRINCIPLE
 Tiers ≠ pipeline stages
 
 Tiers = data architecture (how sources are wrapped/qualified)Parameter space = metadata richness
-(dimensions per chunk)BRAIN = intelligence architecture (how to understand/serve)Retrieval =
+(dimensions per chunk)MIND = intelligence architecture (how to understand/serve)Retrieval =
 operational layer (how to fetch)
 
 Don't conflate them.
@@ -159,7 +159,7 @@ Don't conflate them.
 Simpler framing:
 - Tiers: where things live
 - Parameters: what we know about chunks
-- BRAIN: how we make sense of it
+- MIND: how we make sense of it
 - Retrieval: how we get it
 
 Clear?
