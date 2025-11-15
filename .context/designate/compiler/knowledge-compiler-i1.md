@@ -19,9 +19,10 @@ Git history     (ground truth)
 **3. CANONICAL SCHEMA (Four-Phase)**
 ```
 design → designate → develop → document
-(explore)  (specify)   (ground)   (stable)
+(explore)  (specify)   (implement)   (stable)
 
 Universal target for ALL workflows
+Git commits = ground truth (validates develop phase)
 ```
 
 **4. CHUNKS = ATOMIC UNIT**
