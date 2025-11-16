@@ -72,41 +72,53 @@ class ConversationFormatter:
                 thinking = event.get('thinking', [])
                 tools = event.get('tools', [])
 
-                # Each message = separate H2 section
+                # MESSAGE TEXT: Separate H2 section (always)
                 md.append(f"## Message {message_num}: {role}\n")
-
-                # Main text
                 if text:
                     md.append(f"{text}\n")
+                else:
+                    md.append("*(no text content)*\n")
+                md.append("")  # Blank line
 
-                # Thinking blocks
+                # THINKING: Separate H2 section (if present)
                 if thinking:
-                    md.append("### 🧠 Extended Thinking\n")
+                    md.append(f"## Message {message_num} Extended Thinking\n")
                     for i, think in enumerate(thinking, 1):
-                        md.append(f"**Thought {i}:**\n{think}\n")
+                        if len(thinking) > 1:
+                            md.append(f"**Thought {i}:**\n")
+                        md.append(f"{think}\n")
+                        if i < len(thinking):
+                            md.append("")  # Space between thoughts
+                    md.append("")  # Blank line after section
 
-                # Tool usage
+                # TOOLS: Separate H2 section (if present)
                 if tools:
-                    md.append("### 🔧 Tools Used\n")
+                    md.append(f"## Message {message_num} Tools\n")
                     for tool in tools:
                         tool_name = tool.get('name', 'unknown')
                         tool_input = tool.get('input', {})
 
-                        md.append(f"**{tool_name}**")
+                        md.append(f"**{tool_name}**\n")
 
                         # Format input based on tool type
                         if isinstance(tool_input, dict):
                             # Show key parameters
                             for key, value in tool_input.items():
+                                # Truncate long values
                                 if isinstance(value, str) and len(value) > 100:
                                     value = value[:100] + "..."
-                                md.append(f"  - {key}: {value}")
+                                elif isinstance(value, (list, dict)):
+                                    value = str(value)[:100] + "..."
+                                md.append(f"  - {key}: {value}\n")
                         else:
-                            md.append(f"  Input: {str(tool_input)[:200]}")
+                            md.append(f"  Input: {str(tool_input)[:200]}\n")
 
                         md.append("")  # Blank line between tools
 
-                md.append("")  # Blank line between sections
+                    # Remove trailing blank line, add section separator
+                    if md[-1] == "":
+                        md.pop()
+                    md.append("")  # Blank line after section
 
                 message_num += 1
 

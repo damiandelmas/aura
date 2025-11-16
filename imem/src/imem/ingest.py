@@ -817,16 +817,27 @@ class EnhancedModularIngest:
         Examples:
             "Message 1: USER" → {'chunk_type': 'message', 'role': 'user'}
             "Message 2: ASSISTANT" → {'chunk_type': 'message', 'role': 'assistant'}
+            "Message 2 Extended Thinking" → {'chunk_type': 'thinking', 'role': 'assistant'}
+            "Message 2 Tools" → {'chunk_type': 'tools', 'role': 'assistant'}
             "Code Patch 1: src/cli.py" → {'chunk_type': 'patch', 'file_path': 'src/cli.py'}
         """
         metadata = {}
 
         if section_name.startswith('Message'):
-            metadata['chunk_type'] = 'message'
-            if 'USER' in section_name:
-                metadata['role'] = 'user'
-            elif 'ASSISTANT' in section_name:
-                metadata['role'] = 'assistant'
+            # Check for specialized message sections (thinking, tools)
+            if 'Extended Thinking' in section_name:
+                metadata['chunk_type'] = 'thinking'
+                metadata['role'] = 'assistant'  # Thinking is always from assistant
+            elif ' Tools' in section_name:
+                metadata['chunk_type'] = 'tools'
+                metadata['role'] = 'assistant'  # Tools are always called by assistant
+            else:
+                # Regular message
+                metadata['chunk_type'] = 'message'
+                if 'USER' in section_name:
+                    metadata['role'] = 'user'
+                elif 'ASSISTANT' in section_name:
+                    metadata['role'] = 'assistant'
 
         elif section_name.startswith('Code Patch'):
             metadata['chunk_type'] = 'patch'

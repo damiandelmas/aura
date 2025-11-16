@@ -694,8 +694,14 @@ def init(force, vscode, include_design):
               help='Filter by layer: implementation (code-specific), pattern (language-agnostic), both')
 @click.option('--section', help='Filter by section type (e.g., "Decisions", "User Messages")')
 @click.option('--session', help='Filter by conversation session ID (full or partial)')
+@click.option('--chunk-type',
+              type=click.Choice(['message', 'thinking', 'tools', 'patch']),
+              help='Filter by chunk type (conversations only): message, thinking, tools, patch')
+@click.option('--role',
+              type=click.Choice(['user', 'assistant']),
+              help='Filter by role (conversations only): user or assistant')
 @click.option('--collection', help='Override collection name (for A/B testing different models)')
-def search(source, query, limit, sort_by, show_metadata, after, split_terms, operator, layer, section, session, collection):
+def search(source, query, limit, sort_by, show_metadata, after, split_terms, operator, layer, section, session, chunk_type, role, collection):
     """Search documentation in current project.
 
     Performs vector similarity search across the project's indexed documentation
@@ -797,6 +803,12 @@ def search(source, query, limit, sort_by, show_metadata, after, split_terms, ope
         # Support partial session ID matching (requires exact match in Qdrant)
         # User should provide full session ID or we need to find it first
         filters['session_id'] = session
+
+    if chunk_type:
+        filters['chunk_type'] = chunk_type
+
+    if role:
+        filters['role'] = role
 
     # Perform search
     searcher = EnhancedQdrantSearch(

@@ -43,8 +43,14 @@ async def compose(collection_name: str, config_dict: dict,
         # TODO: Support querying multiple pattern collections across projects
         query_collection = f"{collection_name}_pattern"
     else:
-        # Same-project: Query impl collection (default)
-        query_collection = f"{collection_name}_impl"
+        # Same-project: Query impl collection (default for context docs)
+        # Conversations use single collection (no _impl suffix)
+        impl_collection = f"{collection_name}_impl"
+        if client.collection_exists(impl_collection):
+            query_collection = impl_collection
+        else:
+            # Fallback: Use base collection name (for conversations)
+            query_collection = collection_name
 
     # Stage 1: Search (always happens - async for parallel queries)
     results = await _execute_search(query_collection, config_dict['search'], client, encoder)
