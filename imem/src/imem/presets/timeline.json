@@ -1,0 +1,26 @@
+{
+  "description": "Track chronological evolution of a concept over time",
+  "use_case": "See how implementation approach or understanding evolved through project timeline",
+  "parameters": {
+    "concept": {
+      "type": "string",
+      "required": true,
+      "description": "Concept to track chronologically"
+    }
+  },
+  "compose_config": {
+    "search": {
+      "text": "{{concept}}",
+      "limit": 1
+    },
+    "discovery": {
+      "temporal": {
+        "direction": "both"
+      },
+      "siblings": {
+        "order_by": "timestamp",
+        "limit": 20
+      }
+    }
+  }
+}

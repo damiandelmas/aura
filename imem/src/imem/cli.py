@@ -37,6 +37,45 @@ def imem():
 # Helper Functions
 # ============================================================================
 
+def _load_preset(preset_name: str, arg_value: str) -> dict:
+    """Load preset JSON and substitute template variable.
+
+    Args:
+        preset_name: Name of preset (lineage, decisions, etc.)
+        arg_value: Value to substitute into template
+
+    Returns:
+        Compose config dict with variables substituted
+
+    Raises:
+        FileNotFoundError: If preset doesn't exist
+        json.JSONDecodeError: If preset JSON is invalid
+    """
+    # Find preset file
+    preset_path = Path(__file__).parent / 'presets' / f'{preset_name}.json'
+
+    if not preset_path.exists():
+        available = [p.stem for p in (Path(__file__).parent / 'presets').glob('*.json')]
+        raise FileNotFoundError(
+            f"Preset '@{preset_name}' not found. Available: {', '.join(available)}"
+        )
+
+    # Load preset
+    with open(preset_path) as f:
+        preset_data = json.load(f)
+
+    # Extract compose config
+    config = preset_data.get('compose_config', {})
+
+    # Substitute template variables
+    config_str = json.dumps(config)
+    config_str = config_str.replace('{{artifact}}', arg_value)
+    config_str = config_str.replace('{{topic}}', arg_value)
+    config_str = config_str.replace('{{concept}}', arg_value)
+
+    return json.loads(config_str)
+
+
 def _index_phase(phase_name: str, force: bool = False, limit: int = None, collection_override: str = None):
     """
     Index a specific phase (develop, design, document) or all context
@@ -501,46 +540,53 @@ def index_source(source, force, limit, collection, all_projects, project_path, f
 
 @imem.command()
 @click.argument('config_json')
-def compose(config_json):
-    """Execute composition pipeline with search + discovery + graph + rendering.
+@click.argument('args', nargs=-1)
+def compose(config_json, args):
+    """Execute composition pipeline with JSON config or @preset.
+
+    Syntax:
+        imem compose @<preset> <arg>        # Use preset
+        imem compose '{"search": ...}'      # Direct JSON
+
+    Available presets:
+        @lineage <artifact>      - Trace evolution across phases
+        @decisions <topic>       - Find decisions with context/rationale
+        @failures <topic>        - Learn from documented failures
+        @synthesize <topic>      - Aggregate across conversations
+        @timeline <concept>      - Chronological evolution
 
     Config format (JSON):
     {
-        "search": {
-            "text": "query",
-            "filters": {"phase": "develop"},
-            "limit": 10
-        },
-        "discovery": {
-            "siblings": true,
-            "genealogy": true,
-            "temporal": true,
-            "cross_phase": "design"
-        },
-        "graph": {
-            "algorithm": "authority",
-            "top": 5
-        },
-        "output": {
-            "template": "genealogy"
-        }
+        "search": {"text": "query", "filters": {...}, "limit": 10},
+        "discovery": {"siblings": true, "genealogy": true},
+        "graph": {"algorithm": "authority", "top": 5},
+        "output": {"template": "genealogy"}
     }
 
     Examples:
-        # Full genealogy for JWT decision
-        imem compose '{"search": {"text": "JWT", "filters": {"phase": "develop"}, "limit": 1}, "discovery": {"siblings": true, "genealogy": true}, "output": {"template": "genealogy"}}'
+        # Use preset
+        imem compose @lineage compose.py
+        imem compose @decisions "vector database"
 
-        # Timeline evolution
-        imem compose '{"search": {"text": "caching", "limit": 1}, "discovery": {"temporal": true}, "output": {"template": "timeline"}}'
-
-        # Authority ranking
-        imem compose '{"search": {"text": "decisions", "limit": 5}, "discovery": {"siblings": true}, "graph": {"algorithm": "authority"}}'
+        # Direct JSON
+        imem compose '{"search": {"text": "JWT", "limit": 1}, "discovery": {"siblings": true}}'
     """
     import asyncio
 
     try:
-        # Parse config
-        config_dict = json.loads(config_json)
+        # Check if using preset syntax
+        if config_json.startswith('@'):
+            # Load preset
+            preset_name = config_json[1:]  # Strip @
+
+            if not args:
+                click.echo(f"Error: Preset @{preset_name} requires an argument", err=True)
+                sys.exit(1)
+
+            config_dict = _load_preset(preset_name, args[0])
+        else:
+            # Parse direct JSON
+            config_dict = json.loads(config_json)
 
         # Get collection
         registry = SimpleRegistry()
@@ -558,7 +604,7 @@ def compose(config_json):
             collection_name = registry.get_collection_by_type(project_root, 'context')
 
         # Execute composition (async)
-        result = asyncio.run(compose_pipeline(collection_name, config_dict))
+        result = asyncio.run(compose_pipeline(collection_name, config_dict, registry=registry, project_root=project_root))
 
         # Output
         if 'rendered' in result:
@@ -571,6 +617,78 @@ def compose(config_json):
         sys.exit(1)
     except Exception as e:
         click.echo(f"Composition failed: {e}", err=True)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+@imem.command()
+@click.option('--examples', is_flag=True, help='Include compose pattern library')
+@click.option('--fields', is_flag=True, help='Show only metadata schema (skip primitives/patterns)')
+@click.option('--entities', is_flag=True, help='[Legacy] Enumerate project ontology (use --map instead)')
+@click.option('--map', is_flag=True, help='Show complete concept topology (all section titles)')
+@click.option('--status', is_flag=True, help='Show coverage statistics only')
+@click.option('--source', type=click.Choice(['context', 'conversations', 'all']), default='all',
+              help='Source to introspect: context, conversations, or all')
+@click.option('--sample-size', type=int, default=100,
+              help='Number of points to sample per collection (default: 100)')
+def introspect(examples, fields, entities, map, status, source, sample_size):
+    """Discover IMEM capabilities and project landscape.
+
+    Default: System capabilities + project landscape (AI onboarding)
+    --map: Full concept topology (all section titles with frequencies)
+    --status: Coverage statistics only
+
+    Designed for AI agents to introspect system without documentation.
+
+    Examples:
+        # AI onboarding (default)
+        imem introspect
+
+        # Include compose examples
+        imem introspect --examples
+
+        # See complete concept network
+        imem introspect --map
+
+        # Just coverage stats
+        imem introspect --status
+
+        # Legacy: full metadata schema
+        imem introspect --entities
+    """
+    from .introspect import (
+        introspect as introspect_fn,
+        get_system_and_landscape,
+        get_concept_topology,
+        get_coverage_stats
+    )
+
+    try:
+        # Route to appropriate function based on flags
+        if map:
+            # Show full concept topology
+            result = get_concept_topology(sample_size=sample_size)
+        elif status:
+            # Show just coverage stats
+            result = get_coverage_stats()
+        elif fields or entities:
+            # Legacy: Use original introspect function
+            result = introspect_fn(
+                show_examples=examples,
+                fields_only=fields,
+                source=source,
+                sample_size=sample_size,
+                enumerate_entities=entities
+            )
+        else:
+            # Default: System + landscape for AI onboarding
+            result = get_system_and_landscape(include_examples=examples)
+
+        click.echo(json.dumps(result, indent=2))
+
+    except Exception as e:
+        click.echo(f"Introspection failed: {e}", err=True)
         import traceback
         traceback.print_exc()
         sys.exit(1)

@@ -1,0 +1,28 @@
+{
+  "description": "Trace artifact evolution across all knowledge lifecycle phases",
+  "use_case": "Reconstruct complete decision journey: why it exists, how it evolved, what was tried, what remains unrealized",
+  "parameters": {
+    "artifact": {
+      "type": "string",
+      "required": true,
+      "description": "File path or concept name to trace"
+    }
+  },
+  "compose_config": {
+    "search": {
+      "queries": [
+        {"text": "{{artifact}}", "filters": {"source": "conversation"}, "limit": 3},
+        {"text": "{{artifact}}", "filters": {"phase": "design"}, "limit": 3},
+        {"text": "{{artifact}}", "filters": {"phase": "develop"}, "limit": 3},
+        {"text": "{{artifact}}", "filters": {"phase": "document"}, "limit": 2}
+      ]
+    },
+    "discovery": {
+      "temporal": {"direction": "both"},
+      "siblings": {
+        "section_types": ["Decisions", "Patterns", "Failures", "Context"],
+        "limit": 10
+      }
+    }
+  }
+}

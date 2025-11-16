@@ -15,7 +15,9 @@ from .primitives import get_siblings, get_genealogy, get_temporal, cross_phase_s
 
 async def compose(collection_name: str, config_dict: dict,
                   client: Optional[QdrantClient] = None,
-                  encoder: Optional[SentenceTransformer] = None) -> dict:
+                  encoder: Optional[SentenceTransformer] = None,
+                  registry = None,
+                  project_root: Optional[str] = None) -> dict:
     """
     Single entry point. Executes full pipeline.
 
@@ -53,7 +55,7 @@ async def compose(collection_name: str, config_dict: dict,
             query_collection = collection_name
 
     # Stage 1: Search (always happens - async for parallel queries)
-    results = await _execute_search(query_collection, config_dict['search'], client, encoder)
+    results = await _execute_search(query_collection, config_dict['search'], client, encoder, registry, project_root)
 
     # Stage 2: Discovery (if requested - async for parallel enrichment)
     if config_dict.get('discovery'):
@@ -87,31 +89,48 @@ async def compose(collection_name: str, config_dict: dict,
 
 async def _execute_search(collection_name: str, search_config: dict,
                           client: QdrantClient,
-                          encoder: SentenceTransformer) -> List[Dict[str, Any]]:
+                          encoder: SentenceTransformer,
+                          registry = None,
+                          project_root: Optional[str] = None) -> List[Dict[str, Any]]:
     """Execute search stage with parallel query execution"""
 
     if 'queries' in search_config:
-        # Multi-query: execute in parallel
-        tasks = [
-            asyncio.to_thread(
+        # Multi-query: execute in parallel with per-query routing
+        tasks = []
+        for query_cfg in search_config['queries']:
+            # Route based on source filter
+            query_collection = collection_name
+            filters = query_cfg.get('filters', {}).copy()
+
+            if registry and project_root:
+                source = filters.pop('source', None)  # Remove source from filters
+                if source == 'conversation':
+                    query_collection = registry.get_collection_by_type(project_root, 'conversation')
+                elif source == 'context':
+                    query_collection = registry.get_collection_by_type(project_root, 'context')
+
+            tasks.append(asyncio.to_thread(
                 _single_search,
-                collection_name,
+                query_collection,
                 query_cfg.get('text', ''),
-                query_cfg.get('filters', {}),
+                filters,  # Use filters with source removed
                 query_cfg.get('limit', 10),
                 client,
                 encoder
-            )
-            for query_cfg in search_config['queries']
-        ]
+            ))
+
 
         # Execute all queries in parallel
-        results_list = await asyncio.gather(*tasks)
+        results_list = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Deduplicate across queries
         all_results = []
         seen_ids = set()
         for results in results_list:
+            # Skip failed queries (returns None or Exception)
+            if results is None or isinstance(results, Exception):
+                continue
+
             for result in results:
                 if result['id'] not in seen_ids:
                     all_results.append(result)
