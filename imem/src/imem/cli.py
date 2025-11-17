@@ -37,44 +37,8 @@ def imem():
 # Helper Functions
 # ============================================================================
 
-def _load_preset(preset_name: str, arg_value: str) -> dict:
-    """Load preset JSON and substitute template variable.
-
-    Args:
-        preset_name: Name of preset (lineage, decisions, etc.)
-        arg_value: Value to substitute into template
-
-    Returns:
-        Compose config dict with variables substituted
-
-    Raises:
-        FileNotFoundError: If preset doesn't exist
-        json.JSONDecodeError: If preset JSON is invalid
-    """
-    # Find preset file
-    preset_path = Path(__file__).parent / 'presets' / f'{preset_name}.json'
-
-    if not preset_path.exists():
-        available = [p.stem for p in (Path(__file__).parent / 'presets').glob('*.json')]
-        raise FileNotFoundError(
-            f"Preset '@{preset_name}' not found. Available: {', '.join(available)}"
-        )
-
-    # Load preset
-    with open(preset_path) as f:
-        preset_data = json.load(f)
-
-    # Extract compose config
-    config = preset_data.get('compose_config', {})
-
-    # Substitute template variables
-    config_str = json.dumps(config)
-    config_str = config_str.replace('{{artifact}}', arg_value)
-    config_str = config_str.replace('{{topic}}', arg_value)
-    config_str = config_str.replace('{{concept}}', arg_value)
-
-    return json.loads(config_str)
-
+# Preset system removed - premature to codify patterns before validation through usage
+# See: Template removal (251117 changelog) - same rationale applies
 
 def _index_phase(phase_name: str, force: bool = False, limit: int = None, collection_override: str = None):
     """
@@ -542,51 +506,44 @@ def index_source(source, force, limit, collection, all_projects, project_path, f
 @click.argument('config_json')
 @click.argument('args', nargs=-1)
 def compose(config_json, args):
-    """Execute composition pipeline with JSON config or @preset.
+    """Execute composition pipeline with JSON config.
 
-    Syntax:
-        imem compose @<preset> <arg>        # Use preset
-        imem compose '{"search": ...}'      # Direct JSON
-
-    Available presets:
-        @lineage <artifact>      - Trace evolution across phases
-        @decisions <topic>       - Find decisions with context/rationale
-        @failures <topic>        - Learn from documented failures
-        @synthesize <topic>      - Aggregate across conversations
-        @timeline <concept>      - Chronological evolution
+    Compose orchestrates multi-stage knowledge retrieval:
+    1. Search - Semantic similarity across sources
+    2. Discovery - Enrich with primitives (siblings, genealogy, temporal)
+    3. Graph - Apply graph algorithms (not yet implemented)
+    4. Output - Structure results
 
     Config format (JSON):
     {
-        "search": {"text": "query", "filters": {...}, "limit": 10},
-        "discovery": {"siblings": true, "genealogy": true},
-        "graph": {"algorithm": "authority", "top": 5},
-        "output": {"template": "genealogy"}
+        "source": "context" | "conversations",  # Top-level source selection
+        "search": {
+            "text": "query string",
+            "limit": 10,
+            "filters": {"phase": "develop", "chunk_type": "message"}
+        },
+        "discovery": {
+            "siblings": {"limit": 5, "section_types": ["Decision"]},
+            "genealogy": true,
+            "temporal": {"direction": "both", "limit": 3}
+        }
     }
 
     Examples:
-        # Use preset
-        imem compose @lineage compose.py
-        imem compose @decisions "vector database"
+        # Simple search
+        imem compose '{"search": {"text": "authentication", "limit": 5}}'
 
-        # Direct JSON
-        imem compose '{"search": {"text": "JWT", "limit": 1}, "discovery": {"siblings": true}}'
+        # Search conversations with genealogy
+        imem compose '{"source": "conversations", "search": {"text": "bug fix", "limit": 3}, "discovery": {"genealogy": true}}'
+
+        # Multi-query with discovery
+        imem compose '{"search": {"queries": [{"text": "JWT", "filters": {"phase": "develop"}}, {"text": "JWT", "filters": {"phase": "document"}}]}, "discovery": {"siblings": {"limit": 3}}}'
     """
     import asyncio
 
     try:
-        # Check if using preset syntax
-        if config_json.startswith('@'):
-            # Load preset
-            preset_name = config_json[1:]  # Strip @
-
-            if not args:
-                click.echo(f"Error: Preset @{preset_name} requires an argument", err=True)
-                sys.exit(1)
-
-            config_dict = _load_preset(preset_name, args[0])
-        else:
-            # Parse direct JSON
-            config_dict = json.loads(config_json)
+        # Parse direct JSON
+        config_dict = json.loads(config_json)
 
         # Get collection
         registry = SimpleRegistry()
@@ -1564,6 +1521,235 @@ def setup_vscode_integration(project_root: Path):
     except Exception as e:
         click.echo(f"⚠️  Warning: Could not setup VS Code integration: {e}", err=True)
         click.echo("   You can manually create .vscode/settings.json with IMEM configuration")
+
+
+# ============================================================================
+# Metadata-First Indexing Commands
+# ============================================================================
+
+@imem.command('index-metadata')
+@click.option('--force', is_flag=True, help='Re-index existing chunks (clears database)')
+@click.option('--limit', type=int, help='Limit number of files to process (for testing)')
+def index_metadata(force, limit):
+    """Index all markdown files (metadata only, no vectors)
+
+    Parses markdown files from .context/ directory and stores metadata
+    in SQLite for fast queries. No vector embeddings required.
+
+    Example:
+        imem index-metadata              # Index all files
+        imem index-metadata --force      # Re-index from scratch
+        imem index-metadata --limit 10   # Test with 10 files
+    """
+    from .parse.markdown import MarkdownParser
+    from .storage.sqlite import SQLiteStore
+
+    registry = SimpleRegistry()
+    project_root = registry.get_project_root()
+
+    if not project_root:
+        click.echo("❌ Not in a registered project. Run 'imem init' first.", err=True)
+        return
+
+    parser = MarkdownParser()
+    store = SQLiteStore(project_root)
+
+    # Clear database if force flag set
+    if force:
+        click.echo("🗑️  Clearing existing metadata...")
+        store.clear_all()
+
+    # Find all markdown files in .context
+    context_dir = project_root / '.context'
+    if not context_dir.exists():
+        click.echo(f"❌ No .context directory found in {project_root}", err=True)
+        return
+
+    context_files = list(context_dir.rglob('*.md'))
+
+    if limit:
+        context_files = context_files[:limit]
+
+    click.echo(f"📁 Found {len(context_files)} markdown files")
+    click.echo("")
+
+    # Parse all files
+    all_chunks = []
+    errors = []
+
+    with click.progressbar(context_files, label='Parsing files') as files:
+        for md_file in files:
+            try:
+                chunks = parser.parse_file(md_file)
+                all_chunks.extend(chunks)
+            except Exception as e:
+                errors.append((md_file, str(e)))
+
+    click.echo("")
+
+    # Report errors
+    if errors:
+        click.echo(f"⚠️  Encountered {len(errors)} errors:")
+        for file_path, error in errors[:5]:  # Show first 5
+            click.echo(f"   {file_path.relative_to(project_root)}: {error}")
+        if len(errors) > 5:
+            click.echo(f"   ... and {len(errors) - 5} more")
+        click.echo("")
+
+    # Store in SQLite
+    click.echo(f"💾 Storing {len(all_chunks)} chunks in SQLite...")
+    store.upsert_chunks(all_chunks)
+
+    # Show stats
+    stats = store.get_stats()
+    click.echo("")
+    click.echo("✅ Indexing complete!")
+    click.echo(f"   Total chunks: {stats['total_chunks']}")
+    click.echo(f"   Unique files: {stats['file_count']}")
+    click.echo("")
+    click.echo("   By phase:")
+    for phase, count in stats['by_phase'].items():
+        click.echo(f"      {phase}: {count}")
+    click.echo("")
+    click.echo("   Top section types:")
+    for section_type, count in list(stats['by_section_type'].items())[:5]:
+        click.echo(f"      {section_type}: {count}")
+
+    store.close()
+
+
+@imem.command('query-metadata')
+@click.option('--phase', help='Filter by phase (design/designate/develop/document)')
+@click.option('--section-type', help='Filter by section type (e.g., Decision, Implementation)')
+@click.option('--file-path', help='Filter by file path (substring match)')
+@click.option('--text', help='Text search in content')
+@click.option('--session-id', help='Filter by session ID')
+@click.option('--limit', default=10, help='Max results (default: 10)')
+@click.option('--json-output', is_flag=True, help='Output as JSON')
+def query_metadata(phase, section_type, file_path, text, session_id, limit, json_output):
+    """Query metadata without vectors
+
+    Fast metadata queries (sub-10ms) without vector search.
+
+    Examples:
+        imem query-metadata --phase develop
+        imem query-metadata --section-type Decision
+        imem query-metadata --text "authentication" --limit 5
+        imem query-metadata --phase develop --section-type Implementation
+    """
+    from .storage.sqlite import SQLiteStore
+
+    registry = SimpleRegistry()
+    project_root = registry.get_project_root()
+
+    if not project_root:
+        click.echo("❌ Not in a registered project. Run 'imem init' first.", err=True)
+        return
+
+    store = SQLiteStore(project_root)
+
+    # Build filters
+    filters = {}
+    if phase:
+        filters['phase'] = phase
+    if section_type:
+        filters['section_type'] = section_type
+    if file_path:
+        filters['file_path'] = file_path
+    if text:
+        filters['text'] = text
+    if session_id:
+        filters['session_id'] = session_id
+
+    # Query
+    import time
+    start = time.time()
+    results = store.query(filters, limit=limit)
+    elapsed_ms = (time.time() - start) * 1000
+
+    # Output
+    if json_output:
+        click.echo(json.dumps(results, indent=2, default=str))
+    else:
+        click.echo(f"Found {len(results)} results ({elapsed_ms:.1f}ms)")
+        click.echo("")
+
+        for i, result in enumerate(results, 1):
+            click.echo(f"{i}. 📄 {Path(result['file_path']).name}")
+            click.echo(f"   Phase: {result.get('phase', 'unknown')} | Type: {result.get('section_type', 'N/A')}")
+            click.echo(f"   Section: {result.get('section_name', 'N/A')}")
+            if result.get('timestamp'):
+                click.echo(f"   Time: {result['timestamp'][:19]}")
+
+            # Show content preview
+            content = result.get('content', '')
+            preview = content[:200].replace('\n', ' ').strip()
+            if len(content) > 200:
+                preview += '...'
+            click.echo(f"   {preview}")
+            click.echo("")
+
+    store.close()
+
+
+@imem.command('stats-metadata')
+@click.option('--phases', is_flag=True, help='Show all unique phases')
+@click.option('--section-types', is_flag=True, help='Show all unique section types')
+def stats_metadata(phases, section_types):
+    """Show metadata indexing statistics
+
+    Displays comprehensive statistics about indexed metadata.
+
+    Examples:
+        imem stats-metadata                  # Overall stats
+        imem stats-metadata --phases         # List all phases
+        imem stats-metadata --section-types  # List all section types
+    """
+    from .storage.sqlite import SQLiteStore
+
+    registry = SimpleRegistry()
+    project_root = registry.get_project_root()
+
+    if not project_root:
+        click.echo("❌ Not in a registered project. Run 'imem init' first.", err=True)
+        return
+
+    store = SQLiteStore(project_root)
+
+    # Get stats
+    stats = store.get_stats()
+
+    click.echo("📊 Metadata Index Statistics")
+    click.echo("=" * 50)
+    click.echo(f"Total chunks: {stats['total_chunks']}")
+    click.echo(f"Unique files: {stats['file_count']}")
+    click.echo("")
+
+    click.echo("By phase:")
+    for phase, count in stats['by_phase'].items():
+        percentage = (count / stats['total_chunks'] * 100) if stats['total_chunks'] > 0 else 0
+        click.echo(f"   {phase:12s} {count:5d} ({percentage:5.1f}%)")
+    click.echo("")
+
+    click.echo("Top section types:")
+    for section_type, count in list(stats['by_section_type'].items())[:10]:
+        percentage = (count / stats['total_chunks'] * 100) if stats['total_chunks'] > 0 else 0
+        click.echo(f"   {section_type:30s} {count:5d} ({percentage:5.1f}%)")
+
+    # Optional detailed listings
+    if phases:
+        click.echo("")
+        click.echo("All unique phases:")
+        for phase in store.get_unique_values('phase'):
+            click.echo(f"   - {phase}")
+
+    if section_types:
+        click.echo("")
+        click.echo("All unique section types:")
+        for section_type in store.get_unique_values('section_type'):
+            click.echo(f"   - {section_type}")
+
+    store.close()
 
 
 if __name__ == '__main__':
