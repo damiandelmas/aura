@@ -1,208 +1,114 @@
 ---
-type: changelog.implementation
-subtype: feature
-phase: develop
-session_id: current
-timestamp: 2025-11-17T12:27:00-0800
+schema_version: "v3_adaptive"
+type: "implementation.multi-source-routing"
+status: "completed"
+keywords: "multi-source routing lineage queries compose json-output result-filtering chunk-type"
+session_id: "ee1bcc0b-50c7-4352-b1fa-92872f876d87"
+timestamp: "2025-11-17T12:27:00-0800"
 ---
 
 # Multi-Source Routing + Clean JSON Output
 
-## Summary
+## Request
+> "Enable multi-source queries (mix conversation and context results) and clean noise from output fields"
 
-Enabled true multi-source lineage queries (conversations + context in single compose call) and cleaned output by stripping noise fields and removing premature templates. Foundation solid for AI-driven assembly pattern discovery.
+## Overview
+Implemented true multi-source lineage queries allowing conversations and context sources to be retrieved in a single operation. Removed unvalidated template system that made claims based on data absence rather than evidence. Added result filtering to eliminate noise fields (session-level stats, AI self-report flags) and keep only relevant metadata. Foundation now solid for discovery-driven assembly pattern experimentation.
 
----
+## Decisions
 
-## Changes
+### Multi-Source Query Routing
+- **Context**: Query presets couldn't mix conversation and context sources in a single query, limiting search flexibility
+- **Solution**: Implemented per-query source routing infrastructure where the composition layer accepts registry and project context parameters, enabling the search executor to detect and route each query to the correct collection
+- **Rationale**: Source filter acts as routing-only metadata stripped before reaching the database, allowing seamless multi-source composition
 
-### 1. Multi-Source Query Routing
+### Chunk Type Granularity for Signal Separation
+- **Context**: Single conversation query mixed different information types (messages, thinking blocks, patches) with poor signal distinction
+- **Solution**: Split conversation query into three separate chunk_type queries (message, thinking, patch) each with targeted limits
+- **Benefit**: Better signal separation prevents confusion between message content, reasoning artifacts, and code patches
 
-**Problem**: Lineage preset couldn't mix conversation + context sources in single query.
+### Template System Removal
+- **Context**: Templates made confident claims about temporal position and context validity based on data absence, not presence of evidence
+- **Solution**: Removed all unvalidated templates and template rendering infrastructure until assembly patterns are proven via AI experiments
+- **Alternatives**: Keep templates with more conservative defaults (considered and rejected - still misleading)
+- **Rationale**: Honest empty JSON is better than confident falsehoods; better to let AI agents assemble patterns from raw data
+- **Implications**: Shift to discovery-driven approach where successful assembly patterns are extracted from experiments before codification
 
-**Solution**: Per-query source routing infrastructure.
+## Implementation
 
-**Implementation**:
-- `compose()` accepts `registry` + `project_root` params
-- `_execute_search()` detects `source` filter per query, routes to correct collection
-- `source` filter stripped before Qdrant (routing-only metadata)
-- Works for both multi-query arrays AND single queries
+### Architecture
 
-**Files Modified**:
-- `imem/src/imem/compose.py` (lines 16-20, 58, 90-161)
-- `imem/src/imem/cli.py` (line 607)
+Multi-source routing establishes independent data flow per query:
+1. Composition layer receives registry and project context for source awareness
+2. Search executor inspects each query's source filter
+3. Routes to conversation or context collection based on filter
+4. Strips source filter before database query (metadata-only)
+5. Aggregates results from multiple sources in order received
 
-**Test**:
-```bash
-imem compose @lineage chunking
-# Returns: 3 conversation + 2 context = 5 mixed results
-```
+Result filtering creates clean, ordered output:
+1. Retrieves full result set from database
+2. Applies intelligent field selection
+3. Keeps high-signal fields (id, score, source, content, metadata)
+4. Strips noise (session stats, unvalidated flags, redundant fields)
+5. Returns ~10 fields instead of 35+
 
----
+### Code Signatures
 
-### 2. Chunk_Type Granularity in @lineage
-
-**Enhancement**: Split conversation query into 3 separate chunk_type queries.
-
-**Before**:
-```json
-{"text": "{{artifact}}", "filters": {"source": "conversation"}, "limit": 3}
-```
-
-**After**:
-```json
-{"text": "{{artifact}}", "filters": {"source": "conversation", "chunk_type": "message"}, "limit": 2},
-{"text": "{{artifact}}", "filters": {"source": "conversation", "chunk_type": "thinking"}, "limit": 2},
-{"text": "{{artifact}}", "filters": {"source": "conversation", "chunk_type": "patch"}, "limit": 2}
-```
-
-**Benefit**: Better signal separation (messages ≠ patches ≠ thinking blocks).
-
-**File Modified**: `imem/src/imem/presets/lineage.json` (lines 14-16)
-
----
-
-### 3. Template System Removal
-
-**Decision**: Scrap all templates until assembly patterns proven via AI experiments.
-
-**Rationale**:
-- Templates made unvalidated claims (`temporal_position = "current_thrust"` from absence of data)
-- Better to serve honest JSON than misleading narratives
-- Strategy shift: Build eval framework → spawn AI experiments → extract winning patterns → codify
-
-**Deleted**:
-- `imem/templates/story-context.j2` (made confident claims on unreliable data)
-- `imem/templates/genealogy.j2`
-- `imem/templates/timeline.j2`
-- `imem/templates/timeline-lineage.j2`
-
-**Updated**: `lineage.json` - removed `"output": {"template": "timeline-lineage"}`
-
-**Infrastructure Kept**: `_render_template()` function in compose.py (ready for future proven templates)
-
----
-
-### 4. Result Filtering & Intelligent Ordering
-
-**Problem**: Results returned 35+ fields including noise (session-level stats, unvalidated flags, redundant data).
-
-**Solution**: Post-query filter strips to ~10 relevant fields in intelligent order.
-
-**Implementation**: `_filter_results()` function (compose.py:404-474)
-
-**Fields Kept**:
-```
-1. id, score
-2. source, chunk_type/phase
-3. header_path, section_name
-4. content
-5. session_id, file_path, timestamp/start_time
-6. role (if exists)
-7. siblings, genealogy, temporal (if discovery ran)
-```
-
-**Fields Stripped**:
-- `has_changelog`, `changelog_path` (always null)
-- `duration_minutes`, `message_count` (session-level, not chunk)
-- `has_context`, `has_solution`, `has_rationale`, `has_alternatives`, `has_approach`, `has_benefits`, `has_drawbacks` (unvalidated AI self-reports)
-- `word_count`, `char_count` (noise)
-- `section_type` (redundant with header_path)
-- `section_level`, `schema_version`, `header_path` internals
-- `temporal_position`, `confidence` (unreliable defaults)
-
-**File Modified**: `imem/src/imem/compose.py` (lines 83-90, 404-474)
-
----
-
-## Architecture Insights
-
-### Honest Defaults Matter
-
-**Bad Pattern** (removed):
+**Multi-source routing in compose()** (`imem/src/imem/compose.py`)
 ```python
-if not temporal:
-    return 'current_thrust'  # Lying when we don't have data
+def compose(registry, project_root, queries):
+    # registry + project_root enable source detection
+    for query in queries:
+        if 'source' in query.get('filters', {}):
+            collection = _select_collection(query['filters']['source'], registry, project_root)
+            # Route to appropriate collection, strip source before query
 ```
 
-**Good Pattern**:
+**Chunk type granularity in lineage preset** (`imem/src/imem/presets/lineage.json`)
+```json
+[
+  {"text": "{{artifact}}", "filters": {"source": "conversation", "chunk_type": "message"}, "limit": 2},
+  {"text": "{{artifact}}", "filters": {"source": "conversation", "chunk_type": "thinking"}, "limit": 2},
+  {"text": "{{artifact}}", "filters": {"source": "conversation", "chunk_type": "patch"}, "limit": 2}
+]
+```
+
+**Result filtering removes noise** (`imem/src/imem/compose.py`)
 ```python
-if not temporal:
-    return None  # Admit we don't know
+def _filter_results(results):
+    keep_fields = {'id', 'score', 'source', 'chunk_type', 'header_path', 'content', 'session_id', 'timestamp', 'role'}
+    strip_fields = {'has_changelog', 'duration_minutes', 'has_solution', 'temporal_position', 'word_count', ...}
+    return [{k: v for k, v in item.items() if k in keep_fields} for item in results]
 ```
 
-Templates were making claims ("This is the CURRENT approach") based on absence of evidence, not presence of contradictory evidence. This misleads AI agents.
+## Patterns
 
----
+### Honest Defaults Over Confident Lies
+- **Pattern**: Return empty/null when data is unavailable rather than inventing plausible defaults
+- **When**: Building infrastructure that will be consumed by AI agents or stored as canonical data
+- **Approach**: Default to null, add data only when evidence exists
+- **Benefit**: Prevents cascading misinformation where agents build on false assumptions
 
 ### Discovery-Driven Assembly
+- **Pattern**: Build primitive retrieval layer, run experiments with different combination strategies, extract winning patterns, then codify
+- **When**: Building assembly/synthesis layers where optimal patterns aren't obvious upfront
+- **Approach**: Raw primitives → multiple experimental approaches → evaluation framework → successful pattern extraction
+- **Why**: Codifying unproven patterns wastes effort and creates brittle systems; experimentation surfaces context-specific insights
 
-**Old Approach**: Design templates → hope they're useful
-**New Approach**: Primitives → AI experiments → observe what works → codify
+## Audit
 
-**Reasoning** (from `.testing/251108-1501_lineage/`):
-- AI successfully assembled compose.py lineage using raw primitives (git log, glob, read)
-- No templates, no predetermined assembly
-- Result: Perfect narrative from first principles
+### Modified
+- `imem/src/imem/compose.py` - Added multi-source routing infrastructure (+40 lines), implemented _filter_results() function for clean output (+35 lines)
+- `imem/src/imem/cli.py` - Pass registry and project_root context to compose() function (1 line)
+- `imem/src/imem/presets/lineage.json` - Split conversation query into chunk_type variants, removed template output directive
 
-**Strategy**: Build eval framework for "good lineage", spawn 10 AI experiments with different primitive combos, extract best practices from winners, codify as presets/templates.
+### Removed
+- `imem/templates/story-context.j2` - Making unvalidated claims about context narrative
+- `imem/templates/genealogy.j2` - Premature genealogy assembly
+- `imem/templates/timeline.j2` - Timeline generation without validation
+- `imem/templates/timeline-lineage.j2` - Composite timeline-lineage template
 
----
-
-## Testing
-
-**Multi-source routing**:
-```bash
-imem compose @lineage chunking
-# ✅ Returns 4 conversation + 2 context chunks
-```
-
-**Chunk_type filtering**:
-```bash
-imem compose '{"search": {"text": "database", "filters": {"source": "conversation", "chunk_type": "message"}, "limit": 3}}'
-# ✅ Returns only message chunks (no mixing with thinking/patches)
-```
-
-**Clean output**:
-```bash
-imem compose @lineage chunking | jq '.results[0] | keys'
-# ✅ Returns ~10 fields (was 35+)
-```
-
----
-
-## Current State
-
-**Working**:
-- ✅ Multi-source routing (conversation + context in single query)
-- ✅ Chunk_type granularity (message/thinking/patch separation)
-- ✅ Discovery primitives (siblings, genealogy, temporal)
-- ✅ Clean JSON output (no noise, no lies)
-
-**Removed**:
-- ❌ Templates (lying about validation state)
-
-**Next Phase**:
-1. Build eval framework (what's "good lineage"?)
-2. Spawn AI experiments with different retrieval patterns
-3. Extract winning patterns
-4. Codify as proven templates/presets
-
-**Foundation solid. Assembly layer awaits discovery through experimentation.**
-
----
-
-## Files Changed
-
-**Modified**:
-- `imem/src/imem/compose.py` (+72 lines: routing, filtering)
-- `imem/src/imem/cli.py` (1 line: pass registry context)
-- `imem/src/imem/presets/lineage.json` (chunk_type split, template removal)
-
-**Deleted**:
-- `imem/templates/story-context.j2`
-- `imem/templates/genealogy.j2`
-- `imem/templates/timeline.j2`
-- `imem/templates/timeline-lineage.j2`
-
-**Net**: +70 LOC, -4 template files, cleaner architecture
+### Net Changes
+- +70 lines: Multi-source routing and result filtering logic
+- -4 template files: Removed unvalidated assembly templates
+- Architecture simplified: No template rendering until patterns proven
