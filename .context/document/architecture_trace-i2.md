@@ -37,15 +37,21 @@ Key methods:
 - `get_file_operations(entries)` - Deduplicated file operations
 - `get_tool_usage(entries)` - Tool usage counts by type
 
-**Formatter** (`formatter.py`) - Converts Python data structures to markdown. Generates numbered H2 sections for each message and patch. Optimized for AI agents and LlamaIndex MarkdownNodeParser chunking.
+**Formatter** (`formatter.py`) - Converts Python data structures to markdown with granular H2-level separation. Generates independent H2 sections for each message component (text, thinking, tools, patches) enabling surgical vector retrieval. Optimized for AI agents and LlamaIndex MarkdownNodeParser chunking.
 
 Key methods:
-- `format(timeline, session_id, metadata)` - Complete timeline markdown
+- `format_timeline(timeline, session_id)` - Complete timeline markdown with granular H2 sections per component
 - `format_messages(messages)` - Messages-only view
 - `format_patches(patches)` - Code changes view
 - `format_files(file_ops)` - File operations summary
 - `format_tools(tool_usage)` - Tool usage statistics
 - `format_metadata(metadata)` - Session metadata display
+
+Granular formatting structure:
+- Main message text → `## Message {num}: {role}`
+- Extended thinking → `## Message {num} Extended Thinking`
+- Tool usage → `## Message {num} Tools`
+- Code patches → `## Code Patch {num}: {file_path}`
 
 **CLI** (`cli.py`) - User-facing command interface with subcommand structure. Orchestrates finder, retrieval, and formatter components. Provides discovery, display, and export operations.
 
@@ -99,7 +105,7 @@ formatter.format(timeline, session_id, metadata) → markdown
 Write to file
 ```
 
-**Chronicle Timeline Pattern** - Interleaves messages and patches by timestamp to create chronological narrative. Retrieval extracts both data streams, tags with type and timestamp, merges and sorts chronologically.
+**Chronicle Timeline Pattern** - Interleaves messages and patches by timestamp to create chronological narrative with granular component separation. Retrieval extracts both data streams, tags with type and timestamp, merges and sorts chronologically.
 
 ```python
 # Conceptual flow
@@ -108,20 +114,28 @@ patches = extract_patches(entries)    # tag with 'patch' type
 timeline = merge_and_sort([messages, patches], key='timestamp')
 ```
 
-Output format creates numbered H2 sections alternating between messages and patches. Messages show role (USER/ASSISTANT) and text content. Patches show filename and diff blocks. Sequential numbering maintains chronological order.
+Output format creates separate H2 sections for each message component enabling vector search filtering:
+- **Main message text** (`## Message {num}: {role}`) - User/assistant conversation content
+- **Extended thinking** (`## Message {num} Extended Thinking`) - Internal reasoning blocks
+- **Tool usage** (`## Message {num} Tools`) - Tool invocations and parameters
+- **Code patches** (`## Code Patch {num}: {file_path}`) - Diffs with context
+
+Granular H2-level separation enables surgical retrieval: query "what was discussed" returns only message text, query "what tools were used" returns only tool sections, query "code changes to auth.py" returns only relevant patches.
 
 ## Integration Points
 
 **Filesystem Access** - Reads conversation files from `~/.claude/projects/*/conversations/*.jsonl` directories. Requires read permissions. No write operations to source data. Lazy loading ensures only queried files are parsed.
 
-**IMEM Vector Search** - Provides markdown output optimized for LlamaIndex MarkdownNodeParser. Integration pipeline:
+**IMEM Vector Search** - Provides markdown output optimized for LlamaIndex MarkdownNodeParser with granular H2-level component separation. Integration pipeline:
 1. IMEM calls retrieval methods directly to load conversation data
 2. Retrieval provides chronological timeline (messages + patches)
-3. Formatter generates H2-section markdown
-4. LlamaIndex chunks at H2 boundaries
-5. Each section becomes separate vector in Qdrant
+3. Formatter generates H2-section markdown with separate sections per component (text, thinking, tools, patches)
+4. LlamaIndex chunks at H2 boundaries (each component becomes independent chunk)
+5. Each section becomes separate vector in Qdrant with chunk_type metadata
+6. IMEM ingestion extracts chunk_type and role from section headers via `parse_conversation_section()`
+7. Metadata stored as Qdrant payload (chunk_type: message/thinking/tools/patch, role: user/assistant)
 
-Each H2 section creates one searchable vector. Queries like "code changes" return patch sections. Queries like "user questions" return message sections.
+Granular chunking enables metadata-based filtering during vector search. CLI filters (`--chunk-type message`, `--role assistant`) query specific conversation aspects without content pollution. Surgical retrieval pattern: "show only tool usage" excludes message text and thinking blocks, "exclude thinking" returns only conversation and code.
 
 **Command Framework** - Uses Click for command definition and argument parsing. Declarative decorators define command structure. Commands map to handler functions that orchestrate component interactions.
 
@@ -131,13 +145,13 @@ Each H2 section creates one searchable vector. Queries like "code changes" retur
 
 **Unified Data Source** - Timeline method provides complete chronological view. All other access patterns (messages-only, patches-only) filter this unified source. Ensures consistency across operations. Single parsing pass serves all query types.
 
-**One Format Philosophy** - Single markdown format serves all consumers (terminal display, file export, AI agents, vector search). Avoids format proliferation. H2-section structure enables both human readability and machine chunking. Optimization benefits apply universally.
+**One Format Philosophy** - Single markdown format serves all consumers (terminal display, file export, AI agents, vector search). Avoids format proliferation. Granular H2-section structure enables both human readability and machine chunking with surgical filtering. Optimization benefits apply universally. Each component independently useful (message text, thinking, tools, patches) as separate H2 sections.
 
 **Lazy Loading** - Conversations are parsed only when queried, not during listing. Discovery scans filenames only. Parsing happens on-demand. Enables fast listing across large conversation histories.
 
 **Semantic Verb-Noun Commands** - Subcommand structure uses clear action-object pattern. `show messages` and `export patches` map directly to user intent. Self-documenting commands. Optimized for AI agent interpretation. Extensible through new content type nouns.
 
-**Type Safety** - All data extraction methods specify input and return types. List, Dict, and Any types provide clear contracts. Docstrings document parameters and return values. Type hints enable static analysis and IDE support.
+**H2-Level Granularity for Vector Chunks** - Markdown structure ensures each independently useful concept is its own H2 section. Document parsers split at H2 boundaries, so H2 structure controls vector chunk boundaries. Prevents "kitchen sink" chunks containing unrelated information (message text + tool details + patches). Enables precise filtering during retrieval without content pollution. Metadata extraction from H2 headers (chunk_type, role, message numbers) via regex parsing eliminates manual metadata maintenance where structure IS the metadata.
 
 ## Usage
 

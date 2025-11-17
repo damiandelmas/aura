@@ -23,14 +23,14 @@ AURA is a three-microservice institutional memory ecosystem designed for per-pro
 **CLI**: `imem`
 **Details**: See [architecture_imem-i2.md](./architecture_imem-i2.md)
 
-**Core Capability**: Retrieval-only mode with LlamaIndex pipeline, H3/H2-section chunking via MarkdownNodeParser, E5-Large-v2 embeddings, returns top-k ranked sections. FlexGraph compositional system enables flexible primitive composition (siblings, genealogy, temporal, cross_phase) via declarative JSON for surgical knowledge retrieval with context-aware template rendering.
+**Core Capability**: Retrieval-only mode with LlamaIndex pipeline, H3/H2-section chunking via MarkdownNodeParser, Nomic Embed v1.5 embeddings (768D, 8k tokens), returns top-k ranked sections. FlexGraph compositional system enables flexible primitive composition (siblings, genealogy, temporal, cross_phase) via declarative JSON for surgical knowledge retrieval. Multi-source routing allows mixing conversation and context results in single query. Introspect system provides progressive disclosure (default/map/status views) for AI onboarding. Preset library (@lineage, @decisions, @failures, @synthesize, @timeline) wraps common workflows with template-based variable substitution.
 
 ### 2. TRACE - Conversation Archaeology
 **Purpose**: Parse and query Claude Code conversation history
 **CLI**: `trace`
 **Details**: See [architecture_trace-i2.md](./architecture_trace-i2.md)
 
-**Core Capability**: Find conversations globally via semantic verb-noun commands, export H2-section chronicle markdown, provide chronologically merged messages + patches for vector indexing.
+**Core Capability**: Find conversations globally via semantic verb-noun commands, export H2-section chronicle markdown, provide chronologically merged messages + patches for vector indexing. Granular formatting separates message components (text, thinking, tools, patches) into independent H2 sections for surgical vector retrieval with chunk_type metadata (message/thinking/patch).
 
 ### 3. Qdrant - Vector Database Manager
 **Purpose**: Docker lifecycle management for Qdrant vector database
@@ -58,6 +58,11 @@ imem search conversations "context" --session abc123
 
 # Compositional retrieval (FlexGraph)
 imem compose '{"search": {"text": "JWT"}, "discovery": {"siblings": true, "genealogy": true}}'
+
+# Preset-based workflows (5 presets)
+imem compose '@lineage' artifact="chunking"
+imem compose '@decisions' topic="authentication"
+imem compose '@failures' area="retry-logic"
 ```
 
 ### Query Conversations
@@ -136,13 +141,17 @@ my-project/
 2. Compositional discovery (FlexGraph)
    └→ imem compose '{"search": {...}, "discovery": {"siblings": true, "genealogy": true}}'
    └→ Returns: Enriched results with context (siblings, genealogy, temporal)
-   └→ Template rendering with genealogical indicators
 
-3. Find conversations
-   └→ imem search conversations "query"
-   └→ Returns: Relevant conversation sections
+3. Preset workflows (5 built-in)
+   └→ imem compose '@lineage' artifact="chunking"
+   └→ Returns: Multi-source results (3 conversation + 3 context queries)
+   └→ Automatic deduplication and cross-collection routing
 
-4. Drill down
+4. Find conversations
+   └→ imem search conversations "query" --chunk-type message --role assistant
+   └→ Returns: Granular conversation sections with metadata filtering
+
+5. Drill down
    └→ trace show chronicle <id>
    └→ Returns: Chronologically merged messages + patches
 ```
@@ -233,36 +242,6 @@ project/.claude/.trace/
 
 ---
 
-## Version History
-
-### v3.0 (Current) - Production-Ready
-**Released**: 2025-10-23
-**Status**: ✅ Zero P0/P1 technical debt
-
-**Metrics**:
-- Total codebase: 3,720 lines
-- Dependencies: 3 unique packages
-- Microservices: 3 independent CLIs
-- Quality: 85% docstring coverage
-
-**Major Additions (Phase 5A+B)**:
-- ✅ `aura` command for project initialization
-- ✅ LlamaIndex section-level chunking
-- ✅ Filter support (`--in`, `--session`, `--section`)
-- ✅ Conversation indexing pipeline
-- ✅ Bidirectional session linking
-
-### v2.0 - Monolithic Package
-**Completed**: 2025-10-21
-
-**Migration**:
-- 4,020 lines → 3,720 lines (7% reduction)
-- Monolithic → 3 microservices
-- 6 dependencies → 3 dependencies
-- Removed blocking orchestrator
-
----
-
 ## Component Details
 
 For detailed architecture of each microservice:
@@ -278,21 +257,3 @@ For detailed architecture of each microservice:
 3. **No Live Watcher**: Only static conversation discovery
 4. **Manual Testing**: Automated test suite not implemented
 
----
-
-## Future Work
-
-### High Priority
-- SessionStart hooks (auto-register conversations)
-- Hybrid search (semantic + keyword)
-- Cross-section pattern detection
-
-### Medium Priority
-- Live conversation watcher
-- Configuration file support (YAML)
-- Automated test suite
-
-### Low Priority
-- Multi-user registry support
-- Native Qdrant option
-- Distributed execution

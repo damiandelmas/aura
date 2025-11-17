@@ -79,43 +79,43 @@ imem compose '{
 
 ---
 
-## Discovery Primitives (Advanced)
+## Discovery Primitives (Compose Only)
 
-### Trace Decision Origins
+### Get Related Sections (Siblings)
 ```bash
 imem compose '{
-  "search": {"text": "routing decision", "filters": {"phase": "develop"}, "limit": 1},
-  "discovery": {"genealogy": {"direction": "ancestors", "limit": 5}}
-}'
-```
-
-### Design→Implementation Trail
-```bash
-imem compose '{
-  "search": {"text": "FlexGraph", "filters": {"phase": "design"}, "limit": 1},
-  "discovery": {"cross_phase": {"target_phases": ["develop"]}}
-}'
-```
-
-### Find Semantic Neighbors
-```bash
-imem compose '{
-  "search": {"text": "primitives", "limit": 1},
-  "discovery": {"similar": {"limit": 3, "score_threshold": 0.7}}
-}'
-```
-
-### Multi-Discovery Pattern
-```bash
-imem compose '{
-  "search": {"text": "compose pipeline", "limit": 1},
+  "search": {"text": "FlexGraph primitives", "limit": 1},
   "discovery": {
-    "siblings": {"section_types": ["Decisions"], "limit": 3},
-    "similar": {"limit": 3, "score_threshold": 0.7},
-    "genealogy": {"direction": "ancestors", "limit": 2}
+    "siblings": {"limit": 3, "section_types": ["Decisions", "Patterns"]}
   }
 }'
+# Returns primary result + related Decisions/Patterns from same file
 ```
+
+### Track Evolution (Temporal)
+```bash
+imem compose '{
+  "search": {"text": "routing", "limit": 1},
+  "discovery": {
+    "temporal": {"direction": "after", "limit": 2}
+  }
+}'
+# Returns chunks semantically similar but chronologically later
+```
+
+---
+
+## Known Issues
+
+**Genealogy returns empty arrays:**
+- Discovery primitive exists but returns `[]` consistently
+- Cross-collection session_id matching may not be working
+- Non-blocking (siblings/temporal work fine)
+
+**Temporal can be sparse:**
+- High 0.85 similarity threshold filters most results
+- Some docs missing timestamps
+- When it works, shows evolution clearly
 
 ---
 
