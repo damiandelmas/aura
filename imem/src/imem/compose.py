@@ -80,11 +80,14 @@ async def compose(collection_name: str, config_dict: dict,
             encoder
         )
 
-    # Stage 4: Render (if template specified)
-    if config_dict.get('output', {}).get('template'):
-        return {"rendered": _render_template(results, config_dict['output']['template'])}
+    # Stage 4: Filter and structure output
+    filtered_results = _filter_results(results)
 
-    return {"results": results}
+    # Stage 5: Render (if template specified)
+    if config_dict.get('output', {}).get('template'):
+        return {"rendered": _render_template(filtered_results, config_dict['output']['template'])}
+
+    return {"results": filtered_results}
 
 
 async def _execute_search(collection_name: str, search_config: dict,
@@ -138,12 +141,23 @@ async def _execute_search(collection_name: str, search_config: dict,
 
         return all_results
     else:
+        # Single query - route based on source filter
+        query_collection = collection_name
+        filters = search_config.get('filters', {}).copy()
+
+        if registry and project_root:
+            source = filters.pop('source', None)  # Remove source from filters
+            if source == 'conversation':
+                query_collection = registry.get_collection_by_type(project_root, 'conversation')
+            elif source == 'context':
+                query_collection = registry.get_collection_by_type(project_root, 'context')
+
         # Single query - wrap in thread
         return await asyncio.to_thread(
             _single_search,
-            collection_name,
+            query_collection,
             search_config.get('text', ''),
-            search_config.get('filters', {}),
+            filters,
             search_config.get('limit', 10),
             client,
             encoder
@@ -385,6 +399,79 @@ def _apply_graph_operations(collection_name: str, results: List[Dict[str, Any]],
             results = results[:graph_config['top']]
 
     return results
+
+
+def _filter_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Filter results to essential fields in intelligent order"""
+
+    filtered = []
+    for result in results:
+        payload = result.get('payload', {})
+        source = payload.get('source')
+
+        # Build filtered payload in intelligent order
+        filtered_payload = {}
+
+        # 1. Type (source, phase/chunk_type)
+        filtered_payload['source'] = source
+        if source == 'conversation':
+            if 'chunk_type' in payload:
+                filtered_payload['chunk_type'] = payload['chunk_type']
+        else:
+            if 'phase' in payload:
+                filtered_payload['phase'] = payload['phase']
+
+        # 2. Location in structure (header_path → section_name)
+        if 'header_path' in payload:
+            filtered_payload['header_path'] = payload['header_path']
+        if 'section_name' in payload:
+            filtered_payload['section_name'] = payload['section_name']
+
+        # 3. Content
+        if 'content' in payload:
+            filtered_payload['content'] = payload['content']
+
+        # 4. Provenance (session_id, file_path, timestamp/start_time)
+        if 'session_id' in payload and payload['session_id']:
+            filtered_payload['session_id'] = payload['session_id']
+        if 'file_path' in payload:
+            filtered_payload['file_path'] = payload['file_path']
+
+        # Timestamp field varies by source
+        if source == 'conversation':
+            if 'start_time' in payload:
+                filtered_payload['start_time'] = payload['start_time']
+        else:
+            if 'timestamp' in payload:
+                filtered_payload['timestamp'] = payload['timestamp']
+
+        # 5. Optional (role)
+        if 'role' in payload and payload['role']:
+            filtered_payload['role'] = payload['role']
+
+        # Build filtered result
+        filtered_result = {
+            'id': result.get('id'),
+            'score': result.get('score')
+        }
+
+        # Add filtered payload
+        for key, value in filtered_payload.items():
+            filtered_result[key] = value
+
+        # 6. Discovery data (if present)
+        if 'siblings' in result:
+            filtered_result['siblings'] = result['siblings']
+        if 'genealogy' in result:
+            filtered_result['genealogy'] = result['genealogy']
+        if 'temporal' in result:
+            filtered_result['temporal'] = result['temporal']
+        if 'cross_phase' in result:
+            filtered_result['cross_phase'] = result['cross_phase']
+
+        filtered.append(filtered_result)
+
+    return filtered
 
 
 def _render_template(results: List[Dict[str, Any]], template_name: str) -> str:

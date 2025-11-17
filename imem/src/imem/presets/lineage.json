@@ -11,7 +11,9 @@
   "compose_config": {
     "search": {
       "queries": [
-        {"text": "{{artifact}}", "filters": {"source": "conversation"}, "limit": 3},
+        {"text": "{{artifact}}", "filters": {"source": "conversation", "chunk_type": "message"}, "limit": 2},
+        {"text": "{{artifact}}", "filters": {"source": "conversation", "chunk_type": "thinking"}, "limit": 2},
+        {"text": "{{artifact}}", "filters": {"source": "conversation", "chunk_type": "patch"}, "limit": 2},
         {"text": "{{artifact}}", "filters": {"phase": "design"}, "limit": 3},
         {"text": "{{artifact}}", "filters": {"phase": "develop"}, "limit": 3},
         {"text": "{{artifact}}", "filters": {"phase": "document"}, "limit": 2}
