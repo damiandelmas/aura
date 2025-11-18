@@ -97,13 +97,15 @@ def index_metadata_cmd(phase, limit):
         chunks = []
         for md_file in md_files:
             try:
-                file_chunks = parser.parse_file(md_file, phase=phase)
+                # MarkdownParser auto-detects phase from path, no parameter needed
+                file_chunks = parser.parse_file(md_file)
                 chunks.extend(file_chunks)
                 click.echo(f"   ✅ {md_file.relative_to(project_root)}")
             except Exception as e:
                 click.echo(f"   ❌ {md_file.name}: {e}")
 
-        store.upsert_chunks(chunks)
+        # SQLiteVectorStore uses upsert() not upsert_chunks()
+        store.upsert(chunks)
         click.echo(f"\n✅ Indexed {len(chunks)} chunks to SQLite")
 
     except Exception as e:
@@ -140,7 +142,7 @@ def compose_cmd(config_json):
 
 
 @imem.command('query-metadata')
-@click.option('--text', help='Text query')
+@click.option('--text', help='Text query', default='')
 @click.option('--phase', help='Filter by phase')
 @click.option('--section-type', help='Filter by section type')
 @click.option('--file-path', help='Filter by file path')
@@ -158,12 +160,18 @@ def query_metadata_cmd(text, phase, section_type, file_path, limit):
         if file_path:
             filters['file_path'] = file_path
 
-        results = store.query(filters=filters, mode='metadata', limit=limit)
+        # Use VectorStore.search() protocol method with use_vector=False
+        results = store.search(
+            query=text,
+            limit=limit,
+            filters=filters,
+            use_vector=False
+        )
 
         for i, result in enumerate(results, 1):
-            click.echo(f"\n{i}. {result.get('file_path', 'unknown')}")
-            click.echo(f"   Phase: {result.get('phase', 'N/A')} | Section: {result.get('section_type', 'N/A')}")
-            content = result.get('content', '')[:200]
+            click.echo(f"\n{i}. {result.metadata.get('file_path', 'unknown')}")
+            click.echo(f"   Phase: {result.metadata.get('phase', 'N/A')} | Section: {result.metadata.get('section_type', 'N/A')}")
+            content = result.content[:200] if result.content else ''
             click.echo(f"   {content}...")
 
         click.echo(f"\n✅ Found {len(results)} results")
@@ -202,23 +210,25 @@ def introspect_cmd(format):
 def stats_metadata_cmd():
     """Show SQLite metadata statistics"""
     try:
-        project_root = app.get_project_root()
-        if not project_root:
-            click.echo("❌ Not in registered project", err=True)
-            return
+        store = app.get_sqlite_store()
 
-        db = app.get_db()
-        cursor = db.execute("SELECT COUNT(*) FROM chunks")
-        total = cursor.fetchone()[0]
-
-        cursor = db.execute("SELECT phase, COUNT(*) FROM chunks GROUP BY phase")
-        by_phase = {row[0]: row[1] for row in cursor.fetchall()}
+        # Use VectorStore.get_stats() protocol method
+        stats = store.get_stats()
 
         click.echo(f"📊 SQLite Metadata Stats")
-        click.echo(f"\nTotal chunks: {total}")
-        click.echo("\nBy phase:")
-        for phase, count in by_phase.items():
-            click.echo(f"  {phase}: {count}")
+        click.echo(f"\nTotal chunks: {stats.get('total_chunks', 0)}")
+
+        phase_counts = stats.get('by_phase', {})
+        if phase_counts:
+            click.echo("\nBy phase:")
+            for phase, count in phase_counts.items():
+                click.echo(f"  {phase}: {count}")
+
+        section_counts = stats.get('by_section_type', {})
+        if section_counts:
+            click.echo("\nBy section type:")
+            for section_type, count in list(section_counts.items())[:10]:
+                click.echo(f"  {section_type}: {count}")
 
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
@@ -235,7 +245,9 @@ def init_cmd(name):
         registry = SimpleRegistry()
         project_root = Path.cwd()
 
-        collections = registry.register_project(project_root, name=name)
+        # Note: SimpleRegistry.register_project() doesn't accept name parameter
+        # It auto-generates from project root
+        collections = registry.register_project(project_root)
 
         click.echo(f"✅ Initialized IMEM for {project_root.name}")
         click.echo(f"   Collections: {', '.join(collections.values())}")
