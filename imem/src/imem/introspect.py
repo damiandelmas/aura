@@ -547,14 +547,7 @@ def get_system_and_landscape(
     result = {
         "system": {
             "primitives": ["siblings", "genealogy", "temporal", "cross_phase"],
-            "presets": {
-                "lineage": "imem compose @lineage <artifact> - Full evolution across phases",
-                "decisions": "imem compose @decisions <topic> - Context/rationale/alternatives",
-                "failures": "imem compose @failures <topic> - Anti-patterns + lessons",
-                "synthesize": "imem compose @synthesize <topic> - Cross-session narrative",
-                "timeline": "imem compose @timeline <concept> - Chronological evolution"
-            },
-            "compose_syntax": "imem compose @<preset> <arg>  OR  imem compose '{...json...}'"
+            "compose_syntax": "imem compose '{\"search\": {...}, \"discovery\": {...}}'"
         },
         "landscape": {
             "coverage": stats,
@@ -562,14 +555,14 @@ def get_system_and_landscape(
             "interpretation": "Section titles show architectural vocabulary and exploration areas"
         },
         "quick_start": [
-            "imem compose @lineage compose.py  # Trace file evolution",
-            "imem compose @decisions 'vector database'  # Find decision context",
+            "imem compose '{\"search\": {\"text\": \"authentication\", \"limit\": 5}}'",
+            "imem compose '{\"source\": \"conversations\", \"search\": {\"text\": \"bug\", \"limit\": 3}, \"discovery\": {\"genealogy\": true}}'",
             "imem introspect --map  # See full concept topology"
         ]
     }
 
-    if include_examples:
-        result["compose_patterns"] = get_compose_patterns()
+    # Preset/pattern system removed - premature to codify before validation through usage
+    # See: Template removal (251117 changelog) for rationale
 
     return result
 
