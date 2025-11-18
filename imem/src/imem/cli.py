@@ -154,7 +154,7 @@ def _index_phase(phase_name: str, force: bool = False, limit: int = None, collec
 
 
 def _index_conversations(force: bool = False, limit: int = None, collection_override: str = None,
-                         project_filter: str = None, folder_path: str = None):
+                         project_filter: str = None, folder_path: str = None, session_ids: list = None):
     """
     Index Claude Code conversations
 
@@ -164,6 +164,7 @@ def _index_conversations(force: bool = False, limit: int = None, collection_over
         collection_override: Optional collection name override for A/B testing
         project_filter: If provided, filter conversations by project path (empty string = current project)
         folder_path: If provided, search custom folder for conversations
+        session_ids: If provided, only index conversations with these session IDs
     """
     from .ingest import EnhancedModularIngest
     import sys as _sys
@@ -253,6 +254,11 @@ def _index_conversations(force: bool = False, limit: int = None, collection_over
         project_filter=filter_project_path,
         folder_path=filter_folder_path
     )
+
+    # Filter by session IDs if provided
+    if session_ids:
+        conversation_files = [f for f in conversation_files if f.stem in session_ids]
+        click.echo(f"🎯 Filtering to {len(session_ids)} specific sessions")
 
     # Get existing session IDs for incremental indexing
     click.echo(f"🔍 Checking for existing sessions...")
@@ -459,7 +465,8 @@ def _execute_search(query: str, filters: dict, limit: int, after_date: str = Non
 @click.option('--all-projects', is_flag=True, help='Index conversations from ALL projects (default: current project only)')
 @click.option('--project', 'project_path', type=str, help='Index specific project path conversations')
 @click.option('--folder', type=str, help='Custom folder path to search for conversations')
-def index_source(source, force, limit, collection, all_projects, project_path, folder):
+@click.option('--sessions', help='Comma-separated session IDs to index (conversations only)')
+def index_source(source, force, limit, collection, all_projects, project_path, folder, sessions):
     """
     Index content from a specific source
 
@@ -491,12 +498,18 @@ def index_source(source, force, limit, collection, all_projects, project_path, f
         elif project_path:
             project_filter = project_path
 
+        # Parse session IDs if provided
+        session_list = None
+        if sessions:
+            session_list = [s.strip() for s in sessions.split(',')]
+
         _index_conversations(
             force=force,
             limit=limit,
             collection_override=collection,
             project_filter=project_filter,
-            folder_path=folder
+            folder_path=folder,
+            session_ids=session_list
         )
     else:
         _index_phase(phase_name=source, force=force, limit=limit, collection_override=collection)
