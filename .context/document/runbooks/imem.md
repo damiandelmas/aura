@@ -1,6 +1,8 @@
 # IMEM - Semantic Search for Institutional Memory
 
-IMEM provides semantic search across changelogs and conversations using Qdrant vector database and E5-Large-v2 embeddings.
+**For AI agents.**
+
+IMEM provides semantic search across changelogs and conversations using Qdrant vector database with Nomic Embed v1.5 (default) or E5-Large-v2 (legacy).
 
 ## Core Concept
 
@@ -28,15 +30,47 @@ imem init
 # Index conversations
 imem index-conversation <session-id>
 
-# Search changelogs
+# Check what's indexed
+imem introspect --status
+imem introspect --fields
+
+# Search changelogs (Best: Decisions/Patterns sections)
 imem search develop "authentication decisions" --section "Decisions"
+imem search develop "retry patterns" --section "Patterns"
 
-# Search conversations
-imem search conversations "bug fix"
+# Search conversations (Good: code patches)
+imem search conversations "bug fix" --chunk-type patch
 
-# Compositional retrieval (FlexGraph)
+# Compositional retrieval (Direct JSON)
 imem compose '{"search": {"text": "JWT"}, "discovery": {"siblings": true, "genealogy": true}}'
 ```
+
+## Quality Hierarchy
+
+**Best:** develop/design docs with `--section Decisions|Patterns|Implementation`
+**Good:** Code patches from conversations
+**Bad:** User messages (hit or miss)
+**Useless:** Thinking chunks (never use `--chunk-type thinking`)
+
+## Introspection (Start Here)
+
+Before querying, discover what's available:
+
+```bash
+# Check what's indexed
+imem introspect --status
+# Shows: 3608 context chunks, 1357 conversation chunks, which phases indexed
+
+# See available filters
+imem introspect --fields
+# Shows all filterable metadata fields, values, what you can filter on
+
+# System overview
+imem introspect
+# Shows: primitives, coverage stats, top concepts, quick start examples
+```
+
+**Use case:** Run `imem introspect --fields` before writing queries to see available filters
 
 ## Service Management
 
@@ -44,7 +78,7 @@ imem compose '{"search": {"text": "JWT"}, "discovery": {"siblings": true, "genea
 ```bash
 imem service start
 # Starts Docker container on port 6334
-# Persists data to ~/.qdrant/storage
+# Persists data to ~/.context/qdrant_storage/
 ```
 
 **Check status:**
@@ -261,14 +295,10 @@ Parsed from H2 headers:
 
 ## Integration with TRACE
 
-**Export and index a conversation:**
+**Index a conversation:**
 ```bash
-# Export conversation to markdown
-trace export chronicle <session-id> -o /tmp/conversation.md
-
-# Index it
 imem index-conversation <session-id>
-# (TRACE export happens automatically)
+# TRACE export happens automatically - no manual export needed
 ```
 
 **Search across both:**
@@ -291,9 +321,9 @@ imem search conversations "auth discussion" --session <id>
 - HNSW optimization: m=16, ef_construct=100, on_disk=False
 
 **Storage:**
-- Embeddings: ~4KB per section (1024-dim vectors)
-- Location: `~/.qdrant/storage/`
-- One collection per project
+- Embeddings: ~3KB per section (768-dim Nomic) or ~4KB (1024-dim E5)
+- Location: `~/.context/qdrant_storage/`
+- Dual collections per project (context + conversation)
 
 ## Common Workflows
 
@@ -331,7 +361,7 @@ imem collections list
 imem index-all-conversations --recent 20
 
 # Then search them
-imem conversations search "topic"
+imem search conversations "topic"
 ```
 
 **"Reconstruct decision narrative with context"**
@@ -340,11 +370,10 @@ imem conversations search "topic"
 imem compose '{
   "search": {"text": "authentication decision"},
   "discovery": {
-    "genealogy": true,
-    "siblings": {"section_types": ["Patterns", "Failures"]},
-    "temporal": {"direction": "after"}
-  },
-  "output": {"template": "story-context"}
+    "genealogy": {"direction": "ancestors", "limit": 5},
+    "siblings": {"section_types": ["Patterns", "Failures"], "limit": 3},
+    "temporal": {"direction": "after", "limit": 3}
+  }
 }'
 ```
 
@@ -369,8 +398,7 @@ imem compose '{
 # Timeline of how solution evolved
 imem compose '{
   "search": {"text": "API design"},
-  "discovery": {"temporal": {"direction": "both"}},
-  "output": {"template": "timeline"}
+  "discovery": {"temporal": {"direction": "both", "limit": 5}}
 }'
 ```
 
@@ -432,7 +460,7 @@ imem init --force  # Full re-index
 **Qdrant configuration:**
 - HNSW index for fast nearest-neighbor search
 - Parameters: m=16, ef_construct=100
-- Named vector: "e5-large-v2"
+- Named vectors: "nomic-embed-text-v1.5" (default) or "e5-large-v2" (legacy)
 - Distance metric: Cosine similarity
 
 **Chunking strategy:**
@@ -449,84 +477,115 @@ imem init --force  # Full re-index
 
 ## Tips
 
+**Start with introspection:**
+- Run `imem introspect --fields` to see available filters
+- Check `imem introspect --status` for coverage stats
+- Understand what's indexed before querying
+
 **Phrase queries semantically:**
 - Good: "authentication implementation"
 - Better: "user authentication and session management"
 - Best: "secure token validation patterns"
 
-**Use section filters:**
+**Use section filters for quality:**
 - `--section "Decisions"` for architectural choices
 - `--section "Patterns"` for reusable solutions
 - `--section "Failures"` for what didn't work
+- `--chunk-type patch` for code changes only (avoid `thinking`)
 
-**Combine with TRACE:**
-- TRACE: Find conversations by time/content
-- IMEM: Semantic search within conversations
-- Use both for comprehensive discovery
-
-**Pattern layer:**
-- `.pattern.md` files = language-agnostic knowledge
-- Use `--layer pattern` flag to filter to these only
-- Useful for cross-project pattern learning
-
-## FlexGraph Compositional Retrieval
-
-### Overview
-FlexGraph enables flexible composition of discovery primitives for surgical knowledge retrieval. Instead of prescribing fixed query patterns, four orthogonal primitives compose via declarative JSON.
+## Compositional Retrieval (Advanced)
 
 ### Discovery Primitives
+
+Four orthogonal primitives compose via declarative JSON for surgical knowledge retrieval:
 
 **siblings** - Related sections from same document
 - Parameters: `section_types`, `order_by`, `limit`, `has_rationale`, `has_alternatives`
 - Example: Get top 3 Failures with rationale
 - Config: `{"siblings": {"section_types": ["Failures"], "limit": 3, "has_rationale": true}}`
 - Backward compatible: `{"siblings": true}` still works (converts to dict internally)
+- **Coverage:** 100% (requires `file_path` metadata)
+- **Empty result when:** Target is only section in file (expected behavior)
 
 **genealogy** - Origin conversation via session_id linking
 - Reconstructs discussion that led to decision
-- Config: `{"genealogy": true}`
+- Config: `{"genealogy": {"direction": "ancestors", "limit": 5}}`
+- **Coverage:** Low initially (5% typical)
+- **Action needed:** Run `imem index-all-conversations` to index missing sessions
+- **Expected:** Near 100% coverage after full indexing (~10 min)
 
 **temporal** - Evolution chain via timestamp + semantic similarity
 - Parameters: `direction` ("after", "before", "both")
 - Finds how approach changed over time
-- Config: `{"temporal": {"direction": "after"}}`
+- Config: `{"temporal": {"direction": "after", "limit": 3}}`
+- **Threshold:** 0.65 similarity (lowered from 0.85 to match typical 0.6-0.7 evolution scores)
+- **Coverage:** 54% context chunks, 100% conversations
+- **Missing timestamps:** Chunks without timestamps still returned (no time filtering)
 
 **cross_phase** - Related decisions across phases
 - Links design → develop → document
-- Config: `{"cross_phase": true}`
+- Config: `{"cross_phase": {"phase": "develop"}}`
+- **Syntax:** Must use dict format `{"phase": "develop"}`, not boolean
+- **Coverage:** 100% (requires `phase` metadata)
 
-### Compose Pipeline
+### Multi-Source Composition
 
-Four-stage execution:
-1. **Search** - Semantic retrieval of base results
-2. **Discovery** - Enrich each result with primitive data
-3. **Graph** (optional) - Apply PageRank/centrality scoring
-4. **Template** - Render with context-aware structure
+Cross-collection queries in single call:
 
-### Templates
+```bash
+# Cross-phase batch (develop + design)
+imem compose '{
+  "search": {
+    "queries": [
+      {"text": "routing", "filters": {"source": "context", "phase": "develop"}, "limit": 2},
+      {"text": "routing", "filters": {"source": "context", "phase": "design"}, "limit": 2}
+    ]
+  }
+}'
 
-**story-context.j2** - Narrative reconstruction with genealogical indicators
-- 🟢 Current thrust (zero later chunks, continuation_count = 0)
-- ⚠️ Evolved (1-2 later chunks, continuation_count = 1-2)
-- 🔴 Superseded (3+ later chunks, continuation_count >= 3)
-- ❌ Failed approaches (from Failures sections, explicit "Don't Suggest" warnings)
-- Section order: Failures → Patterns → Decisions
-- Temporal position detection: Counts chunks after target timestamp
+# Context + related decisions (siblings)
+imem compose '{
+  "search": {
+    "text": "FlexGraph primitives",
+    "filters": {"source": "context", "phase": "develop"},
+    "limit": 1
+  },
+  "discovery": {
+    "siblings": {"limit": 3, "section_types": ["Decisions", "Patterns"]}
+  }
+}'
 
-**timeline.j2** - Evolution timeline showing approach changes
+# Trace conversation origins (genealogy)
+imem compose '{
+  "search": {"text": "routing decision", "filters": {"phase": "develop"}, "limit": 1},
+  "discovery": {"genealogy": {"direction": "ancestors", "limit": 5}}
+}'
 
-**anti-patterns.j2** - Failed approaches with don't-suggest warnings
+# Track evolution (temporal)
+imem compose '{
+  "search": {"text": "routing", "limit": 1},
+  "discovery": {
+    "temporal": {"direction": "both", "limit": 3}
+  }
+}'
+```
 
-### Composition Examples
+### When to Use What
 
-See Common Workflows section above for practical examples of:
-- Narrative reconstruction
-- Anti-pattern discovery
-- Evolution tracking
+**Use `imem search`** when:
+- Simple keyword lookup
+- Single source/phase filter
+- Just need top results
 
-### Observable Usage Pattern
+**Use `imem compose`** when:
+- Cross-phase queries (design + develop)
+- Need graph relationships (siblings, genealogy, cross_phase)
+- Multi-source batch queries
+- Tracing decision lineage
 
-System tracks composition patterns by hashing discovery config. Detects recurring usage (10/15/20/30 times) and suggests preset creation as slash commands. Preset library grows organically from proven patterns.
+### Discovery-Driven Approach
+
+System exposes primitives and compose JSON interface without prescribing patterns. Patterns emerge through usage rather than premature codification. Honest empty JSON preferred over confident falsehoods.
 
 ## See Also
 

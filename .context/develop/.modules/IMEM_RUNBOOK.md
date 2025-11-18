@@ -90,6 +90,16 @@ imem compose '{
   }
 }'
 # Returns primary result + related Decisions/Patterns from same file
+# Works: Returns empty [] when target is only section in file (not a bug)
+```
+
+### Trace Conversation Origins (Genealogy)
+```bash
+imem compose '{
+  "search": {"text": "routing decision", "filters": {"phase": "develop"}, "limit": 1},
+  "discovery": {"genealogy": {"direction": "ancestors", "limit": 5}}
+}'
+# Returns conversation chunks from same session_id
 ```
 
 ### Track Evolution (Temporal)
@@ -97,25 +107,51 @@ imem compose '{
 imem compose '{
   "search": {"text": "routing", "limit": 1},
   "discovery": {
-    "temporal": {"direction": "after", "limit": 2}
+    "temporal": {"direction": "both", "limit": 3}
   }
 }'
-# Returns chunks semantically similar but chronologically later
+# Returns semantically similar chunks before/after in time
+# Works: Uses 0.65 score threshold, filters by timestamp direction
+# Coverage: 54% of context chunks have timestamps, 100% conversations
+```
+
+### Cross-Phase Discovery
+```bash
+imem compose '{
+  "search": {"text": "FlexGraph", "filters": {"phase": "design"}, "limit": 1},
+  "discovery": {"cross_phase": {"phase": "develop"}}
+}'
+# Find related content in different phase (design → develop)
+# Note: Must use dict format {"phase": "develop"}, not boolean
 ```
 
 ---
 
-## Known Issues
+## Discovery Requirements & Coverage
 
-**Genealogy returns empty arrays:**
-- Discovery primitive exists but returns `[]` consistently
-- Cross-collection session_id matching may not be working
-- Non-blocking (siblings/temporal work fine)
+### What Makes Primitives Work
 
-**Temporal can be sparse:**
-- High 0.85 similarity threshold filters most results
-- Some docs missing timestamps
-- When it works, shows evolution clearly
+**Siblings** (same file_path):
+- Requires: `file_path` metadata (100% coverage)
+- Returns: Sections from same document
+- Empty when: Target is only section in file (expected behavior)
+
+**Genealogy** (conversation links):
+- Requires: `session_id` in both context and conversation collections
+- Current: 2/38 sessions linked (5% coverage)
+- **Action needed**: Run `imem sync conversations` to index missing sessions
+- Expected: 38/38 coverage after sync (~10 min indexing)
+
+**Temporal** (time-based):
+- Requires: `timestamp` field for ordering
+- Current: 54% context chunks, 100% conversations
+- Works: Returns semantically similar + chronologically filtered
+- Missing timestamps: Chunks without timestamps still returned (no time filtering)
+
+**Cross-Phase** (design ↔ develop):
+- Requires: `phase` metadata (100% coverage)
+- Works: Semantic search across phases
+- Syntax: `{"phase": "target_phase"}` (dict required, not boolean)
 
 ---
 

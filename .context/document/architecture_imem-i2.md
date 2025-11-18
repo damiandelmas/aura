@@ -34,7 +34,13 @@ The system captures decision genealogy through bidirectional linking between con
 
 **primitives/discovery.py** - Compositional discovery primitives layer. Four orthogonal functions (get_siblings, get_genealogy, get_temporal, get_cross_phase) that retrieve related chunks based on metadata predicates. Each primitive accepts parameterized filters (section_types, order_by, limit, has_rationale, has_alternatives) for surgical retrieval. Backward compatible with boolean config (converts to dict internally). None-safe sorting handles null values in metadata fields (section_level, timestamp). Pure functions with no cross-dependencies enable flexible composition.
 
+**Discovery Thresholds**: Temporal similarity threshold set to 0.65 (lowered from 0.85) to match typical cross-time evolution scores (0.6-0.7 range). Genealogy uses cross-collection routing via base name extraction (`split('_context')[0]`) to correctly route from context collections to conversation collections.
+
 **compose.py** - Compositional orchestrator with intelligent multi-source routing. Executes parallel multi-query pipeline with per-query collection routing from declarative JSON config. Accepts registry and project_root parameters for source detection. Routes each query independently based on `filters.source` field (conversation vs context collections). Strips source filter before database query (routing hint, not filter). Aggregates results from multiple sources with automatic deduplication. Implements result filtering to return clean JSON output (~10 fields: id, score, source, chunk_type, content, metadata) instead of noise-filled payloads (35+ fields with session stats, unvalidated flags). Enables single-call multi-source retrieval with complete intent expression.
+
+**Thread Safety**: Uses per-thread encoder instances by passing `None` to parallel tasks, letting workers create thread-local SentenceTransformer instances. Prevents tensor size mismatch exceptions from shared encoder state across threads.
+
+**Collection Routing**: Context collections require `_impl` suffix appended after registry lookup. Per-query routing extracts base collection then adds suffix for context sources, while conversation sources use collection name directly.
 
 **introspect.py** - System capability discovery for AI onboarding. Implements three progressive disclosure levels: default (system primitives + landscape for onboarding), map (complete concept topology with mention frequencies), status (coverage statistics only). Provides live schema discovery by sampling collection points and aggregating metadata field types and enum values. Enumerates project ontology (types, phases, sessions, files) for context awareness. Returns JSON schema enabling zero-documentation AI agent onboarding where agents construct valid queries autonomously.
 
@@ -52,7 +58,7 @@ The system captures decision genealogy through bidirectional linking between con
 
 **Search Layer** - User submits `imem search <source> "query"` with optional filters (phase, section_type, session_id). System determines collection type from source (develop/design/document → context, conversations → conversation). Loads correct collection from registry via `get_collection_by_type()`. Auto-detects embedding model from collection vector config (Nomic or E5). Builds Qdrant filter using FieldCondition and Filter objects. Embeds query with detected model. Executes vector search with metadata filtering. Returns top K results sorted by similarity score.
 
-**Compositional Layer (Multi-Source)** - User invokes `imem compose <config>` or `imem compose '@preset' variable="value"` with declarative config. Preset invocation loads JSON template, performs variable substitution ({{artifact}} → value), returns expanded config. System receives registry and project_root context for collection routing. Executes parallel multi-query pipeline: (1) For each query, inspect `filters.source` field, (2) Route to conversation or context collection accordingly, (3) Strip source filter before database query (metadata-only routing hint), (4) Execute semantic search with remaining filters, (5) Aggregate results from multiple sources in order received, (6) Apply result filtering to keep high-signal fields (id, score, source, chunk_type, content, metadata) and strip noise (session stats, unvalidated flags, redundant fields), (7) Automatic deduplication ensures unique results across collections. Returns clean JSON (~10 fields) or structured output optimized for AI consumption.
+**Compositional Layer (Multi-Source)** - User invokes `imem compose <config>` or `imem compose '@preset' variable="value"` with declarative config. Preset invocation loads JSON template, performs variable substitution ({{artifact}} → value), returns expanded config. System receives registry and project_root context for collection routing. Executes parallel multi-query pipeline with thread-safe encoder instantiation: (1) For each query, inspect `filters.source` field, (2) Route to conversation or context collection, appending `_impl` suffix for context sources, (3) Strip source filter before database query (metadata-only routing hint), (4) Create per-thread encoder instance to prevent shared state corruption, (5) Execute semantic search with remaining filters, (6) Aggregate results from multiple sources in order received, (7) Apply recursive result filtering to keep high-signal fields (id, score, source, chunk_type, content, metadata) and strip noise from both primary results and discovery data (siblings, temporal, genealogy), (8) Automatic deduplication ensures unique results across collections. Returns clean JSON (~10 fields) or structured output optimized for AI consumption.
 
 **Output Layer** - Search results flow to terminal with formatted display. Each result includes section content, metadata (phase, section type, file path), similarity score, and contextual information (parent headers, structured fields present). Compose results return clean JSON with filtered fields for AI consumption. Introspect command outputs progressive disclosure views (default/map/status) as JSON for programmatic capability discovery.
 
@@ -90,7 +96,7 @@ The system captures decision genealogy through bidirectional linking between con
 
 **Multi-Source Routing Architecture** - Per-query source filter acts as collection routing hint stripped before database execution. Composition layer accepts registry and project_root parameters enabling source detection. Search executor inspects each query's `filters.source` field and routes to appropriate collection (conversation vs context). Source filter removed before building vector query to prevent filter mismatch errors. Enables declarative cross-collection queries where single preset invocation aggregates results from multiple sources with automatic deduplication.
 
-**Preset-Based Workflows** - Template files with variable substitution enable reusable query patterns. Sigil notation (@lineage, @decisions, @failures) triggers preset loading and variable substitution ({{artifact}} → user value). Each preset contains multiple parallel queries with per-query source routing and limits. Single invocation executes 3-6 coordinated queries across collections, aggregates results, and returns deduplicated output. Enables comprehensive coverage in one call without manual query construction.
+**Direct JSON Composition** - System exposes primitives (siblings, genealogy, temporal, cross_phase) and compose JSON interface for flexible query orchestration. Users and AI agents compose queries manually using declarative JSON config. Patterns emerge through usage rather than premature codification. Examples: `imem compose '{"search": {"text": "auth", "limit": 5}}'` for simple queries, `imem compose '{"source": "conversations", "search": {"text": "bug", "limit": 3}, "discovery": {"genealogy": true}}'` for cross-source enrichment, multi-query with siblings via queries array. Discovery-driven approach preferred over premature abstraction.
 
 **Discovery-Driven Assembly** - System provides raw retrieval primitives and clean JSON output without imposing assembly patterns. Removed template rendering infrastructure (story-context.j2, genealogy.j2, timeline.j2) that made unvalidated claims about temporal position and context validity. Honest empty JSON preferred over confident falsehoods. AI agents experiment with different assembly strategies, successful patterns extracted from experiments, then codified as presets. Experimentation surfaces context-specific insights before pattern codification.
 
@@ -181,26 +187,26 @@ imem index-conversation abc12345
 imem index-all-conversations
 ```
 
-**Compositional Retrieval (Multi-Source + Presets)**
+**Compositional Retrieval (Direct JSON)**
 ```bash
-# Preset-based workflows (5 built-in)
-imem compose '@lineage' artifact="chunking"
-imem compose '@decisions' topic="authentication"
-imem compose '@failures' area="retry-logic"
-imem compose '@synthesize' concept="routing"
-imem compose '@timeline' artifact="compose"
+# Simple search
+imem compose '{"search": {"text": "authentication", "limit": 5}}'
 
-# Multi-source queries (mix conversation + context)
-imem compose '[
-  {"text": "{{query}}", "filters": {"source": "conversation", "chunk_type": "message"}, "limit": 2},
-  {"text": "{{query}}", "filters": {"source": "context", "phase": "develop"}, "limit": 3}
-]'
+# Conversations with discovery
+imem compose '{"source": "conversations", "search": {"text": "bug", "limit": 3}, "discovery": {"genealogy": true}}'
+
+# Multi-query with siblings
+imem compose '{"search": {"queries": [{"text": "JWT", "filters": {"phase": "develop"}}, {"text": "JWT", "filters": {"phase": "document"}}]}, "discovery": {"siblings": {"limit": 3}}}'
+
+# Cross-phase with temporal discovery
+imem compose '{"search": {"text": "routing", "filters": {"phase": "develop"}}, "discovery": {"temporal": true, "siblings": true}}'
 
 # System introspection (AI onboarding)
 imem introspect                    # Default: system primitives + landscape
 imem introspect --map              # Complete concept topology
 imem introspect --status           # Coverage statistics only
 imem introspect --entities         # Enumerate types, phases, sessions, files
+imem introspect --fields           # Available filter fields and types
 ```
 
 **Programmatic Access**
