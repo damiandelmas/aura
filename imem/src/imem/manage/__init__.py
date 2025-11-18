@@ -5,6 +5,7 @@ Responsible for:
 - Metadata introspection
 - Coverage statistics
 - Concept topology analysis
+- Entity resolution (project-scoped normalization)
 
 This domain handles project-level management tasks separate from
 indexing (compile) and retrieval (compose).
@@ -21,10 +22,14 @@ from ..introspect import (
 # Re-export registry (will move here in future)
 from ..registry import SimpleRegistry
 
+# Export entity resolver
+from .resolver import EntityResolver
+
 __all__ = [
     'introspect',
     'get_system_and_landscape',
     'get_concept_topology',
     'get_coverage_stats',
     'SimpleRegistry',
+    'EntityResolver',
 ]
