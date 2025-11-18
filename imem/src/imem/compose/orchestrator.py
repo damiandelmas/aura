@@ -55,22 +55,25 @@ def build_chain(config: Dict[str, Any], store: VectorStore) -> Chain:
     discovery_config = config.get('discovery', {})
 
     if discovery_config.get('siblings'):
-        # TODO: Implement SiblingDiscovery processor
-        # from .processors.discovery import SiblingDiscovery
-        # processors.append(SiblingDiscovery(store))
-        logger.warning("SiblingDiscovery not yet implemented")
+        raise NotImplementedError(
+            "SiblingDiscovery processor not yet implemented. "
+            "Remove 'discovery.siblings' from config or implement processor at "
+            "imem/compose/processors/discovery.py"
+        )
 
     if discovery_config.get('temporal'):
-        # TODO: Implement TemporalDiscovery processor
-        # from .processors.discovery import TemporalDiscovery
-        # processors.append(TemporalDiscovery(store))
-        logger.warning("TemporalDiscovery not yet implemented")
+        raise NotImplementedError(
+            "TemporalDiscovery processor not yet implemented. "
+            "Remove 'discovery.temporal' from config or implement processor at "
+            "imem/compose/processors/discovery.py"
+        )
 
     if discovery_config.get('genealogy'):
-        # TODO: Implement GenealogyDiscovery processor
-        # from .processors.discovery import GenealogyDiscovery
-        # processors.append(GenealogyDiscovery(store))
-        logger.warning("GenealogyDiscovery not yet implemented")
+        raise NotImplementedError(
+            "GenealogyDiscovery processor not yet implemented. "
+            "Remove 'discovery.genealogy' from config or implement processor at "
+            "imem/compose/processors/discovery.py"
+        )
 
     # 3. Ranking processor (optional, multi-phase)
     ranking_config = config.get('ranking')
@@ -95,17 +98,45 @@ def _get_scorer_for_phase(phase_name: str):
     """Map phase name to scorer function
 
     Args:
-        phase_name: Name of ranking phase ('metadata', 'references', 'authority')
+        phase_name: Name of ranking phase ('recency', 'metadata', 'authority')
 
     Returns:
         Scorer function compatible with RankingPhase
-    """
-    # TODO: Implement actual scoring functions
-    # For now, return identity function
-    def identity_scorer(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return results
 
-    return identity_scorer
+    Raises:
+        ValueError: If scorer name is unknown
+    """
+    if phase_name == 'recency':
+        def recency_scorer(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            """Sort by timestamp (most recent first)"""
+            return sorted(
+                results,
+                key=lambda r: r.get('metadata', {}).get('timestamp', ''),
+                reverse=True
+            )
+        return recency_scorer
+
+    elif phase_name == 'metadata':
+        # Identity scorer (no reordering, metadata filtering handled by SearchProcessor)
+        def metadata_scorer(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            return results
+        return metadata_scorer
+
+    elif phase_name == 'authority':
+        # TODO: Implement PageRank or reference counting scorer
+        logger.warning(
+            "Authority scorer not yet implemented. Using identity (no reordering). "
+            "Implement at imem/compose/processors/ranking.py"
+        )
+        def identity_scorer(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            return results
+        return identity_scorer
+
+    else:
+        raise ValueError(
+            f"Unknown scorer: '{phase_name}'. "
+            f"Available: 'recency', 'metadata', 'authority'"
+        )
 
 
 def compose(

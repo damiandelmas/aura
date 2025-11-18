@@ -120,8 +120,8 @@ class IMEMCLI:
                 raise ValueError("Not in a registered project. Run 'imem init' first.")
 
             self.state.sqlite_store = create_store(
-                'sqlite',
-                {'project_root': str(project_root)}
+                backend='sqlite',
+                project_root=project_root
             )
 
         return self.state.sqlite_store
@@ -138,12 +138,10 @@ class IMEMCLI:
                 raise ValueError("Not in a registered project. Run 'imem init' first.")
 
             self.state.qdrant_store = create_store(
-                'qdrant',
-                {
-                    'project_root': str(project_root),
-                    'host': self.config.qdrant_host,
-                    'port': self.config.qdrant_port
-                }
+                backend='qdrant',
+                collection_name='docs_default',
+                host=self.config.qdrant_host,
+                port=self.config.qdrant_port
             )
 
         return self.state.qdrant_store

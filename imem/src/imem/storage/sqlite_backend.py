@@ -119,7 +119,7 @@ class SQLiteVectorStore:
             raise StorageError(f"SQLite search failed: {e}") from e
 
     def get_by_ids(self, ids: List[str]) -> List[SearchResult]:
-        """Retrieve chunks by their IDs
+        """Retrieve chunks by their IDs (O(n) with single SQL query)
 
         Args:
             ids: List of chunk IDs
@@ -127,30 +127,43 @@ class SQLiteVectorStore:
         Returns:
             List of SearchResult objects (missing IDs silently skipped)
         """
+        if not ids:
+            return []
+
+        # Single SQL query with WHERE IN clause (O(n) instead of O(n²))
+        import json
+
+        placeholders = ','.join('?' * len(ids))
+        query = f"""
+            SELECT
+                id, content, file_path, phase, section_type,
+                section_name, timestamp, session_id, metadata
+            FROM chunks
+            WHERE id IN ({placeholders})
+        """
+
+        # Access underlying SQLite connection
+        conn = self.store.conn
+        cursor = conn.execute(query, ids)
+        rows = cursor.fetchall()
+
+        # Convert to SearchResult objects
         results = []
-
-        for chunk_id in ids:
-            # Query by ID using file path filter (not ideal, but works)
-            # TODO: Add get_by_id method to SQLiteStore
-            raw_results = self.store.query(filters={}, limit=1)
-            matching = [r for r in raw_results if r['id'] == chunk_id]
-
-            if matching:
-                chunk = matching[0]
-                results.append(SearchResult(
-                    id=chunk['id'],
-                    content=chunk.get('content', ''),
-                    score=1.0,
-                    metadata={
-                        'file_path': chunk.get('file_path'),
-                        'phase': chunk.get('phase'),
-                        'section_type': chunk.get('section_type'),
-                        'section_name': chunk.get('section_name'),
-                        'timestamp': chunk.get('timestamp'),
-                        'session_id': chunk.get('session_id'),
-                        **chunk.get('metadata', {})
-                    }
-                ))
+        for row in rows:
+            results.append(SearchResult(
+                id=row['id'],
+                content=row['content'] or '',
+                score=1.0,
+                metadata={
+                    'file_path': row['file_path'],
+                    'phase': row['phase'],
+                    'section_type': row['section_type'],
+                    'section_name': row['section_name'],
+                    'timestamp': row['timestamp'],
+                    'session_id': row['session_id'],
+                    **json.loads(row['metadata'] or '{}')
+                }
+            ))
 
         return results
 
