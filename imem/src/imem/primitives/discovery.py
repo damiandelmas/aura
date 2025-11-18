@@ -140,21 +140,30 @@ def get_genealogy(collection_name: str, chunk_id: str,
     if not session_id:
         return []
 
+    # Route to conversation collection (cross-collection genealogy lookup)
+    # Extract base collection name and construct conversation collection
+    # Strip phase suffixes (_context_impl, _context_pattern) to get project prefix
+    base_name = collection_name.split('_context')[0]
+    conversation_collection = f"{base_name}_conversation"
+
     # Find all chunks with same session_id from conversations
     scroll_filter = Filter(
         must=[
-            FieldCondition(key='session_id', match=MatchValue(value=session_id)),
-            FieldCondition(key='source', match=MatchValue(value='conversation'))
+            FieldCondition(key='session_id', match=MatchValue(value=session_id))
         ]
     )
 
-    results, _ = client.scroll(
-        collection_name=collection_name,
-        scroll_filter=scroll_filter,
-        limit=limit or 200,
-        with_payload=True,
-        with_vectors=False
-    )
+    try:
+        results, _ = client.scroll(
+            collection_name=conversation_collection,
+            scroll_filter=scroll_filter,
+            limit=limit or 200,
+            with_payload=True,
+            with_vectors=False
+        )
+    except Exception:
+        # Conversation collection doesn't exist or error - return empty
+        return []
 
     genealogy = [
         {
@@ -221,7 +230,7 @@ def get_temporal(collection_name: str, chunk_id: str,
             query=target_vector.get(config.default_vector_name) if isinstance(target_vector, dict) else target_vector,
             using=config.default_vector_name,
             limit=50,
-            score_threshold=0.85,  # High similarity threshold from architecture
+            score_threshold=0.65,  # Lower threshold for temporal evolution (typical scores 0.6-0.7)
             with_payload=True,
             with_vectors=False
         ).points
@@ -231,7 +240,7 @@ def get_temporal(collection_name: str, chunk_id: str,
             collection_name=collection_name,
             query=target_vector,
             limit=50,
-            score_threshold=0.85,
+            score_threshold=0.65,
             with_payload=True,
             with_vectors=False
         ).points
