@@ -4,6 +4,7 @@ type: "architecture.refactor"
 status: "completed"
 keywords: "sqlite storage-abstraction backend-agnostic metadata-first vector-optional processor-chain"
 timestamp: "2025-11-17T21:17:39-0800"
+session_id: "294e5d82-0796-4536-8f5a-907fceb69a83"
 ---
 
 # SQLite-First Architecture - Complete System Refactor

@@ -4,6 +4,7 @@ type: "pattern.implementation"
 status: "completed"
 keywords: "processor-chain declarative-pipeline retrieval-composition bounded-concurrency multi-phase-ranking"
 timestamp: "2025-11-17T21:18:00-0800"
+session_id: "294e5d82-0796-4536-8f5a-907fceb69a83"
 ---
 
 # Processor Chain Pattern - Declarative Retrieval Pipelines
