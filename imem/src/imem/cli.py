@@ -22,9 +22,14 @@ warnings.filterwarnings('ignore', category=UserWarning, module='pydantic')
 from .config import config
 from .ingest import EnhancedModularIngest
 from .enhanced import EnhancedQdrantSearch
-from .qdrant_service import QdrantService
 from .registry import SimpleRegistry
 from .compose import compose as compose_pipeline
+
+# Domain imports (SQLite-first refactor)
+from .compile import DocumentIndexer
+from .manage import get_system_and_landscape, get_concept_topology, get_coverage_stats
+from .manage import introspect as introspect_fn
+from .service import QdrantService as ManagedQdrantService
 
 
 @click.group()
@@ -39,6 +44,10 @@ def imem():
 
 # Preset system removed - premature to codify patterns before validation through usage
 # See: Template removal (251117 changelog) - same rationale applies
+
+# NOTE: _index_phase and _index_conversations kept for backward compatibility
+# New code should use compile.DocumentIndexer directly
+# TODO: Remove in v3.0.0 after migration period
 
 def _index_phase(phase_name: str, force: bool = False, limit: int = None, collection_override: str = None):
     """
@@ -627,13 +636,7 @@ def introspect(examples, fields, entities, map, status, source, sample_size):
         # Legacy: full metadata schema
         imem introspect --entities
     """
-    from .introspect import (
-        introspect as introspect_fn,
-        get_system_and_landscape,
-        get_concept_topology,
-        get_coverage_stats
-    )
-
+    # Note: introspect functions now imported from manage domain (top of file)
     try:
         # Route to appropriate function based on flags
         if map:

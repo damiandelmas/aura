@@ -41,7 +41,9 @@ class SQLiteStore:
                 timestamp TEXT,
                 session_id TEXT,
                 metadata JSON,
-                indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
@@ -51,6 +53,21 @@ class SQLiteStore:
         self.conn.execute('CREATE INDEX IF NOT EXISTS idx_file_path ON chunks(file_path)')
         self.conn.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON chunks(timestamp)')
         self.conn.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON chunks(session_id)')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_created_at ON chunks(created_at)')
+
+        # Migrate existing tables to add temporal columns if missing
+        try:
+            # Check if columns exist
+            cursor = self.conn.execute("PRAGMA table_info(chunks)")
+            columns = {row[1] for row in cursor.fetchall()}
+
+            if 'created_at' not in columns:
+                self.conn.execute('ALTER TABLE chunks ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+            if 'updated_at' not in columns:
+                self.conn.execute('ALTER TABLE chunks ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+        except Exception:
+            # Columns might already exist, ignore
+            pass
 
         self.conn.commit()
 
