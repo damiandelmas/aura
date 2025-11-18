@@ -53,4 +53,5 @@ Thumbs.db
 
 # aura
 /.prompts
-/.testing
+/.testing.imem/metadata.db
+.imem/
