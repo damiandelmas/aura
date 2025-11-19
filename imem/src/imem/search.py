@@ -65,7 +65,7 @@ class ModularSearch:
             loaded_models: Dictionary caching loaded SentenceTransformer models
                          by config name for performance
         """
-        self.client = QdrantClient(host="localhost", port=config.qdrant_port)
+        self.client = QdrantClient(host=config.qdrant_host, port=config.qdrant_port)
         self.config_path = Path(config_path)
         self.configs = self.load_configs()
         self.loaded_models = {}  # Cache loaded models

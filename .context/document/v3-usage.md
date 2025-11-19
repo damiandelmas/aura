@@ -39,19 +39,6 @@ imem stats-metadata
 imem compose '{"search": {"mode": "metadata", "filters": {"phase": "develop"}}}'
 ```
 
-## What's Different from v2
-
-**v3 (SQLite-first):**
-- Metadata queries: <10ms (no vectors)
-- 9 commands (focused)
-- Protocol abstraction
-- Processor chain architecture
-
-**v2 (Qdrant-first):**
-- All queries use vectors
-- 14 commands (legacy)
-- Monolithic architecture
-
 ## Iteration
 
 Editable install - changes are instant:

@@ -54,7 +54,7 @@ class EnhancedModularIngest:
             parser: LlamaIndex MarkdownNodeParser for section-level chunking
             model: SentenceTransformer model for embeddings
         """
-        self.client = QdrantClient(host="localhost", port=6334)
+        self.client = QdrantClient(host=config.qdrant_host, port=config.qdrant_port)
         self.modular_search = ModularSearch()
         self.registry = SimpleRegistry()
         self.parser = MarkdownNodeParser()
