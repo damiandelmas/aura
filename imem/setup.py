@@ -16,6 +16,6 @@ setup(
         "pyyaml>=6.0",
     ],
     entry_points={
-        "console_scripts": ["imem=imem.cli:imem"]
+        "console_scripts": ["imem=imem.cli_new:imem"]
     },
 )
