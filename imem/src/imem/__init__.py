@@ -1,10 +1,10 @@
 """
-IMEM - Vector search microservice for institutional memory
+IMEM - Knowledge compiler for AI agent memories
+
+SQL-first architecture: SQLite for metadata, Qdrant optional for semantic search.
 """
 
-from .enhanced import EnhancedQdrantSearch
-from .search import ModularSearch, SearchConfig
-from .ingest import EnhancedModularIngest
 from .registry import SimpleRegistry
+from .storage import VectorStore, create_store
 
-__all__ = ['EnhancedQdrantSearch', 'ModularSearch', 'SearchConfig', 'EnhancedModularIngest', 'SimpleRegistry']
+__all__ = ['SimpleRegistry', 'VectorStore', 'create_store']

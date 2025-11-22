@@ -9,7 +9,7 @@ This domain handles external service dependencies separate from
 storage backends and business logic.
 """
 
-# Re-export Qdrant service (already in separate module)
-from ..qdrant_service import QdrantService
+# Re-export Qdrant service from legacy (Docker management)
+from ..legacy.v2.qdrant_service import QdrantService
 
 __all__ = ['QdrantService']

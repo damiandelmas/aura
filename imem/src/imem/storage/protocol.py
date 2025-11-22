@@ -103,9 +103,6 @@ class VectorStore(Protocol):
     def get_by_ids(self, ids: List[str]) -> List[SearchResult]:
         """Retrieve chunks by their IDs
 
-        Used by discovery primitives (siblings, genealogy, temporal) to fetch
-        related chunks after identifying their IDs via metadata queries.
-
         Args:
             ids: List of chunk IDs to retrieve
 
@@ -115,66 +112,11 @@ class VectorStore(Protocol):
         """
         ...
 
-    def get_siblings(
-        self,
-        chunk_id: str,
-        limit: int = 5,
-        same_section: bool = True
-    ) -> List[SearchResult]:
-        """Get sibling chunks (chunks from same document/section)
-
-        Discovery primitive for finding contextually related chunks.
-
-        Args:
-            chunk_id: ID of the anchor chunk
-            limit: Maximum number of siblings to return
-            same_section: If True, only return chunks from same section.
-                         If False, return chunks from same file.
-
-        Returns:
-            List of sibling chunks, ordered by proximity to anchor
-        """
-        ...
-
-    def get_genealogy(
-        self,
-        chunk_id: str,
-        depth: int = 2,
-        direction: str = 'both'
-    ) -> List[SearchResult]:
-        """Get genealogy (predecessor/successor chunks in time)
-
-        Discovery primitive for tracing evolution of decisions/patterns.
-
-        Args:
-            chunk_id: ID of the anchor chunk
-            depth: How many levels of ancestors/descendants to traverse
-            direction: 'ancestors', 'descendants', or 'both'
-
-        Returns:
-            List of chunks in temporal relationship to anchor
-        """
-        ...
-
-    def get_temporal(
-        self,
-        chunk_id: str,
-        time_window_days: int = 7,
-        limit: int = 10
-    ) -> List[SearchResult]:
-        """Get temporally related chunks (created around same time)
-
-        Discovery primitive for finding concurrent work and cross-cutting concerns.
-
-        Args:
-            chunk_id: ID of the anchor chunk
-            time_window_days: Look within ±N days of anchor timestamp
-            limit: Maximum number of results
-
-        Returns:
-            List of chunks from similar timeframe, ordered by temporal proximity
-        """
-        ...
+    # Discovery: Query SQL directly when needed. Don't wrap until usage patterns emerge.
+    # Examples:
+    #   SELECT * FROM chunks WHERE file_path = ?  -- same document
+    #   SELECT * FROM chunks WHERE session_id = ? -- same session
+    #   SELECT * FROM chunks WHERE timestamp BETWEEN ? AND ? -- time window
 
     def get_stats(self) -> Dict[str, Any]:
         """Get storage statistics for monitoring and debugging

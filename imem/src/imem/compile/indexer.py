@@ -62,7 +62,8 @@ class DocumentIndexer:
         Raises:
             ValueError: If project not registered or phase directory missing
         """
-        from ..ingest import EnhancedModularIngest
+        # TODO: Remove EnhancedModularIngest dependency - use self.store.upsert() via protocol
+        from ..legacy.v2.ingest import EnhancedModularIngest
 
         # Get project root
         if project_root is None:
@@ -163,7 +164,8 @@ class DocumentIndexer:
         Raises:
             ValueError: If project not registered
         """
-        from ..ingest import EnhancedModularIngest
+        # TODO: Remove EnhancedModularIngest dependency - use self.store.upsert() via protocol
+        from ..legacy.v2.ingest import EnhancedModularIngest
 
         # Get project root
         if project_root is None:

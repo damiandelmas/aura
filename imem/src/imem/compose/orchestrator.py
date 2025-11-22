@@ -51,29 +51,10 @@ def build_chain(config: Dict[str, Any], store: VectorStore) -> Chain:
     mode = search_config.get('mode', 'metadata')
     processors.append(SearchProcessor(store, mode=mode))
 
-    # 2. Discovery processors (optional, conditional)
-    discovery_config = config.get('discovery', {})
-
-    if discovery_config.get('siblings'):
-        raise NotImplementedError(
-            "SiblingDiscovery processor not yet implemented. "
-            "Remove 'discovery.siblings' from config or implement processor at "
-            "imem/compose/processors/discovery.py"
-        )
-
-    if discovery_config.get('temporal'):
-        raise NotImplementedError(
-            "TemporalDiscovery processor not yet implemented. "
-            "Remove 'discovery.temporal' from config or implement processor at "
-            "imem/compose/processors/discovery.py"
-        )
-
-    if discovery_config.get('genealogy'):
-        raise NotImplementedError(
-            "GenealogyDiscovery processor not yet implemented. "
-            "Remove 'discovery.genealogy' from config or implement processor at "
-            "imem/compose/processors/discovery.py"
-        )
+    # 2. Discovery: Query SQL directly when needed. Don't wrap until usage patterns emerge.
+    # Example: db.execute("SELECT * FROM chunks WHERE file_path = ?", ...)
+    # Discovery config keys (siblings, temporal, genealogy) are intentionally ignored.
+    # See plan: YAGNI approach - abstract only when 2-3 patterns prove need.
 
     # 3. Ranking processor (optional, multi-phase)
     ranking_config = config.get('ranking')
