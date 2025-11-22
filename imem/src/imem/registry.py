@@ -11,11 +11,17 @@ from .config import config
 
 
 class SimpleRegistry:
-    """Simplified project registry for standalone imem"""
+    """Simplified project registry for standalone imem
+
+    Storage: ~/.imem/namespaces/{namespace}/registry.json
+    Collections: {namespace}_imem_{hash}_context
+    """
 
     def __init__(self):
-        self.registry_file = config.context_dir / "imem_registry.json"
-        self.registry_file.parent.mkdir(exist_ok=True)
+        # Use namespace-based registry path from config
+        self.registry_file = config.registry_file
+        self.registry_file.parent.mkdir(parents=True, exist_ok=True)
+        self.namespace = config.namespace
         self._load()
 
     def _load(self):
@@ -34,13 +40,18 @@ class SimpleRegistry:
         return Path.cwd()
 
     def register_project(self, project_root: Path) -> dict:
-        """Register a project and return collection names"""
+        """Register a project and return collection names
+
+        Collection format: {namespace}_imem_{hash}_context
+        This prevents collisions between different branches/worktrees.
+        """
         project_key = str(project_root.resolve())
         hash_suffix = hashlib.md5(project_key.encode()).hexdigest()[:8]
 
+        # Prefix with namespace to prevent v2/v3/etc collisions
         collections = {
-            "context": f"imem_{hash_suffix}_context",
-            "conversation": f"imem_{hash_suffix}_conversation"
+            "context": f"{self.namespace}_imem_{hash_suffix}_context",
+            "conversation": f"{self.namespace}_imem_{hash_suffix}_conversation"
         }
 
         self.data["projects"][project_key] = {

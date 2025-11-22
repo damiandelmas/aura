@@ -2,13 +2,18 @@
 
 Stores chunks with rich metadata for sub-10ms queries.
 Indexes on phase, section_type, file_path, timestamp for fast filtering.
+
+Storage location: ~/.imem/namespaces/{namespace}/projects/{hash}/metadata.db
 """
 
 import sqlite3
 import json
+import hashlib
 import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+from ..config import config
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +25,22 @@ class SQLiteStore:
         """Initialize SQLite store
 
         Args:
-            project_root: Project root directory (creates .imem/metadata.db)
+            project_root: Project root directory (used to compute project hash)
+
+        Storage path: ~/.imem/namespaces/{namespace}/projects/{hash}/metadata.db
+        - No pollution of project directories
+        - Namespace isolation prevents conflicts between v2/v3/etc.
         """
-        self.db_path = project_root / '.imem' / 'metadata.db'
-        self.db_path.parent.mkdir(exist_ok=True, parents=True)
+        # Compute project hash for unique directory
+        project_key = str(project_root.resolve())
+        project_hash = hashlib.md5(project_key.encode()).hexdigest()[:8]
+
+        # Store in namespace-based central location
+        project_dir = config.namespace_dir / 'projects' / project_hash
+        project_dir.mkdir(parents=True, exist_ok=True)
+
+        self.db_path = project_dir / 'metadata.db'
+        self.project_root = project_root  # Keep reference for debugging
         self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row  # Enable dict-like access
         self._create_schema()
