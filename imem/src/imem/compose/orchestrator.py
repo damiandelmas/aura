@@ -22,7 +22,7 @@ def build_chain(config: Dict[str, Any], store: VectorStore) -> Chain:
             - search: {mode: 'metadata'|'semantic', filters: {...}}
             - discovery: {siblings: bool, temporal: bool, genealogy: bool}
             - ranking: {phases: [{name, scorer, rerank_count}]}
-        store: VectorStore backend (SQLite or Qdrant)
+        store: VectorStore backend (SQLite)
 
     Returns:
         Configured processor chain

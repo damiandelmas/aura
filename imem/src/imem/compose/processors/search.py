@@ -1,7 +1,7 @@
 """Search processor - Initial retrieval stage
 
-Executes search against storage backend (SQLite or Qdrant).
-Backend-agnostic via VectorStore protocol.
+Executes search against SQLite storage backend.
+Uses VectorStore protocol for abstraction.
 """
 
 from typing import Optional
@@ -18,7 +18,7 @@ class SearchProcessor(Processor):
 
     Modes:
     - 'metadata': Fast SQLite queries (< 10ms)
-    - 'semantic': Vector similarity search (Qdrant)
+    - 'semantic': Vector similarity search (future: sqlite-vss)
 
     Example:
         # Metadata-only search (fast)
@@ -36,7 +36,7 @@ class SearchProcessor(Processor):
         """Initialize search processor
 
         Args:
-            store: VectorStore backend (SQLite or Qdrant)
+            store: VectorStore backend (SQLite)
             mode: 'metadata' (fast SQL) or 'semantic' (vector similarity)
         """
         self.store = store

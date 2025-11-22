@@ -1,17 +1,16 @@
 """Document compilation and indexing
 
-Extracts the indexing logic from cli.py into a focused domain module.
-Handles both phase-based documentation (develop/design/document) and
-conversation indexing (JSONL files).
+SQLite-first indexer using pure parsing functions.
+No Qdrant dependency - uses VectorStore protocol.
 """
 
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import logging
 
-from ..storage import VectorStore, create_store
+from ..storage import VectorStore
 from ..registry import SimpleRegistry
-from ..config import config
+from .parser import parse_markdown_file, parse_conversation_file
 
 logger = logging.getLogger(__name__)
 
@@ -22,16 +21,17 @@ class DocumentIndexer:
     Handles:
     - Phase-based indexing (.context/develop, .context/design, .context/document)
     - Conversation indexing (Claude Code JSONL files)
-    - Collection management (create, force recreate)
-    - Pattern vs implementation layer routing
+    - Uses VectorStore protocol for backend-agnostic storage
     """
 
-    def __init__(self, store: Optional[VectorStore] = None):
+    def __init__(self, store: VectorStore):
         """Initialize indexer
 
         Args:
-            store: VectorStore backend (if None, will create Qdrant backend)
+            store: VectorStore backend (SQLite or future HNSW)
         """
+        if store is None:
+            raise ValueError("VectorStore is required. Use SQLiteVectorStore.")
         self.store = store
         self.registry = SimpleRegistry()
 
@@ -48,13 +48,14 @@ class DocumentIndexer:
         Args:
             phase_name: Phase to index ('develop', 'design', 'document', 'context')
             project_root: Project root (if None, uses registry)
-            force: If True, recreate collection
+            force: If True, clear existing chunks before indexing
             limit: Optional limit for number of documents
             collection_override: Optional collection name override for A/B testing
 
         Returns:
             Dictionary with:
                 - indexed: Number of documents indexed
+                - chunks: Total chunks created
                 - skipped: Number of documents skipped
                 - errors: List of error messages
                 - collection_name: Collection used
@@ -62,16 +63,13 @@ class DocumentIndexer:
         Raises:
             ValueError: If project not registered or phase directory missing
         """
-        # TODO: Remove EnhancedModularIngest dependency - use self.store.upsert() via protocol
-        from ..legacy.v2.ingest import EnhancedModularIngest
-
         # Get project root
         if project_root is None:
             project_root = self.registry.get_project_root()
             if not project_root:
                 raise ValueError("Not in a registered project. Run 'imem init' first.")
 
-        # Get or create collection
+        # Get collection name
         if collection_override:
             collection_name = collection_override
         else:
@@ -86,18 +84,17 @@ class DocumentIndexer:
         else:
             phases_to_index = [phase_name]
 
-        # Initialize ingester (uses Qdrant backend)
-        ingester = EnhancedModularIngest()
-
-        # Create collections if needed
-        self._ensure_collections_exist(
-            ingester,
-            collection_name,
-            force=force
-        )
+        # Clear existing if force
+        if force:
+            logger.info(f"Force mode: clearing existing chunks...")
+            try:
+                self.store.delete_collection(collection_name)
+            except Exception as e:
+                logger.warning(f"Could not clear collection: {e}")
 
         # Index each phase
         total_indexed = 0
+        total_chunks = 0
         errors = []
 
         for phase in phases_to_index:
@@ -116,12 +113,20 @@ class DocumentIndexer:
 
             for md_file in md_files:
                 try:
-                    ingester.ingest_markdown_chunked(
+                    # Parse file into chunks
+                    chunks = parse_markdown_file(
                         md_file,
                         phase=phase,
-                        base_collection=collection_name
+                        collection_name=collection_name
                     )
-                    total_indexed += 1
+
+                    if chunks:
+                        # Upsert via protocol
+                        self.store.upsert(chunks)
+                        total_indexed += 1
+                        total_chunks += len(chunks)
+                        logger.debug(f"Indexed {len(chunks)} chunks from {md_file.name}")
+
                 except Exception as e:
                     error_msg = f"{md_file.name}: {e}"
                     logger.error(error_msg)
@@ -130,8 +135,11 @@ class DocumentIndexer:
         # Update registry
         self.registry.update_doc_count(project_root, 'context', total_indexed)
 
+        logger.info(f"Indexed {total_indexed} files, {total_chunks} chunks")
+
         return {
             'indexed': total_indexed,
+            'chunks': total_chunks,
             'skipped': 0,
             'errors': errors,
             'collection_name': collection_name
@@ -151,7 +159,7 @@ class DocumentIndexer:
 
         Args:
             project_root: Project root (if None, uses registry)
-            force: If True, recreate collection
+            force: If True, clear collection before indexing
             limit: Optional limit for number of conversations
             collection_override: Optional collection name override
             project_filter: Filter to specific project path
@@ -164,16 +172,13 @@ class DocumentIndexer:
         Raises:
             ValueError: If project not registered
         """
-        # TODO: Remove EnhancedModularIngest dependency - use self.store.upsert() via protocol
-        from ..legacy.v2.ingest import EnhancedModularIngest
-
         # Get project root
         if project_root is None:
             project_root = self.registry.get_project_root()
             if not project_root:
                 raise ValueError("Not in a registered project. Run 'imem init' first.")
 
-        # Get or create collection
+        # Get collection name
         if collection_override:
             collection_name = collection_override
         else:
@@ -182,76 +187,136 @@ class DocumentIndexer:
                 collections = self.registry.register_project(project_root)
             collection_name = collections['conversations']
 
-        # Initialize ingester
-        ingester = EnhancedModularIngest()
+        # Clear existing if force
+        if force:
+            logger.info(f"Force mode: clearing conversation collection...")
+            try:
+                self.store.delete_collection(collection_name)
+            except Exception as e:
+                logger.warning(f"Could not clear collection: {e}")
 
-        # Create collection if needed
-        self._ensure_collections_exist(
-            ingester,
-            collection_name,
-            force=force
-        )
+        # Find conversation files
+        # Default: ~/.claude/projects/*/conversations/*.jsonl
+        if folder_path:
+            search_path = Path(folder_path)
+        else:
+            search_path = Path.home() / '.claude' / 'projects'
 
-        # Index conversations (delegate to ingester)
-        try:
-            result = ingester.ingest_conversations(
-                collection_name=collection_name,
-                limit=limit,
-                project_filter=project_filter,
-                folder_path=folder_path,
-                session_ids=session_ids
-            )
-
-            # Update registry
-            self.registry.update_doc_count(project_root, 'conversations', result.get('indexed', 0))
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Failed to index conversations: {e}")
+        if not search_path.exists():
             return {
                 'indexed': 0,
+                'chunks': 0,
                 'skipped': 0,
-                'errors': [str(e)]
+                'errors': [f"Conversation path not found: {search_path}"]
             }
 
-    def _ensure_collections_exist(
-        self,
-        ingester,
-        collection_name: str,
-        force: bool = False
-    ):
-        """Ensure Qdrant collections exist (impl and pattern)
+        # Collect JSONL files
+        jsonl_files = list(search_path.rglob("*.jsonl"))
+        if project_filter:
+            jsonl_files = [f for f in jsonl_files if project_filter in str(f)]
+        if session_ids:
+            jsonl_files = [f for f in jsonl_files if f.stem in session_ids]
+        if limit:
+            jsonl_files = jsonl_files[:limit]
 
-        Args:
-            ingester: EnhancedModularIngest instance with client
-            collection_name: Base collection name
-            force: If True, recreate collections
-        """
-        from qdrant_client.models import Distance, VectorParams, HnswConfigDiff
+        logger.info(f"Found {len(jsonl_files)} conversation files")
 
-        # Create both impl and pattern collections
-        impl_collection = f"{collection_name}_impl"
-        pattern_collection = f"{collection_name}_pattern"
+        # Index conversations
+        total_indexed = 0
+        total_chunks = 0
+        errors = []
 
-        for coll_name in [impl_collection, pattern_collection]:
-            collection_exists = ingester.client.collection_exists(coll_name)
+        for jsonl_file in jsonl_files:
+            try:
+                # Extract session metadata from JSONL
+                import json
+                messages = []
+                with open(jsonl_file, 'r') as f:
+                    for line in f:
+                        if line.strip():
+                            messages.append(json.loads(line))
 
-            if force and collection_exists:
-                logger.info(f"Recreating collection {coll_name}...")
-                ingester.client.delete_collection(coll_name)
-                collection_exists = False
+                if not messages:
+                    continue
 
-            if not collection_exists:
-                logger.info(f"Creating collection {coll_name}...")
-                ingester.client.create_collection(
-                    collection_name=coll_name,
-                    vectors_config={
-                        config.default_vector_name: VectorParams(
-                            size=config.default_dimensions,
-                            distance=Distance.COSINE,
-                            hnsw_config=HnswConfigDiff(m=16, ef_construct=100)
-                        )
-                    }
-                )
-                logger.info(f"Collection created: {coll_name}")
+                session_id = jsonl_file.stem
+                first_msg = messages[0] if messages else {}
+                last_msg = messages[-1] if messages else {}
+
+                conv_metadata = {
+                    'start_time': first_msg.get('timestamp'),
+                    'message_count': len(messages),
+                    'duration_minutes': None,  # TODO: Calculate from timestamps
+                    'has_changelog': False,
+                    'changelog_path': None
+                }
+
+                # For now, create simple chunks from JSONL directly
+                # (Full TRACE markdown conversion would be separate step)
+                chunks = []
+                for i, msg in enumerate(messages):
+                    role = msg.get('type', 'unknown')
+                    content = ''
+
+                    if role == 'human':
+                        content = msg.get('message', {}).get('content', '')
+                        if isinstance(content, list):
+                            content = ' '.join([
+                                c.get('text', '') for c in content
+                                if isinstance(c, dict) and c.get('type') == 'text'
+                            ])
+                    elif role == 'assistant':
+                        content = msg.get('message', {}).get('content', '')
+                        if isinstance(content, list):
+                            content = ' '.join([
+                                c.get('text', '') for c in content
+                                if isinstance(c, dict) and c.get('type') == 'text'
+                            ])
+
+                    if content and len(content) > 50:  # Skip tiny messages
+                        from uuid import uuid4
+                        # FLAT structure for SQLite indexed columns
+                        chunks.append({
+                            'id': str(uuid4()),
+                            'content': content[:10000],  # Limit chunk size
+                            # Top-level fields (SQLite indexed columns)
+                            'file_path': str(jsonl_file),
+                            'phase': None,  # Conversations don't have phase
+                            'section_type': 'message',
+                            'section_name': f"Message {i}",
+                            'timestamp': conv_metadata.get('start_time'),
+                            'session_id': session_id,
+                            # Metadata blob (JSON column for extras)
+                            'metadata': {
+                                'source': 'conversation',
+                                'collection': collection_name,
+                                'message_index': i,
+                                'role': 'user' if role == 'human' else 'assistant',
+                                'chunk_type': 'message',
+                                'message_count': conv_metadata.get('message_count'),
+                            }
+                        })
+
+                if chunks:
+                    self.store.upsert(chunks)
+                    total_indexed += 1
+                    total_chunks += len(chunks)
+                    logger.debug(f"Indexed {len(chunks)} chunks from {session_id[:12]}")
+
+            except Exception as e:
+                error_msg = f"{jsonl_file.name}: {e}"
+                logger.error(error_msg)
+                errors.append(error_msg)
+
+        # Update registry
+        self.registry.update_doc_count(project_root, 'conversations', total_indexed)
+
+        logger.info(f"Indexed {total_indexed} conversations, {total_chunks} chunks")
+
+        return {
+            'indexed': total_indexed,
+            'chunks': total_chunks,
+            'skipped': 0,
+            'errors': errors,
+            'collection_name': collection_name
+        }

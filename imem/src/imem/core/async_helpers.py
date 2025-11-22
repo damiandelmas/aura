@@ -23,7 +23,6 @@ async def semaphore_gather(
         *coroutines: Coroutines to execute in parallel
         max_coroutines: Maximum concurrent operations (default: 20)
             - SQLite WAL mode: ~30 concurrent readers safe
-            - Qdrant: Can handle 100+ concurrent requests
             - Conservative default: 20 for safety
 
     Returns:

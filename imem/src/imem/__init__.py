@@ -1,7 +1,8 @@
 """
 IMEM - Knowledge compiler for AI agent memories
 
-SQL-first architecture: SQLite for metadata, Qdrant optional for semantic search.
+SQLite-first architecture: All data lives in SQLite.
+Future: HNSW vectors via sqlite-vss extension.
 """
 
 from .registry import SimpleRegistry

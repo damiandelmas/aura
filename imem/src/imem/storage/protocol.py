@@ -1,7 +1,7 @@
-"""Storage abstraction protocol for vector + metadata backends
+"""Storage abstraction protocol for metadata + vector backends
 
-Defines the unified interface that both SQLite and Qdrant backends implement.
-This enables backend-agnostic code and easy switching between storage systems.
+SQLite-first: Defines the unified interface for storage operations.
+Future: HNSW vector support via sqlite-vss extension.
 """
 
 from typing import Protocol, List, Dict, Any, Optional
@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class SearchResult:
-    """Unified search result format across all backends"""
+    """Unified search result format"""
 
     id: str
     """Unique chunk identifier"""
@@ -30,26 +30,22 @@ class SearchResult:
             'id': self.id,
             'content': self.content,
             'score': self.score,
-            **self.metadata  # Flatten metadata into result
+            **self.metadata
         }
 
 
 class VectorStore(Protocol):
-    """Backend-agnostic storage interface for vector + metadata operations
-
-    Both SQLite and Qdrant backends implement this protocol, enabling:
-    - Transparent backend switching via configuration
-    - Backend-agnostic business logic in compile/, manage/, compose/
-    - Easy testing with mock implementations
+    """Backend-agnostic storage interface for metadata + vector operations
 
     Design principles:
-    - SQLite-first: Metadata queries should work without vectors
-    - Optional vectors: use_vector=False for fast metadata-only search
+    - SQLite-first: All queries use SQLite
+    - Optional vectors: use_vector=False for fast metadata-only search (default)
     - Unified results: SearchResult format regardless of backend
+    - Discovery: Write SQL directly for complex queries (YAGNI wrappers)
     """
 
     def upsert(self, chunks: List[Dict[str, Any]]) -> None:
-        """Insert or update chunks with metadata (and optionally vectors)
+        """Insert or update chunks with metadata
 
         Args:
             chunks: List of chunk dictionaries containing:
@@ -75,28 +71,27 @@ class VectorStore(Protocol):
         filters: Optional[Dict[str, Any]] = None,
         use_vector: bool = True
     ) -> List[SearchResult]:
-        """Search for chunks by semantic similarity or metadata filters
+        """Search for chunks by metadata filters or text similarity
 
         Args:
-            query: Search query text (used for vector similarity or text search)
-            limit: Maximum number of results to return
-            filters: Metadata filters to apply:
+            query: Search query text (used for text search)
+            limit: Maximum number of results
+            filters: Metadata filters:
                 - phase: Filter by phase (exact match)
                 - section_type: Filter by section type (exact match)
                 - file_path: Filter by file path (substring match)
                 - timestamp_after: Only chunks after this timestamp
                 - timestamp_before: Only chunks before this timestamp
                 - session_id: Filter by conversation session
-            use_vector: If True, use vector similarity search (requires embeddings).
-                       If False, use metadata + text search only (faster for SQLite)
+            use_vector: If True, use vector similarity (future: sqlite-vss)
+                       If False, pure metadata + text search (fast, default behavior)
 
         Returns:
-            List of SearchResult objects, ordered by relevance (highest score first)
+            List of SearchResult objects, ordered by relevance
 
-        Implementation notes:
-            - SQLite backend: use_vector=False does pure SQL queries (< 10ms)
-            - Qdrant backend: Always uses vectors (use_vector flag has no effect)
-            - Empty query + filters: Returns best matches by metadata only
+        Performance:
+            - Metadata-only queries: < 10ms for 10k chunks
+            - Text search: < 50ms with proper indexes
         """
         ...
 
@@ -107,8 +102,7 @@ class VectorStore(Protocol):
             ids: List of chunk IDs to retrieve
 
         Returns:
-            List of SearchResult objects (order matches input IDs)
-            Missing IDs are silently skipped
+            List of SearchResult objects (missing IDs silently skipped)
         """
         ...
 
@@ -119,20 +113,19 @@ class VectorStore(Protocol):
     #   SELECT * FROM chunks WHERE timestamp BETWEEN ? AND ? -- time window
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get storage statistics for monitoring and debugging
+        """Get storage statistics
 
         Returns:
-            Dictionary with stats like:
-                - total_chunks: Total number of indexed chunks
+            Dictionary with stats:
+                - total_chunks: Total indexed chunks
                 - by_phase: Breakdown by phase
                 - by_section_type: Breakdown by section type
                 - indexed_files: Number of source files
-                - last_updated: Most recent chunk timestamp
         """
         ...
 
     def collection_exists(self, name: str) -> bool:
-        """Check if a collection/table exists
+        """Check if collection/table exists
 
         Args:
             name: Collection or table name
@@ -143,10 +136,10 @@ class VectorStore(Protocol):
         ...
 
     def delete_collection(self, name: str) -> None:
-        """Delete a collection and all its data
+        """Delete collection and all its data
 
         Args:
-            name: Collection or table name to delete
+            name: Collection or table name
 
         Raises:
             StorageError: If deletion fails

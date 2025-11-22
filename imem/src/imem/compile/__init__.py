@@ -2,16 +2,13 @@
 
 Responsible for:
 - Parsing markdown documents into canonical chunks
-- Indexing to vector storage backends
+- Indexing to SQLite storage
 - Collection management
-- Template-based extraction (changelog, conversations, ADR)
-- Structural resolution (phase, section_type normalization)
 
-This domain handles the "compilation" of raw documentation into
-searchable, structured chunks with metadata.
+Note: CompileResolver exists but not exported - needs own EPIC for integration.
+      It enables indexing unstructured logs from ANY agentic workflow.
 """
 
 from .indexer import DocumentIndexer
-from .resolver import CompileResolver
 
-__all__ = ['DocumentIndexer', 'CompileResolver']
+__all__ = ['DocumentIndexer']

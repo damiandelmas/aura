@@ -64,17 +64,8 @@ class SQLiteStore:
             )
         ''')
 
-        # Indexes for fast filtering
-        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_phase ON chunks(phase)')
-        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_section_type ON chunks(section_type)')
-        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_file_path ON chunks(file_path)')
-        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON chunks(timestamp)')
-        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON chunks(session_id)')
-        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_created_at ON chunks(created_at)')
-
-        # Migrate existing tables to add temporal columns if missing
+        # Migrate existing tables to add temporal columns if missing (BEFORE indexes)
         try:
-            # Check if columns exist
             cursor = self.conn.execute("PRAGMA table_info(chunks)")
             columns = {row[1] for row in cursor.fetchall()}
 
@@ -83,8 +74,15 @@ class SQLiteStore:
             if 'updated_at' not in columns:
                 self.conn.execute('ALTER TABLE chunks ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
         except Exception:
-            # Columns might already exist, ignore
             pass
+
+        # Indexes for fast filtering (AFTER migration)
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_phase ON chunks(phase)')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_section_type ON chunks(section_type)')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_file_path ON chunks(file_path)')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON chunks(timestamp)')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON chunks(session_id)')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_created_at ON chunks(created_at)')
 
         self.conn.commit()
 

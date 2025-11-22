@@ -44,7 +44,7 @@ class SQLiteVectorStore:
             logger.warning(
                 "Vector support not yet implemented for SQLite backend. "
                 "Falling back to metadata + text search. "
-                "For semantic search, use Qdrant backend."
+                "Future: sqlite-vss extension for HNSW vectors."
             )
 
     def upsert(self, chunks: List[Dict[str, Any]]) -> None:

@@ -1,4 +1,7 @@
-"""Centralized configuration for IMEM microservice"""
+"""Centralized configuration for IMEM microservice
+
+SQLite-first configuration. No external services required.
+"""
 from dataclasses import dataclass, field
 from pathlib import Path
 import os
@@ -76,12 +79,10 @@ def get_namespace() -> str:
 
 @dataclass
 class IMEMConfig:
-    """IMEM configuration with environment variable overrides"""
+    """IMEM configuration with environment variable overrides
 
-    # Qdrant Service
-    qdrant_port: int = int(os.getenv('IMEM_QDRANT_PORT', '6334'))
-    qdrant_host: str = os.getenv('IMEM_QDRANT_HOST', 'localhost')
-    qdrant_timeout: int = int(os.getenv('IMEM_QDRANT_TIMEOUT', '2'))
+    SQLite-first: No external service configuration needed.
+    """
 
     # Namespace (auto-detected from git or env)
     namespace: str = field(default_factory=get_namespace)
@@ -99,15 +100,12 @@ class IMEMConfig:
         # Ensure directories exist
         self.namespace_dir.mkdir(parents=True, exist_ok=True)
 
-    # Service startup
-    service_start_retries: int = 30
-    service_start_delay: int = 1
-
     # Search defaults
     default_limit: int = 10
     default_vector_name: str = 'nomic-embed-v1.5'
     default_model: str = 'nomic-ai/nomic-embed-text-v1.5'
     default_dimensions: int = 768
+
 
 # Model Registry - Maps vector names to full model configuration
 # Used for auto-detecting which model to load based on collection's vector config

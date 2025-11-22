@@ -1,4 +1,5 @@
-"""Lightweight parsing infrastructure for markdown documents"""
+"""Lightweight parsing without ML dependencies"""
+
 from .markdown import MarkdownParser
 
 __all__ = ['MarkdownParser']

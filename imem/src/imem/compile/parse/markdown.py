@@ -71,16 +71,23 @@ class MarkdownParser:
         return chunks
 
     def _detect_phase(self, file_path: Path) -> str:
-        """Extract phase from path (.context/design/ → design)"""
-        parts = file_path.parts
-        if '.context' in parts:
-            idx = parts.index('.context')
-            if idx + 1 < len(parts):
-                phase = parts[idx + 1]
-                # Normalize phase names
-                if phase in ('design', 'designate', 'develop', 'document'):
-                    return phase
-        return 'unknown'
+        """Extract phase from any path containing phase directory name
+
+        Works with both structured (.context/develop/) and arbitrary paths
+        (/any/path/develop/file.md). Searches for phase directory names in path.
+        """
+        path_str = str(file_path)
+
+        if '/design/' in path_str:
+            return 'design'
+        elif '/designate/' in path_str:
+            return 'designate'
+        elif '/develop/' in path_str:
+            return 'develop'
+        elif '/document/' in path_str:
+            return 'document'
+        else:
+            return 'unknown'
 
     def _get_mtime(self, file_path: Path) -> str:
         """Get file modification time as ISO timestamp"""
