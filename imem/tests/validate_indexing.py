@@ -5,6 +5,8 @@ IMEM Indexing Validator - Test Before Full Reindex
 Quick validation of indexing pipeline changes before committing to full reindex.
 Tests on sample files, shows what WOULD be indexed, validates metadata extraction.
 
+Uses lightweight custom parser (no ML dependencies).
+
 Usage:
     python imem/tests/validate_indexing.py
 
@@ -20,20 +22,19 @@ from collections import defaultdict
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from llama_index.core.node_parser import MarkdownNodeParser
-from llama_index.core.schema import Document as LlamaDocument
+from imem.compile.parse.markdown import MarkdownParser
 
 
 class IndexingValidator:
-    """Validate indexing pipeline without writing to Qdrant"""
+    """Validate indexing pipeline without writing to SQLite"""
 
     def __init__(self):
-        self.parser = MarkdownNodeParser()
+        self.parser = MarkdownParser()
         self.stats = {
             'files_processed': 0,
-            'total_nodes': 0,
-            'filtered_nodes': 0,
-            'kept_nodes': 0,
+            'total_chunks': 0,
+            'filtered_chunks': 0,
+            'kept_chunks': 0,
             'by_level': defaultdict(int),
             'by_section_type': defaultdict(int),
             'large_chunks': [],
@@ -41,58 +42,32 @@ class IndexingValidator:
 
     def validate_file(self, file_path: Path) -> dict:
         """Validate indexing logic on single file"""
-        with open(file_path, 'r') as f:
-            content = f.read()
-
-        # Parse frontmatter
-        frontmatter = self._extract_frontmatter(content)
-
-        # Parse with LlamaIndex
-        llama_doc = LlamaDocument(text=content, metadata={'file_path': str(file_path)})
-        nodes = self.parser.get_nodes_from_documents([llama_doc])
+        # Parse with custom parser
+        chunks = self.parser.parse_file(file_path)
 
         self.stats['files_processed'] += 1
-        self.stats['total_nodes'] += len(nodes)
+        self.stats['total_chunks'] += len(chunks)
 
         results = []
 
-        for node in nodes:
-            content = node.get_content()
-            first_line = content.split('\n')[0] if content else ''
+        for chunk in chunks:
+            content = chunk['content']
+            section_name = chunk['section_name']
+            section_type = chunk['section_type']
 
-            # Extract header info
-            header_match = re.match(r'^(#{1,6})\s+(.+)$', first_line)
-            section_name = header_match.group(2).strip() if header_match else ''
-            header_level = len(header_match.group(1)) if header_match else None
-
-            # Apply filter (MUST match ingest.py logic)
-            if header_level is None or header_level < 3:
-                self.stats['filtered_nodes'] += 1
-                self.stats['by_level'][f'H{header_level}_filtered'] += 1
+            # Skip small content
+            if len(content.strip()) < 20:
+                self.stats['filtered_chunks'] += 1
                 results.append({
                     'action': 'SKIP',
-                    'reason': 'H1/H2/frontmatter noise',
-                    'header_level': header_level,
+                    'reason': 'Too short (<20 chars)',
                     'section_name': section_name,
-                    'first_line': first_line[:80],
                 })
                 continue
 
-            # Would be indexed - extract full metadata
-            self.stats['kept_nodes'] += 1
-            self.stats['by_level'][f'H{header_level}'] += 1
-
-            # Extract H2 parent
-            raw_header_path = node.metadata.get('header_path', '')
-            h2_section_type = None
-            if raw_header_path and header_level:
-                path_parts = [p.strip() for p in raw_header_path.split('/') if p.strip()]
-                if header_level == 2:
-                    h2_section_type = section_name
-                elif header_level >= 3 and len(path_parts) >= 2:
-                    h2_section_type = path_parts[1]
-
-            self.stats['by_section_type'][h2_section_type or 'Unknown'] += 1
+            # Would be indexed
+            self.stats['kept_chunks'] += 1
+            self.stats['by_section_type'][section_type or 'Unknown'] += 1
 
             # Detect structured fields
             has_context = '**Context**' in content or '- **Context**:' in content
@@ -111,17 +86,20 @@ class IndexingValidator:
 
             results.append({
                 'action': 'KEEP',
-                'header_level': header_level,
-                'section_type': h2_section_type,
+                'section_type': section_type,
                 'section_name': section_name,
-                'header_path': raw_header_path,
+                'h2_parent': chunk.get('h2_parent'),
                 'char_count': char_count,
                 'word_count': word_count,
                 'has_context': has_context,
                 'has_solution': has_solution,
                 'has_rationale': has_rationale,
-                'first_line': first_line[:80],
             })
+
+        # Extract frontmatter from raw file
+        with open(file_path, 'r') as f:
+            content = f.read()
+        frontmatter = self._extract_frontmatter(content)
 
         return {
             'file': file_path.name,
@@ -156,13 +134,9 @@ class IndexingValidator:
         print("=" * 80)
 
         print(f"\nFiles Processed: {self.stats['files_processed']}")
-        print(f"Total Nodes Parsed: {self.stats['total_nodes']}")
-        print(f"Filtered (H1/H2/frontmatter): {self.stats['filtered_nodes']}")
-        print(f"Kept (H3+): {self.stats['kept_nodes']}")
-
-        print(f"\nHeader Level Distribution:")
-        for level, count in sorted(self.stats['by_level'].items()):
-            print(f"  {level}: {count}")
+        print(f"Total Chunks Parsed: {self.stats['total_chunks']}")
+        print(f"Filtered (too short): {self.stats['filtered_chunks']}")
+        print(f"Kept: {self.stats['kept_chunks']}")
 
         print(f"\nSection Type Distribution:")
         for stype, count in sorted(self.stats['by_section_type'].items(),
@@ -178,8 +152,8 @@ class IndexingValidator:
         print("VALIDATION COMPLETE")
         print("=" * 80)
 
-        if self.stats['kept_nodes'] > 0:
-            print(f"✅ Ready to index {self.stats['kept_nodes']} chunks")
+        if self.stats['kept_chunks'] > 0:
+            print(f"✅ Ready to index {self.stats['kept_chunks']} chunks")
         else:
             print("⚠️  No chunks would be indexed - check filter logic!")
 
@@ -229,9 +203,9 @@ def main():
         print(f"\nChunks:")
         for r in result['results']:
             if r['action'] == 'SKIP':
-                print(f"  ❌ {r['action']} (H{r['header_level']}): {r['first_line']}")
+                print(f"  ❌ {r['action']}: {r.get('section_name', 'unknown')} - {r.get('reason', '')}")
             else:
-                print(f"  ✅ {r['action']} (H{r['header_level']} {r['section_type']}): {r['section_name']}")
+                print(f"  ✅ {r['action']} ({r['section_type']}): {r['section_name']}")
                 print(f"     → {r['word_count']} words, {r['char_count']} chars")
                 if r['has_context'] or r['has_solution']:
                     fields = []
