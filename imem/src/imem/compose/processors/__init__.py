@@ -9,9 +9,11 @@ Individual stages for the retrieval pipeline:
 
 from .search import SearchProcessor
 from .ranking import MultiPhaseRanker, RankingPhase
+from .discovery import DiscoveryProcessor
 
 __all__ = [
     'SearchProcessor',
+    'DiscoveryProcessor',
     'MultiPhaseRanker',
     'RankingPhase',
 ]

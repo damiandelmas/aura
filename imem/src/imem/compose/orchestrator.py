@@ -9,7 +9,9 @@ import logging
 
 from ..core import Chain, RetrievalContext
 from ..storage import VectorStore
+from ..storage.sqlite_backend import SQLiteVectorStore
 from .processors import SearchProcessor, MultiPhaseRanker, RankingPhase
+from .processors.discovery import DiscoveryProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +53,10 @@ def build_chain(config: Dict[str, Any], store: VectorStore) -> Chain:
     mode = search_config.get('mode', 'metadata')
     processors.append(SearchProcessor(store, mode=mode))
 
-    # 2. Discovery: Query SQL directly when needed. Don't wrap until usage patterns emerge.
-    # Example: db.execute("SELECT * FROM chunks WHERE file_path = ?", ...)
-    # Discovery config keys (siblings, temporal, genealogy) are intentionally ignored.
-    # See plan: YAGNI approach - abstract only when 2-3 patterns prove need.
+    # 2. Discovery processor (optional) - enrich results with related chunks
+    discovery_config = config.get('discovery')
+    if discovery_config and isinstance(store, SQLiteVectorStore):
+        processors.append(DiscoveryProcessor(store, discovery_config))
 
     # 3. Ranking processor (optional, multi-phase)
     ranking_config = config.get('ranking')
