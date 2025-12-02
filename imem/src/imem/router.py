@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 import logging
 
 from .context import Infrastructure, IndexContext, QueryContext
-from .infrastructure.git import GitInterface, NoOpGitInterface
+from .infrastructure.git import GitInterface, NoOpGitInterface, create_git_interface
 from .storage.sqlite import SQLiteStore
 from .manage import ManageOrchestrator, create_manage_orchestrator
 from .structure import StructureOrchestrator, create_structure_orchestrator
@@ -230,6 +230,8 @@ def create_router(
 ) -> Router:
     """Factory function to create Router with default configuration
 
+    EPIC 1: Uses real GitInterface when git repo detected.
+
     Args:
         project_root: Project root directory
         git_root: Git repository root (default: project_root)
@@ -241,18 +243,22 @@ def create_router(
     # Create database
     db = SQLiteStore(project_root)
 
-    # Create git interface (NoOp for EPIC 0)
-    # TODO EPIC 1: Real GitInterface when git_root provided
-    git: GitInterface = NoOpGitInterface(git_root or project_root)
+    # Create git interface (real if repo exists, NoOp otherwise)
+    effective_git_root = git_root or project_root
+    git: GitInterface = create_git_interface(effective_git_root)
+
+    # Build config with project_root for timestamp resolution
+    effective_config = config or {}
+    effective_config.setdefault('project_root', project_root)
 
     # Build infrastructure
     infrastructure = Infrastructure(
         db=db,
         git=git,
-        config=config or {},
+        config=effective_config,
     )
 
-    # Create orchestrators with NoOp plugins
+    # Create orchestrators with EPIC 1 implementations
     manage = create_manage_orchestrator()
     structure = create_structure_orchestrator()
 

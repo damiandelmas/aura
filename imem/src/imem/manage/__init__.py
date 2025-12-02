@@ -1,14 +1,14 @@
 """Manage domain - Chunk enrichment orchestration
 
-EPIC 0 establishes ManageOrchestrator with NoOp plugins.
+EPIC 1: Real implementations replace NoOp plugins.
 Enriches chunks after parsing: link → signatures → validity → graph.
 
 Responsible for:
-- Provenance attachment (commit_sha, timestamp)
-- Code signature extraction (validation anchors)
-- Validity computation (temporal, git, propagation)
-- Edge building (validated_by, superseded_by, sibling)
-- Entity resolution (vocabulary normalization)
+- Provenance attachment (commit_sha, timestamp) - LinkModule
+- Code signature extraction (validation anchors) - SignatureExtractor
+- Validity computation (temporal, git, propagation) - ValidityComputer
+- Edge building (validated_by, superseded_by, sibling) - EdgeOrchestrator (NoOp in EPIC 1)
+- Entity resolution (vocabulary normalization) - future EPIC
 
 Legacy exports for backward compatibility:
 - introspect, get_coverage_stats (from root introspect.py)
@@ -19,6 +19,11 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import logging
 
 from ..protocols import Signal, Builder, Module, NoOpSignal, NoOpBuilder, NoOpModule, Edge
+
+# EPIC 1 imports
+from .link import LinkModule
+from .signatures import SignatureExtractor
+from .validity import TemporalSignal, GitSignal
 
 if TYPE_CHECKING:
     from ..context import IndexContext
@@ -201,16 +206,24 @@ class ManageOrchestrator:
 
 
 def create_manage_orchestrator() -> ManageOrchestrator:
-    """Factory for ManageOrchestrator with default NoOp plugins
+    """Factory for ManageOrchestrator with EPIC 1 implementations
 
-    EPIC 0: All plugins are NoOp.
-    Later EPICs add real implementations.
+    EPIC 1: Real Link, Signatures, and Validity (Temporal + Git signals).
+    Graph remains NoOp until EPIC 2-3.
     """
+    # Create validity computer with real signals
+    validity_computer = ValidityComputer(
+        signals=[
+            TemporalSignal(),
+            GitSignal(),
+        ]
+    )
+
     return ManageOrchestrator(
-        link=NoOpModule(),
-        signatures=NoOpModule(),
-        validity=NoOpValidityComputer(),
-        graph=NoOpEdgeOrchestrator(),
+        link=LinkModule(),
+        signatures=SignatureExtractor(),
+        validity=validity_computer,
+        graph=NoOpEdgeOrchestrator(),  # EPIC 2-3
     )
 
 
@@ -234,13 +247,18 @@ from ..registry import SimpleRegistry
 
 
 __all__ = [
-    # New EPIC 0 exports
+    # Core exports
     'ManageOrchestrator',
     'create_manage_orchestrator',
     'ValidityComputer',
     'NoOpValidityComputer',
     'EdgeOrchestrator',
     'NoOpEdgeOrchestrator',
+    # EPIC 1 modules
+    'LinkModule',
+    'SignatureExtractor',
+    'TemporalSignal',
+    'GitSignal',
     # Legacy exports
     'introspect',
     'get_coverage_stats',
