@@ -56,3 +56,6 @@ Thumbs.db
 /.testing.imem/metadata.db
 .imem/
 /.testing
+
+# claude
+/.claude/
