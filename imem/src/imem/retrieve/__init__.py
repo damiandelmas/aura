@@ -1,9 +1,9 @@
-"""Compose domain - Retrieval pipeline orchestration
+"""Retrieve domain - Retrieval pipeline orchestration
 
 Provides composable retrieval pipeline through processor chain pattern.
 
-New architecture (processor chain):
-    from imem.compose.orchestrator import compose
+Usage:
+    from imem.retrieve import compose, build_chain
     from imem.storage import create_store
 
     store = create_store('sqlite', {'project_root': '...'})
@@ -11,7 +11,7 @@ New architecture (processor chain):
     results = compose('query', config, store)
 
 Or use chain directly:
-    from imem.compose.processors import SearchProcessor, MultiPhaseRanker
+    from imem.retrieve import SearchProcessor, MultiPhaseRanker
     from imem.core import Chain, RetrievalContext
 
     chain = Chain([

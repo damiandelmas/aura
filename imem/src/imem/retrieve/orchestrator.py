@@ -1,6 +1,6 @@
-"""Compose orchestrator - Build and execute retrieval pipelines via processor chain
+"""Retrieve orchestrator - Build and execute retrieval pipelines via processor chain
 
-Replaces hardcoded compose.py pipeline with declarative chain configuration.
+Replaces hardcoded pipeline with declarative chain configuration.
 Enables config-driven composition, reorderable stages, independent testing.
 """
 
@@ -109,7 +109,7 @@ def _get_scorer_for_phase(phase_name: str):
         # TODO: Implement PageRank or reference counting scorer
         logger.warning(
             "Authority scorer not yet implemented. Using identity (no reordering). "
-            "Implement at imem/compose/processors/ranking.py"
+            "Implement at imem/retrieve/processors/ranking.py"
         )
         def identity_scorer(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             return results
@@ -147,7 +147,7 @@ def compose(
 
     Example:
         from imem.storage import create_store
-        from imem.compose.orchestrator import compose
+        from imem.retrieve import compose
 
         store = create_store('sqlite', {'project_root': '...'})
         config = {

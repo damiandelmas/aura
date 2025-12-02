@@ -1,19 +1,25 @@
 """CLI Composition Root - Single initialization point for all dependencies
 
+EPIC 0: Router-based architecture.
+CLI delegates to Router for index() and query() flows.
+
 SQLite-first composition root:
-- Database connection (once, with pragmas)
-- Embedder model (once, expensive ~2s)
-- Domain controllers (injected with dependencies)
+- Router instance (owns infrastructure, orchestrators)
+- Database connection (via Router)
+- Domain controllers (via Router or legacy paths)
 """
 
 import sqlite3
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from dataclasses import dataclass
 
 from ..config import config, IMEMConfig
 from ..registry import SimpleRegistry
-from ..storage import create_store, VectorStore, SQLiteVectorStore
+from ..storage import create_store, VectorStore
+
+if TYPE_CHECKING:
+    from ..router import Router
 
 
 @dataclass
@@ -23,11 +29,13 @@ class AppState:
     embedder: Optional[any] = None  # SentenceTransformer, lazy-loaded
     store: Optional[VectorStore] = None
     project_root: Optional[Path] = None
+    router: Optional['Router'] = None
 
 
 class IMEMCLI:
     """Composition root for IMEM CLI
 
+    EPIC 0: Router-based architecture.
     SQLite-first: All storage uses SQLite. No external services.
     """
 
@@ -44,8 +52,35 @@ class IMEMCLI:
             self.state.project_root = self.registry.get_project_root()
         return self.state.project_root
 
+    def get_router(self) -> 'Router':
+        """Get or create Router instance
+
+        Router is the composition root that owns infrastructure
+        and coordinates domain orchestrators.
+
+        Returns:
+            Configured Router instance
+        """
+        if self.state.router is None:
+            from ..router import create_router
+
+            project_root = self.get_project_root()
+            if not project_root:
+                raise ValueError("Not in a registered project. Run 'imem init' first.")
+
+            self.state.router = create_router(
+                project_root=project_root,
+                git_root=project_root,  # TODO: Detect actual git root
+                config={'namespace': self.config.namespace},
+            )
+
+        return self.state.router
+
     def get_db(self, db_path: Optional[Path] = None) -> sqlite3.Connection:
-        """Get or create database connection with optimal pragmas"""
+        """Get or create database connection with optimal pragmas
+
+        NOTE: Prefer using get_router() - this is for legacy compatibility.
+        """
         if self.state.db is None:
             if db_path is None:
                 project_root = self.get_project_root()
@@ -125,20 +160,26 @@ class IMEMCLI:
             'get_coverage_stats': get_coverage_stats
         }
 
-    def get_compose_controller(self):
-        """Get compose domain controller
+    def get_retrieve_controller(self):
+        """Get retrieve domain controller
 
         Returns:
-            Compose orchestrator (retrieval pipeline)
+            Retrieve orchestrator (retrieval pipeline)
         """
-        from ..compose import compose as compose_pipeline
-        return compose_pipeline
+        from ..retrieve import compose as retrieve_pipeline
+        return retrieve_pipeline
+
+    # Alias for backward compatibility
+    def get_compose_controller(self):
+        """Alias for get_retrieve_controller()"""
+        return self.get_retrieve_controller()
 
     def cleanup(self):
         """Cleanup resources on shutdown"""
         if self.state.db:
             self.state.db.close()
             self.state.db = None
+        # Note: Router cleanup handled by its own infrastructure
 
 
 # Global application instance

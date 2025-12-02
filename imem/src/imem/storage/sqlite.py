@@ -64,17 +64,8 @@ class SQLiteStore:
             )
         ''')
 
-        # Migrate existing tables to add temporal columns if missing (BEFORE indexes)
-        try:
-            cursor = self.conn.execute("PRAGMA table_info(chunks)")
-            columns = {row[1] for row in cursor.fetchall()}
-
-            if 'created_at' not in columns:
-                self.conn.execute('ALTER TABLE chunks ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
-            if 'updated_at' not in columns:
-                self.conn.execute('ALTER TABLE chunks ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
-        except Exception:
-            pass
+        # Migrate existing tables to add columns if missing (BEFORE indexes)
+        self._migrate_schema()
 
         # Indexes for fast filtering (AFTER migration)
         self.conn.execute('CREATE INDEX IF NOT EXISTS idx_phase ON chunks(phase)')
@@ -83,8 +74,78 @@ class SQLiteStore:
         self.conn.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON chunks(timestamp)')
         self.conn.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON chunks(session_id)')
         self.conn.execute('CREATE INDEX IF NOT EXISTS idx_created_at ON chunks(created_at)')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_git_status ON chunks(git_status)')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_validity ON chunks(validity)')
+
+        # Create edges table (EPIC 0: Router Foundation)
+        self.conn.execute('''
+            CREATE TABLE IF NOT EXISTS edges (
+                from_id TEXT NOT NULL,
+                to_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                weight REAL DEFAULT 1.0,
+                created_at INTEGER DEFAULT (strftime('%s', 'now')),
+                PRIMARY KEY (from_id, to_id, type),
+                FOREIGN KEY(from_id) REFERENCES chunks(id) ON DELETE CASCADE,
+                FOREIGN KEY(to_id) REFERENCES chunks(id) ON DELETE CASCADE
+            )
+        ''')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_id)')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id)')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(type)')
+
+        # Create chunk_signatures table (EPIC 0: Router Foundation)
+        self.conn.execute('''
+            CREATE TABLE IF NOT EXISTS chunk_signatures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chunk_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                language TEXT,
+                file_path TEXT,
+                signature_hash TEXT NOT NULL,
+                FOREIGN KEY(chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+            )
+        ''')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_sig_chunk ON chunk_signatures(chunk_id)')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_sig_file ON chunk_signatures(file_path)')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_sig_hash ON chunk_signatures(signature_hash)')
 
         self.conn.commit()
+
+    def _migrate_schema(self):
+        """Migrate existing tables to add new columns
+
+        EPIC 0 additions:
+        - commit_sha: Git commit SHA for provenance
+        - validity: Trust score (0.0-1.0)
+        - git_status: validated | superseded | contradicted | unvalidated
+        - centrality: Connectedness score (0.0-1.0)
+        - rank: Combined query-time score (0.0-1.0)
+        """
+        try:
+            cursor = self.conn.execute("PRAGMA table_info(chunks)")
+            columns = {row[1] for row in cursor.fetchall()}
+
+            # Original migrations
+            if 'created_at' not in columns:
+                self.conn.execute('ALTER TABLE chunks ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+            if 'updated_at' not in columns:
+                self.conn.execute('ALTER TABLE chunks ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+
+            # EPIC 0: Router Foundation migrations
+            if 'commit_sha' not in columns:
+                self.conn.execute('ALTER TABLE chunks ADD COLUMN commit_sha TEXT')
+            if 'validity' not in columns:
+                self.conn.execute('ALTER TABLE chunks ADD COLUMN validity REAL DEFAULT 0.5')
+            if 'git_status' not in columns:
+                self.conn.execute("ALTER TABLE chunks ADD COLUMN git_status TEXT DEFAULT 'unvalidated'")
+            if 'centrality' not in columns:
+                self.conn.execute('ALTER TABLE chunks ADD COLUMN centrality REAL DEFAULT 0.5')
+            if 'rank' not in columns:
+                self.conn.execute('ALTER TABLE chunks ADD COLUMN rank REAL DEFAULT 0.5')
+
+        except Exception as e:
+            logger.warning(f"Schema migration warning: {e}")
 
     def upsert_chunks(self, chunks: List[Dict[str, Any]]):
         """Insert or update chunks

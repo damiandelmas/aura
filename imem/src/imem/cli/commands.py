@@ -81,7 +81,7 @@ def compose_cmd(config_json):
     Example:
         imem compose '{"search": {"text": "authentication", "filters": {"phase": "develop"}}}'
     """
-    from ..compose.orchestrator import compose
+    from ..retrieve import compose
 
     try:
         config = json.loads(config_json)
