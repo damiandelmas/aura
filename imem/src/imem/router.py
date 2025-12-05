@@ -11,6 +11,7 @@ Two primary flows:
 EPIC 0 establishes the wiring with NoOp plugins.
 EPIC 4 adds vector infrastructure (Tier 3).
 EPIC 5 adds centrality & ranking.
+EPIC 6 adds STRUCTURE domain (curate, flip, reword, narrate).
 """
 
 from pathlib import Path
@@ -309,7 +310,12 @@ def create_router(
         vector_storage=vector_storage,
         embedder=embedder,
     )
-    structure = create_structure_orchestrator()
+
+    # EPIC 6: Create STRUCTURE with real modules
+    structure = create_structure_orchestrator(
+        db=db,
+        config=effective_config,
+    )
 
     # EPIC 5: Create centrality & ranking
     centrality = create_centrality_computer(
@@ -319,6 +325,7 @@ def create_router(
     ranking = RankingModule()
 
     logger.info("EPIC 5: Centrality & Ranking enabled")
+    logger.info("EPIC 6: STRUCTURE domain enabled")
 
     return Router(
         infrastructure=infrastructure,

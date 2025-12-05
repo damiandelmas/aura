@@ -43,6 +43,7 @@ from imem.manage.validity.temporal import TemporalSignal
 from imem.manage.validity.propagation import PropagationSignal
 from imem.manage import create_manage_orchestrator
 from imem.storage.sqlite import SQLiteStore
+from imem.structure import MarkdownOutput, JSONOutput, ContextOutput
 
 
 # ============================================================================
@@ -263,9 +264,9 @@ class TestTier3VectorFeatures:
             indexed = router.index([test_file])
             assert isinstance(indexed, list)
 
-            # Query
+            # Query - EPIC 6: Returns Output type
             result = router.query({'search': {'text': 'test'}})
-            assert isinstance(result, list)
+            assert isinstance(result, (MarkdownOutput, JSONOutput, ContextOutput, list))
 
 
 # ============================================================================
@@ -420,7 +421,8 @@ class TestErrorRecovery:
                 'search': {'text': 'authentication', 'mode': 'hybrid'}
             })
 
-            assert isinstance(result, list)
+            # EPIC 6: Returns Output type
+            assert isinstance(result, (MarkdownOutput, JSONOutput, ContextOutput, list))
 
 
 # ============================================================================

@@ -19,7 +19,7 @@ from imem.context import Infrastructure, IndexContext, QueryContext
 from imem.storage.sqlite import SQLiteStore
 from imem.infrastructure.git import NoOpGitInterface, create_git_interface
 from imem.manage import create_manage_orchestrator
-from imem.structure import create_structure_orchestrator
+from imem.structure import create_structure_orchestrator, MarkdownOutput, JSONOutput, ContextOutput, Output
 
 
 # ============================================================================
@@ -196,8 +196,8 @@ class TestQueryFlow:
 
             result = router.query(config)
 
-            assert isinstance(result, list)
-            assert len(result) == 0
+            # EPIC 6: Result is now Output type (MarkdownOutput by default)
+            assert isinstance(result, (MarkdownOutput, JSONOutput, ContextOutput, list))
 
     def test_query_after_index(self):
         """Query finds indexed content"""
@@ -220,8 +220,8 @@ We use JWT tokens for secure authentication.
             }
 
             result = router.query(config)
-            # Results depend on retrieval implementation
-            assert isinstance(result, list)
+            # EPIC 6: Results are now Output type (MarkdownOutput by default)
+            assert isinstance(result, (MarkdownOutput, JSONOutput, ContextOutput, list))
 
 
 # ============================================================================
@@ -367,7 +367,8 @@ class TestErrorHandling:
 
             # Query should work even on fresh database
             result = router.query({'search': {'text': 'test'}})
-            assert isinstance(result, list)
+            # EPIC 6: Returns Output type
+            assert isinstance(result, (MarkdownOutput, JSONOutput, ContextOutput, list))
 
 
 # ============================================================================
