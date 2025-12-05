@@ -66,20 +66,18 @@ class Router:
         Returns:
             List of indexed chunks with enrichment
         """
-        from .compile import DocumentIndexer
+        from .compile.parser import parse_markdown_file
         from .storage import create_store
 
         # 1. Get or create store
         store = create_store(project_root=self.infrastructure.db.project_root)
 
-        # 2. Parse files into chunks via DocumentIndexer
-        indexer = DocumentIndexer(store=store)
-
+        # 2. Parse files into chunks via parse_markdown_file
         all_chunks = []
         for file_path in files:
             try:
-                # Parse single file
-                chunks = indexer._parse_file(file_path)
+                # Parse single file (auto-detects phase from path)
+                chunks = parse_markdown_file(file_path)
                 all_chunks.extend(chunks)
             except Exception as e:
                 logger.warning(f"Failed to parse {file_path}: {e}")
