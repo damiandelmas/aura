@@ -1,15 +1,20 @@
 """Manage domain - Chunk enrichment orchestration
 
-EPIC 2: Graph Edges - Edge builders for chunk relationships.
-Enriches chunks after parsing: link → signatures → validity → graph → validity_override.
+EPIC 3: Validity Propagation - Three-phase validity computation.
+Enriches chunks after parsing with three-phase flow:
 
-Critical ordering:
-1. link.execute()           → attach commit_sha
-2. signatures.extract()     → extract code blocks
-3. validity.compute_direct() → score ANCHORED chunks only
-4. graph.build_edges()      → create validated_by, superseded_by
-5. validity.override_superseded() → set superseded chunks to 0.2
-6. (EPIC 3) validity.propagate() → score UNANCHORED chunks
+PHASE 1: Direct enrichment
+    1. link.execute()           → attach commit_sha
+    2. signatures.extract()     → extract code blocks
+    3. Identify anchored_ids    → chunks with signatures.file_path
+    4. validity.compute()       → score ANCHORED chunks only (temporal + git)
+
+PHASE 2: Build edges
+    5. graph.build_edges()      → create validated_by, superseded_by
+    6. validity.override_superseded() → set superseded chunks to 0.2
+
+PHASE 3: Propagate to unanchored
+    7. validity.compute()       → score UNANCHORED chunks (temporal + propagation)
 
 Responsible for:
 - Provenance attachment (commit_sha, timestamp) - LinkModule
@@ -24,7 +29,7 @@ Legacy exports for backward compatibility:
 - SimpleRegistry
 """
 
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 import logging
 
 from ..protocols import Signal, Builder, Module, NoOpSignal, NoOpBuilder, NoOpModule, Edge
@@ -36,6 +41,9 @@ from .validity import TemporalSignal, GitSignal
 
 # EPIC 2 imports
 from .graph import ValidatedByBuilder, SupersededByBuilder
+
+# EPIC 3 imports
+from .validity.propagation import PropagationSignal, is_anchored, get_anchored_ids
 
 if TYPE_CHECKING:
     from ..context import IndexContext
@@ -50,18 +58,32 @@ logger = logging.getLogger(__name__)
 class ValidityComputer:
     """Aggregates validity signals into a single score
 
-    Two-phase computation:
-    1. Anchored chunks (have signatures with file_path): direct validation
-    2. Unanchored chunks: propagation through edges
+    Three-phase computation (EPIC 3):
+    1. Phase 1: Score ANCHORED chunks (temporal + git signals)
+    2. Phase 2: Build edges (needs anchored validity)
+    3. Phase 3: Score UNANCHORED chunks (temporal + propagation signals)
 
-    EPIC 0: NoOp signals only.
+    Signal filtering enables phase-specific computation:
+    - Phase 1: signals=['temporal', 'git']
+    - Phase 3: signals=['temporal', 'propagation']
     """
 
     def __init__(self, signals: Optional[List[Signal]] = None):
         self.signals = signals or [NoOpSignal()]
 
-    def compute(self, chunk: Dict[str, Any], context: 'IndexContext') -> Dict[str, Any]:
+    def compute(
+        self,
+        chunk: Dict[str, Any],
+        context: 'IndexContext',
+        signal_names: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
         """Compute validity for a chunk
+
+        Args:
+            chunk: Chunk to score
+            context: Index context with infrastructure
+            signal_names: Optional filter - only use signals with these names.
+                         If None, use all signals.
 
         Returns:
             Dict with 'score' (0.0-1.0) and 'git_status' string
@@ -70,6 +92,10 @@ class ValidityComputer:
         total_weight = 0.0
 
         for signal in self.signals:
+            # Apply signal name filter if provided
+            if signal_names is not None and signal.name not in signal_names:
+                continue
+
             if signal.applies(chunk, context):
                 result = signal.score(chunk, context)
                 # Weight by confidence
@@ -149,17 +175,24 @@ class NoOpEdgeOrchestrator(EdgeOrchestrator):
 # ============================================================================
 
 class ManageOrchestrator:
-    """Coordinates MANAGE sub-modules in sequence
+    """Coordinates MANAGE sub-modules in three-phase flow
 
-    Flow: link → signatures → validity → graph → validity_override
+    EPIC 3: Three-Phase Validity Computation
 
-    Critical ordering (from DOC-PAC):
-    1. link.execute()           → attach commit_sha
-    2. signatures.extract()     → extract code blocks
-    3. validity.compute_direct() → score ANCHORED chunks only
-    4. graph.build_edges()      → create validated_by, superseded_by
-    5. validity.override_superseded() → set superseded chunks to 0.2
-    6. (EPIC 3) validity.propagate() → score UNANCHORED chunks
+    PHASE 1: Direct enrichment
+        1. link.execute()           → attach commit_sha
+        2. signatures.extract()     → extract code blocks
+        3. Identify anchored_ids    → chunks with signatures.file_path
+        4. validity.compute()       → score ANCHORED chunks only (temporal + git)
+
+    PHASE 2: Build edges
+        5. graph.build_edges()      → create validated_by, superseded_by
+        6. validity.override_superseded() → set superseded chunks to 0.2
+
+    PHASE 3: Propagate to unanchored
+        7. validity.compute()       → score UNANCHORED chunks (temporal + propagation)
+
+    This ordering resolves the circular dependency between edges and validity.
     """
 
     # Supersession validity override constants
@@ -184,12 +217,15 @@ class ManageOrchestrator:
     ) -> None:
         """Enrich chunks with metadata, scores, and edges
 
+        Three-phase flow for validity computation.
         Mutates chunks in place. Creates edges in database.
 
         Args:
             chunks: Chunks to enrich
             context: Index context with infrastructure
         """
+        # ===== PHASE 1: Direct enrichment =====
+
         # 1. Attach git provenance (commit_sha, timestamp)
         chunks = self.link.execute(chunks, context)
         logger.debug(f"Link module processed {len(chunks)} chunks")
@@ -198,24 +234,65 @@ class ManageOrchestrator:
         chunks = self.signatures.execute(chunks, context)
         logger.debug(f"Signatures module processed {len(chunks)} chunks")
 
-        # 3. Compute validity scores (ANCHORED chunks only in EPIC 2)
+        # 3. Identify anchored chunks (have signatures with file_path)
+        anchored_ids = get_anchored_ids(chunks, context)
+        logger.debug(f"Identified {len(anchored_ids)} anchored chunks")
+
+        # Set anchored_ids on PropagationSignal if present
+        for signal in self.validity.signals:
+            if hasattr(signal, 'set_anchored_ids'):
+                signal.set_anchored_ids(anchored_ids)
+
+        # 4. Compute validity for ANCHORED chunks only (temporal + git)
+        anchored_count = 0
         for chunk in chunks:
-            result = self.validity.compute(chunk, context)
-            chunk['validity'] = result['score']
-            chunk['git_status'] = result['git_status']
+            if chunk.get('id') in anchored_ids:
+                result = self.validity.compute(
+                    chunk, context,
+                    signal_names=['temporal', 'git']  # Phase 1: direct signals only
+                )
+                chunk['validity'] = result['score']
+                chunk['git_status'] = result['git_status']
+                anchored_count += 1
 
-        logger.debug(f"Validity computed for {len(chunks)} chunks")
+        logger.debug(f"Phase 1: Computed validity for {anchored_count} anchored chunks")
 
-        # 4. Build edges
+        # ===== PHASE 2: Build edges =====
+
+        # 5. Build edges (now we have anchored validity for supersession detection)
         edges = self.graph.build_edges(chunks, context)
         if edges:
             self._persist_edges(edges, context)
-        logger.debug(f"Created {len(edges)} edges")
+        logger.debug(f"Phase 2: Created {len(edges)} edges")
 
-        # 5. Override validity for superseded chunks (EPIC 2)
+        # 6. Override validity for superseded chunks
         superseded_count = self._override_superseded_validity(edges, chunks, context)
         if superseded_count:
             logger.info(f"Marked {superseded_count} chunks as superseded (validity={self.SUPERSEDED_VALIDITY})")
+
+        # ===== PHASE 3: Propagate to unanchored =====
+
+        # 7. Compute validity for UNANCHORED chunks (temporal + propagation)
+        unanchored_count = 0
+        for chunk in chunks:
+            chunk_id = chunk.get('id')
+            if chunk_id and chunk_id not in anchored_ids:
+                # Skip superseded chunks - they already have overridden validity
+                if chunk.get('git_status') == 'superseded':
+                    continue
+
+                result = self.validity.compute(
+                    chunk, context,
+                    signal_names=['temporal', 'propagation']  # Phase 3: propagation
+                )
+                chunk['validity'] = result['score']
+                chunk['git_status'] = result['git_status']
+                unanchored_count += 1
+
+        logger.debug(f"Phase 3: Computed validity for {unanchored_count} unanchored chunks")
+
+        # Update all chunks in database
+        self._persist_validity(chunks, context)
 
     def _persist_edges(self, edges: List[Edge], context: 'IndexContext') -> None:
         """Persist edges to database"""
@@ -286,23 +363,56 @@ class ManageOrchestrator:
 
         return len(superseded_ids)
 
+    def _persist_validity(
+        self,
+        chunks: List[Dict[str, Any]],
+        context: 'IndexContext'
+    ) -> None:
+        """Persist validity scores to database
+
+        Called at the end of enrichment to update all chunks.
+        """
+        db = context.infrastructure.db
+        try:
+            for chunk in chunks:
+                chunk_id = chunk.get('id')
+                validity = chunk.get('validity')
+                git_status = chunk.get('git_status')
+
+                if chunk_id and validity is not None:
+                    db.conn.execute('''
+                        UPDATE chunks
+                        SET validity = ?, git_status = ?
+                        WHERE id = ?
+                    ''', (validity, git_status, chunk_id))
+
+            db.conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to persist validity scores: {e}")
+
 
 def create_manage_orchestrator() -> ManageOrchestrator:
-    """Factory for ManageOrchestrator with EPIC 2 implementations
+    """Factory for ManageOrchestrator with EPIC 3 implementations
 
-    EPIC 2: Graph Edges - Edge builders for chunk relationships.
+    EPIC 3: Validity Propagation - Three-phase validity computation.
     - Link: Real timestamp cascade, commit_sha attachment
     - Signatures: Real code block extraction
-    - Validity: Temporal + Git signals (direct validation)
-    - Graph: ValidatedBy + SupersededBy builders (EPIC 2)
+    - Validity: Temporal + Git + Propagation signals (three-phase)
+    - Graph: ValidatedBy + SupersededBy builders
 
     SiblingBuilder deferred to EPIC 4 (needs vectors).
+
+    Three-phase flow:
+    1. Phase 1: Anchored chunks scored with temporal + git
+    2. Phase 2: Edges built (needs anchored validity)
+    3. Phase 3: Unanchored chunks scored with temporal + propagation
     """
-    # Create validity computer with real signals
+    # Create validity computer with all signals (EPIC 3)
     validity_computer = ValidityComputer(
         signals=[
             TemporalSignal(),
             GitSignal(),
+            PropagationSignal(),  # EPIC 3: propagation for unanchored
         ]
     )
 
@@ -357,6 +467,10 @@ __all__ = [
     # EPIC 2 modules
     'ValidatedByBuilder',
     'SupersededByBuilder',
+    # EPIC 3 modules
+    'PropagationSignal',
+    'is_anchored',
+    'get_anchored_ids',
     # Legacy exports
     'introspect',
     'get_coverage_stats',
