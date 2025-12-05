@@ -12,8 +12,8 @@ import pytest
 from pathlib import Path
 from imem.storage import create_store
 from imem.compile import DocumentIndexer
-from imem.compose import build_chain
-from imem.compose.orchestrator import _get_scorer_for_phase
+from imem.retrieve import build_chain
+from imem.retrieve.orchestrator import _get_scorer_for_phase
 from imem.core import RetrievalContext
 
 

@@ -1,13 +1,22 @@
 """Manage domain - Chunk enrichment orchestration
 
-EPIC 1: Real implementations replace NoOp plugins.
-Enriches chunks after parsing: link → signatures → validity → graph.
+EPIC 2: Graph Edges - Edge builders for chunk relationships.
+Enriches chunks after parsing: link → signatures → validity → graph → validity_override.
+
+Critical ordering:
+1. link.execute()           → attach commit_sha
+2. signatures.extract()     → extract code blocks
+3. validity.compute_direct() → score ANCHORED chunks only
+4. graph.build_edges()      → create validated_by, superseded_by
+5. validity.override_superseded() → set superseded chunks to 0.2
+6. (EPIC 3) validity.propagate() → score UNANCHORED chunks
 
 Responsible for:
 - Provenance attachment (commit_sha, timestamp) - LinkModule
 - Code signature extraction (validation anchors) - SignatureExtractor
 - Validity computation (temporal, git, propagation) - ValidityComputer
-- Edge building (validated_by, superseded_by, sibling) - EdgeOrchestrator (NoOp in EPIC 1)
+- Edge building (validated_by, superseded_by, sibling) - EdgeOrchestrator
+- Validity override for superseded chunks
 - Entity resolution (vocabulary normalization) - future EPIC
 
 Legacy exports for backward compatibility:
@@ -24,6 +33,9 @@ from ..protocols import Signal, Builder, Module, NoOpSignal, NoOpBuilder, NoOpMo
 from .link import LinkModule
 from .signatures import SignatureExtractor
 from .validity import TemporalSignal, GitSignal
+
+# EPIC 2 imports
+from .graph import ValidatedByBuilder, SupersededByBuilder
 
 if TYPE_CHECKING:
     from ..context import IndexContext
@@ -139,10 +151,19 @@ class NoOpEdgeOrchestrator(EdgeOrchestrator):
 class ManageOrchestrator:
     """Coordinates MANAGE sub-modules in sequence
 
-    Flow: link → signatures → validity → graph
+    Flow: link → signatures → validity → graph → validity_override
 
-    EPIC 0: All modules are NoOp except basic wiring.
+    Critical ordering (from DOC-PAC):
+    1. link.execute()           → attach commit_sha
+    2. signatures.extract()     → extract code blocks
+    3. validity.compute_direct() → score ANCHORED chunks only
+    4. graph.build_edges()      → create validated_by, superseded_by
+    5. validity.override_superseded() → set superseded chunks to 0.2
+    6. (EPIC 3) validity.propagate() → score UNANCHORED chunks
     """
+
+    # Supersession validity override constants
+    SUPERSEDED_VALIDITY = 0.2  # Hard cap for superseded chunks
 
     def __init__(
         self,
@@ -177,7 +198,7 @@ class ManageOrchestrator:
         chunks = self.signatures.execute(chunks, context)
         logger.debug(f"Signatures module processed {len(chunks)} chunks")
 
-        # 3. Compute validity scores
+        # 3. Compute validity scores (ANCHORED chunks only in EPIC 2)
         for chunk in chunks:
             result = self.validity.compute(chunk, context)
             chunk['validity'] = result['score']
@@ -190,6 +211,11 @@ class ManageOrchestrator:
         if edges:
             self._persist_edges(edges, context)
         logger.debug(f"Created {len(edges)} edges")
+
+        # 5. Override validity for superseded chunks (EPIC 2)
+        superseded_count = self._override_superseded_validity(edges, chunks, context)
+        if superseded_count:
+            logger.info(f"Marked {superseded_count} chunks as superseded (validity={self.SUPERSEDED_VALIDITY})")
 
     def _persist_edges(self, edges: List[Edge], context: 'IndexContext') -> None:
         """Persist edges to database"""
@@ -204,12 +230,73 @@ class ManageOrchestrator:
                 logger.warning(f"Failed to persist edge: {e}")
         db.conn.commit()
 
+    def _override_superseded_validity(
+        self,
+        edges: List[Edge],
+        chunks: List[Dict[str, Any]],
+        context: 'IndexContext'
+    ) -> int:
+        """Override validity for chunks with superseded_by edges
+
+        When a chunk is superseded by a newer version:
+        - validity = 0.2 (hard cap)
+        - git_status = 'superseded'
+
+        This happens AFTER edge building, BEFORE propagation.
+
+        Args:
+            edges: Edges just created
+            chunks: Chunks being indexed
+            context: Index context with infrastructure
+
+        Returns:
+            Count of chunks marked as superseded
+        """
+        # Find superseded chunk IDs
+        superseded_ids = {
+            edge.from_id
+            for edge in edges
+            if edge.type == 'superseded_by'
+        }
+
+        if not superseded_ids:
+            return 0
+
+        # Build ID-to-chunk map for in-memory updates
+        chunk_map = {c['id']: c for c in chunks}
+
+        # Update in-memory chunks
+        for chunk_id in superseded_ids:
+            if chunk_id in chunk_map:
+                chunk_map[chunk_id]['validity'] = self.SUPERSEDED_VALIDITY
+                chunk_map[chunk_id]['git_status'] = 'superseded'
+
+        # Update database
+        db = context.infrastructure.db
+        try:
+            for chunk_id in superseded_ids:
+                db.conn.execute('''
+                    UPDATE chunks
+                    SET validity = ?, git_status = ?
+                    WHERE id = ?
+                ''', (self.SUPERSEDED_VALIDITY, 'superseded', chunk_id))
+            db.conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to update superseded chunks: {e}")
+
+        return len(superseded_ids)
+
 
 def create_manage_orchestrator() -> ManageOrchestrator:
-    """Factory for ManageOrchestrator with EPIC 1 implementations
+    """Factory for ManageOrchestrator with EPIC 2 implementations
 
-    EPIC 1: Real Link, Signatures, and Validity (Temporal + Git signals).
-    Graph remains NoOp until EPIC 2-3.
+    EPIC 2: Graph Edges - Edge builders for chunk relationships.
+    - Link: Real timestamp cascade, commit_sha attachment
+    - Signatures: Real code block extraction
+    - Validity: Temporal + Git signals (direct validation)
+    - Graph: ValidatedBy + SupersededBy builders (EPIC 2)
+
+    SiblingBuilder deferred to EPIC 4 (needs vectors).
     """
     # Create validity computer with real signals
     validity_computer = ValidityComputer(
@@ -219,11 +306,19 @@ def create_manage_orchestrator() -> ManageOrchestrator:
         ]
     )
 
+    # Create edge orchestrator with EPIC 2 builders
+    edge_orchestrator = EdgeOrchestrator(
+        builders=[
+            ValidatedByBuilder(),
+            SupersededByBuilder(),
+        ]
+    )
+
     return ManageOrchestrator(
         link=LinkModule(),
         signatures=SignatureExtractor(),
         validity=validity_computer,
-        graph=NoOpEdgeOrchestrator(),  # EPIC 2-3
+        graph=edge_orchestrator,
     )
 
 
@@ -259,6 +354,9 @@ __all__ = [
     'SignatureExtractor',
     'TemporalSignal',
     'GitSignal',
+    # EPIC 2 modules
+    'ValidatedByBuilder',
+    'SupersededByBuilder',
     # Legacy exports
     'introspect',
     'get_coverage_stats',
