@@ -1,17 +1,28 @@
 """Retrieve orchestrator - Build and execute retrieval pipelines via processor chain
 
+EPIC 5: Centrality & Ranking
+
 Replaces hardcoded pipeline with declarative chain configuration.
 Enables config-driven composition, reorderable stages, independent testing.
+
+Flow: search → discovery → centrality → ranking
+
+Centrality is computed at query-time on result chunks, then RankingModule
+combines validity (stored) × centrality (computed) × recency (timestamp).
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 import logging
 
 from ..core import Chain, RetrievalContext
 from ..storage import VectorStore
 from ..storage.sqlite_backend import SQLiteVectorStore
-from .processors import SearchProcessor, MultiPhaseRanker, RankingPhase
+from .processors import SearchProcessor, MultiPhaseRanker, RankingPhase, RankingModule
 from .processors.discovery import DiscoveryProcessor
+from .centrality import CentralityComputer, create_centrality_computer
+
+if TYPE_CHECKING:
+    from ..context import QueryContext
 
 logger = logging.getLogger(__name__)
 
@@ -125,14 +136,24 @@ def _get_scorer_for_phase(phase_name: str):
 def compose(
     query: str,
     config: Dict[str, Any],
-    store: VectorStore
+    store: VectorStore,
+    centrality_computer: Optional[CentralityComputer] = None,
+    ranking_module: Optional[RankingModule] = None,
+    vector_storage=None,
 ) -> Dict[str, Any]:
     """Execute retrieval pipeline via processor chain
+
+    EPIC 5: Centrality & Ranking
+
+    Flow: search → discovery → centrality → ranking
 
     Args:
         query: Search query text
         config: Pipeline configuration
         store: VectorStore backend
+        centrality_computer: Optional CentralityComputer for importance scoring
+        ranking_module: Optional RankingModule for final ranking
+        vector_storage: Optional VectorStorage for sibling density (Tier 3)
 
     Returns:
         Retrieval results with metadata:
@@ -165,8 +186,49 @@ def compose(
         config=config
     )
 
-    # Execute chain
+    # Execute chain (search → discovery)
     result_ctx = chain.execute(ctx)
+
+    # EPIC 5: Compute centrality for each result
+    if centrality_computer is not None and result_ctx.results:
+        # Create a mock QueryContext for signal evaluation
+        from ..context import Infrastructure, QueryContext
+        try:
+            # If we have SQLite store, get db from it
+            db = getattr(store, '_store', None) or getattr(store, 'db', None)
+            if db is None and hasattr(store, 'conn'):
+                db = store
+
+            if db is not None:
+                # Create minimal infrastructure for centrality
+                class MinimalInfra:
+                    def __init__(self, db):
+                        self.db = db
+                        self.git = None
+                        self.config = {}
+
+                mock_ctx = QueryContext(
+                    infrastructure=MinimalInfra(db),
+                    query=config,
+                    results=result_ctx.results,
+                    metadata={},
+                )
+
+                for chunk in result_ctx.results:
+                    centrality = centrality_computer.compute(chunk, mock_ctx)
+                    chunk['centrality'] = centrality
+
+                logger.debug(f"Computed centrality for {len(result_ctx.results)} chunks")
+        except Exception as e:
+            logger.warning(f"Centrality computation failed: {e}")
+
+    # EPIC 5: Apply final ranking (validity × centrality × recency)
+    if ranking_module is not None and result_ctx.results:
+        try:
+            result_ctx.results = ranking_module.rank(result_ctx.results, ctx)
+            logger.debug(f"Applied ranking to {len(result_ctx.results)} results")
+        except Exception as e:
+            logger.warning(f"Ranking failed: {e}")
 
     # Format response
     return {

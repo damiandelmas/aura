@@ -10,6 +10,7 @@ Two primary flows:
 
 EPIC 0 establishes the wiring with NoOp plugins.
 EPIC 4 adds vector infrastructure (Tier 3).
+EPIC 5 adds centrality & ranking.
 """
 
 from pathlib import Path
@@ -24,6 +25,8 @@ from .storage.vectors import VectorStorage, create_vector_storage
 from .manage import ManageOrchestrator, create_manage_orchestrator
 from .structure import StructureOrchestrator, create_structure_orchestrator
 from .retrieve import compose as retrieve_compose
+from .retrieve.centrality import CentralityComputer, create_centrality_computer
+from .retrieve.processors.ranking import RankingModule
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,10 @@ class Router:
 
     Owns infrastructure (db, git, config) and injects into domains.
     Two flows: index() and query().
+
+    EPIC 5: Centrality & Ranking
+    - CentralityComputer: Computes importance from graph structure
+    - RankingModule: Combines validity × centrality × recency
 
     Usage:
         router = create_router(project_root)
@@ -45,6 +52,9 @@ class Router:
         infrastructure: Infrastructure,
         manage: Optional[ManageOrchestrator] = None,
         structure: Optional[StructureOrchestrator] = None,
+        centrality: Optional[CentralityComputer] = None,
+        ranking: Optional[RankingModule] = None,
+        vector_storage: Optional[VectorStorage] = None,
     ):
         """Initialize Router with infrastructure and orchestrators
 
@@ -52,10 +62,17 @@ class Router:
             infrastructure: Shared resources (db, git, config)
             manage: ManageOrchestrator (default: NoOp)
             structure: StructureOrchestrator (default: NoOp)
+            centrality: CentralityComputer (EPIC 5)
+            ranking: RankingModule (EPIC 5)
+            vector_storage: VectorStorage for sibling density (Tier 3)
         """
         self.infrastructure = infrastructure
         self.manage = manage or create_manage_orchestrator()
         self.structure = structure or create_structure_orchestrator()
+        # EPIC 5: Centrality & Ranking
+        self.centrality = centrality
+        self.ranking = ranking or RankingModule()
+        self.vector_storage = vector_storage
 
     def index(self, files: List[Path]) -> List[Dict[str, Any]]:
         """Index files: COMPILE → STORAGE → MANAGE
@@ -166,11 +183,15 @@ class Router:
     def query(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Query: RETRIEVE → STRUCTURE
 
+        EPIC 5: Flow includes centrality & ranking.
+        search → discovery → centrality → ranking → structure
+
         Args:
             config: Query configuration with:
                 - search: {text, mode, filters}
                 - discovery: {siblings, temporal, genealogy}
                 - ranking: {phases: [...]}
+                - weights: {validity, centrality, recency} (optional)
 
         Returns:
             Presented results
@@ -180,12 +201,19 @@ class Router:
         # 1. Get store
         store = create_store(project_root=self.infrastructure.db.project_root)
 
-        # 2. Execute RETRIEVE via existing compose()
+        # 2. Execute RETRIEVE via compose() with EPIC 5 centrality & ranking
         query_text = config.get('search', {}).get('text', '')
-        result = retrieve_compose(query_text, config, store)
+        result = retrieve_compose(
+            query_text,
+            config,
+            store,
+            centrality_computer=self.centrality,
+            ranking_module=self.ranking,
+            vector_storage=self.vector_storage,
+        )
         chunks = result.get('results', [])
 
-        # 3. Apply STRUCTURE (NoOp for EPIC 0)
+        # 3. Apply STRUCTURE
         context = QueryContext(
             infrastructure=self.infrastructure,
             query=config,
@@ -232,6 +260,7 @@ def create_router(
     """Factory function to create Router with default configuration
 
     EPIC 4: Adds vector infrastructure (Tier 3 - graceful degradation).
+    EPIC 5: Adds centrality & ranking.
 
     Args:
         project_root: Project root directory
@@ -282,10 +311,22 @@ def create_router(
     )
     structure = create_structure_orchestrator()
 
+    # EPIC 5: Create centrality & ranking
+    centrality = create_centrality_computer(
+        db=db,
+        vector_storage=vector_storage,
+    )
+    ranking = RankingModule()
+
+    logger.info("EPIC 5: Centrality & Ranking enabled")
+
     return Router(
         infrastructure=infrastructure,
         manage=manage,
         structure=structure,
+        centrality=centrality,
+        ranking=ranking,
+        vector_storage=vector_storage,
     )
 
 

@@ -3,15 +3,180 @@
 Progressive refinement through ranking phases.
 Limits expensive operations (PageRank, graph centrality) to top-k finalists.
 
+EPIC 5: RankingModule - Final rank computation
+Formula: rank = validity × w_v + centrality × w_c + recency × w_r
+
+Recency decay: recency = 1.0 / (1 + days_old / 30)
+Default weights: validity=0.4, centrality=0.3, recency=0.3
+
 Performance: 25x fewer graph computations vs single-pass ranking.
 """
 
 from typing import Callable, Optional, List, Dict, Any
+from datetime import datetime
 import logging
 
 from ...core.chain import Processor, RetrievalContext
 
 logger = logging.getLogger(__name__)
+
+
+# Default weights for ranking formula
+DEFAULT_RANKING_WEIGHTS = {
+    'validity': 0.4,
+    'centrality': 0.3,
+    'recency': 0.3,
+}
+
+
+def compute_recency(timestamp: Optional[str], half_life_days: float = 30.0) -> float:
+    """Compute recency score from timestamp
+
+    Formula: recency = 1.0 / (1 + days_old / half_life)
+
+    Args:
+        timestamp: ISO format timestamp string
+        half_life_days: Days at which recency = 0.5
+
+    Returns:
+        Recency score (0.0-1.0)
+    """
+    if not timestamp:
+        return 0.5  # Neutral default
+
+    try:
+        # Parse timestamp (try multiple formats)
+        ts = None
+        for fmt in ['%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d']:
+            try:
+                ts = datetime.strptime(timestamp[:19], fmt)
+                break
+            except ValueError:
+                continue
+
+        if ts is None:
+            return 0.5
+
+        # Calculate days old
+        now = datetime.now()
+        days_old = (now - ts).days
+
+        # Recency formula: 1 / (1 + days_old / half_life)
+        recency = 1.0 / (1 + days_old / half_life_days)
+        return max(0.0, min(1.0, recency))
+
+    except Exception:
+        return 0.5
+
+
+def compute_rank(
+    validity: float,
+    centrality: float,
+    recency: float,
+    weights: Optional[Dict[str, float]] = None,
+) -> float:
+    """Compute final rank score
+
+    Formula: rank = validity × w_v + centrality × w_c + recency × w_r
+
+    Args:
+        validity: Validity score (0.0-1.0)
+        centrality: Centrality score (0.0-1.0)
+        recency: Recency score (0.0-1.0)
+        weights: Optional weight overrides
+
+    Returns:
+        Rank score (0.0-1.0)
+    """
+    w = weights or DEFAULT_RANKING_WEIGHTS
+    w_v = w.get('validity', DEFAULT_RANKING_WEIGHTS['validity'])
+    w_c = w.get('centrality', DEFAULT_RANKING_WEIGHTS['centrality'])
+    w_r = w.get('recency', DEFAULT_RANKING_WEIGHTS['recency'])
+
+    rank = (validity * w_v) + (centrality * w_c) + (recency * w_r)
+    return max(0.0, min(1.0, rank))
+
+
+class RankingModule:
+    """EPIC 5: Final rank computation
+
+    Combines validity (is it true?), centrality (is it important?),
+    and recency (is it current?) into a single rank score.
+
+    Formula: rank = validity × w_v + centrality × w_c + recency × w_r
+
+    Default weights: validity=0.4, centrality=0.3, recency=0.3
+    Supports query-time weight override.
+
+    Usage:
+        module = RankingModule()
+        ranked_chunks = module.rank(chunks, context)
+    """
+
+    def __init__(self, weights: Optional[Dict[str, float]] = None):
+        """Initialize RankingModule
+
+        Args:
+            weights: Default weight configuration
+        """
+        self.default_weights = weights or DEFAULT_RANKING_WEIGHTS
+
+    def rank(
+        self,
+        chunks: List[Dict[str, Any]],
+        context: Any,  # QueryContext or similar
+    ) -> List[Dict[str, Any]]:
+        """Compute rank for each chunk and sort
+
+        Args:
+            chunks: List of chunks with validity, centrality, timestamp
+            context: Query context (may contain weight overrides)
+
+        Returns:
+            Chunks sorted by rank (highest first), with rank field set
+        """
+        # Get weights (query override > default)
+        weights = self.default_weights.copy()
+        if hasattr(context, 'query') and isinstance(context.query, dict):
+            query_weights = context.query.get('weights', {})
+            weights.update(query_weights)
+
+        # Compute rank for each chunk
+        for chunk in chunks:
+            validity = chunk.get('validity', 0.5)
+            centrality = chunk.get('centrality', 0.5)
+
+            # Get timestamp from metadata or direct field
+            timestamp = chunk.get('timestamp')
+            if not timestamp and 'metadata' in chunk:
+                timestamp = chunk.get('metadata', {}).get('timestamp')
+
+            recency = compute_recency(timestamp)
+            rank = compute_rank(validity, centrality, recency, weights)
+
+            chunk['rank'] = rank
+            chunk['recency'] = recency  # Store for debugging
+
+        # Sort by rank descending
+        ranked = sorted(chunks, key=lambda c: c.get('rank', 0), reverse=True)
+
+        logger.debug(
+            f"RankingModule: ranked {len(ranked)} chunks "
+            f"(weights: v={weights['validity']}, c={weights['centrality']}, r={weights['recency']})"
+        )
+
+        return ranked
+
+
+class NoOpRankingModule(RankingModule):
+    """No-op ranking that returns chunks unchanged"""
+
+    def rank(
+        self,
+        chunks: List[Dict[str, Any]],
+        context: Any,
+    ) -> List[Dict[str, Any]]:
+        return chunks
 
 
 class RankingPhase:
@@ -170,3 +335,19 @@ def score_by_score(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 #     """Phase 3: Graph centrality (expensive, run on finalists only)"""
 #     # Use NetworkX to compute PageRank on result subgraph
 #     pass
+
+
+__all__ = [
+    # EPIC 5: Ranking formula
+    'RankingModule',
+    'NoOpRankingModule',
+    'compute_rank',
+    'compute_recency',
+    'DEFAULT_RANKING_WEIGHTS',
+    # Multi-phase ranking
+    'RankingPhase',
+    'MultiPhaseRanker',
+    # Scorer functions
+    'score_by_recency',
+    'score_by_score',
+]
