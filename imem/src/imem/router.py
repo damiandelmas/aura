@@ -5,13 +5,14 @@ It owns shared infrastructure (database, git access, configuration) and
 injects these into domain orchestrators.
 
 Two primary flows:
-- index(): COMPILE → STORAGE → MANAGE
+- index(): COMPILE → STORAGE → MANAGE (→ PATTERN if enabled)
 - query(): RETRIEVE → STRUCTURE
 
 EPIC 0 establishes the wiring with NoOp plugins.
 EPIC 4 adds vector infrastructure (Tier 3).
 EPIC 5 adds centrality & ranking.
 EPIC 6 adds STRUCTURE domain (curate, flip, reword, narrate).
+EPIC 7 adds pattern extraction (async, optional).
 """
 
 from pathlib import Path
@@ -75,11 +76,18 @@ class Router:
         self.ranking = ranking or RankingModule()
         self.vector_storage = vector_storage
 
-    def index(self, files: List[Path]) -> List[Dict[str, Any]]:
-        """Index files: COMPILE → STORAGE → MANAGE
+    def index(
+        self,
+        files: List[Path],
+        extract_patterns: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Index files: COMPILE → STORAGE → MANAGE (→ PATTERN if enabled)
+
+        EPIC 7: Optional pattern extraction via extract_patterns flag.
 
         Args:
             files: List of file paths to index
+            extract_patterns: If True, extract patterns after enrichment
 
         Returns:
             List of indexed chunks with enrichment
@@ -116,10 +124,39 @@ class Router:
         )
         self.manage.enrich(all_chunks, context)
 
-        # 5. Update stored chunks with enrichment
+        # 5. EPIC 7: Pattern extraction (async, optional)
+        if extract_patterns:
+            import asyncio
+            try:
+                asyncio.run(self._extract_patterns(all_chunks))
+            except Exception as e:
+                logger.warning(f"Pattern extraction failed: {e}")
+
+        # 6. Update stored chunks with enrichment (including pattern_layer)
         self._update_enriched_chunks(all_chunks)
 
         return all_chunks
+
+    async def _extract_patterns(self, chunks: List[Dict[str, Any]]) -> None:
+        """Extract pattern layers for chunks (async)
+
+        EPIC 7: Calls pattern extraction service to abstract implementation.
+        Mutates chunks in place to add pattern_layer field.
+
+        Args:
+            chunks: Chunks to extract patterns for
+        """
+        from .compile.pattern import create_pattern_extractor
+
+        extractor = create_pattern_extractor()
+        if not extractor.is_available:
+            logger.info("Pattern extraction service not available")
+            return
+
+        try:
+            await extractor.execute_batch(chunks)
+        finally:
+            await extractor.close()
 
     def index_phase(
         self,
@@ -226,7 +263,10 @@ class Router:
         return presented
 
     def _update_enriched_chunks(self, chunks: List[Dict[str, Any]]) -> None:
-        """Update stored chunks with enrichment fields"""
+        """Update stored chunks with enrichment fields
+
+        EPIC 7: Now includes pattern_layer field.
+        """
         db = self.infrastructure.db
         for chunk in chunks:
             try:
@@ -237,6 +277,7 @@ class Router:
                         git_status = ?,
                         centrality = ?,
                         rank = ?,
+                        pattern_layer = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                 ''', (
@@ -245,6 +286,7 @@ class Router:
                     chunk.get('git_status', 'unvalidated'),
                     chunk.get('centrality', 0.5),
                     chunk.get('rank', 0.5),
+                    chunk.get('pattern_layer'),  # EPIC 7
                     chunk['id'],
                 ))
             except Exception as e:

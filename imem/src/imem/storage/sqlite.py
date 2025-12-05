@@ -144,6 +144,10 @@ class SQLiteStore:
             if 'rank' not in columns:
                 self.conn.execute('ALTER TABLE chunks ADD COLUMN rank REAL DEFAULT 0.5')
 
+            # EPIC 7: Pattern Extraction
+            if 'pattern_layer' not in columns:
+                self.conn.execute('ALTER TABLE chunks ADD COLUMN pattern_layer TEXT')
+
         except Exception as e:
             logger.warning(f"Schema migration warning: {e}")
 

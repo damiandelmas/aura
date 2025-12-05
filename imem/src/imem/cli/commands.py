@@ -28,8 +28,13 @@ def imem():
 @click.option('--force', is_flag=True, help='Clear existing chunks before indexing')
 @click.option('--limit', type=int, help='Limit number of documents')
 @click.option('--collection', help='Override collection name for A/B testing')
-def index_cmd(phase, force, limit, collection):
-    """Index documentation phase to SQLite store"""
+@click.option('--extract-patterns', is_flag=True, help='Extract pattern layers via EPIC 7 service')
+def index_cmd(phase, force, limit, collection, extract_patterns):
+    """Index documentation phase to SQLite store
+
+    EPIC 7: Use --extract-patterns to abstract implementation chunks.
+    Requires PATTERN_SERVICE_URL env var to be set.
+    """
     try:
         controller = app.get_compile_controller()
         result = controller.index_phase(
@@ -41,6 +46,38 @@ def index_cmd(phase, force, limit, collection):
         click.echo(f"✅ Indexed {result.get('indexed', 0)} documents, {result.get('chunks', 0)} chunks")
         if result.get('errors'):
             click.echo(f"⚠️  Errors: {len(result['errors'])}")
+
+        # EPIC 7: Pattern extraction (optional)
+        if extract_patterns:
+            click.echo("🔄 Extracting patterns...")
+            import asyncio
+            from ..compile.pattern import create_pattern_extractor
+
+            extractor = create_pattern_extractor()
+            if extractor.is_available:
+                # Get chunks that were just indexed
+                store = app.get_store()
+                chunks = store.query(filters={'phase': phase}, limit=result.get('chunks', 1000))
+
+                async def run_extraction():
+                    await extractor.execute_batch(chunks)
+                    await extractor.close()
+
+                asyncio.run(run_extraction())
+
+                # Update pattern_layer in storage
+                for chunk in chunks:
+                    if chunk.get('pattern_layer'):
+                        store.conn.execute(
+                            'UPDATE chunks SET pattern_layer = ? WHERE id = ?',
+                            (chunk['pattern_layer'], chunk['id'])
+                        )
+                store.conn.commit()
+
+                pattern_count = sum(1 for c in chunks if c.get('pattern_layer'))
+                click.echo(f"✅ Extracted {pattern_count} patterns")
+            else:
+                click.echo("⚠️  Pattern service not available (set PATTERN_SERVICE_URL)")
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
         raise
