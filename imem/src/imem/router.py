@@ -9,7 +9,7 @@ Two primary flows:
 - query(): RETRIEVE → STRUCTURE
 
 EPIC 0 establishes the wiring with NoOp plugins.
-Later EPICs add real implementations incrementally.
+EPIC 4 adds vector infrastructure (Tier 3).
 """
 
 from pathlib import Path
@@ -18,7 +18,9 @@ import logging
 
 from .context import Infrastructure, IndexContext, QueryContext
 from .infrastructure.git import GitInterface, NoOpGitInterface, create_git_interface
+from .infrastructure.embedder import Embedder, create_embedder
 from .storage.sqlite import SQLiteStore
+from .storage.vectors import VectorStorage, create_vector_storage
 from .manage import ManageOrchestrator, create_manage_orchestrator
 from .structure import StructureOrchestrator, create_structure_orchestrator
 from .retrieve import compose as retrieve_compose
@@ -227,15 +229,17 @@ def create_router(
     project_root: Path,
     git_root: Optional[Path] = None,
     config: Optional[Dict[str, Any]] = None,
+    enable_vectors: bool = True,
 ) -> Router:
     """Factory function to create Router with default configuration
 
-    EPIC 1: Uses real GitInterface when git repo detected.
+    EPIC 4: Adds vector infrastructure (Tier 3 - graceful degradation).
 
     Args:
         project_root: Project root directory
         git_root: Git repository root (default: project_root)
         config: Runtime configuration overrides
+        enable_vectors: Whether to attempt loading vector infrastructure
 
     Returns:
         Configured Router instance
@@ -258,8 +262,26 @@ def create_router(
         config=effective_config,
     )
 
-    # Create orchestrators with EPIC 1 implementations
-    manage = create_manage_orchestrator()
+    # EPIC 4: Create vector infrastructure (Tier 3)
+    embedder: Optional[Embedder] = None
+    vector_storage: Optional[VectorStorage] = None
+
+    if enable_vectors:
+        embedder = create_embedder()
+        if embedder.is_available:
+            vector_storage = create_vector_storage(db, embedder)
+            if vector_storage.is_available:
+                logger.info("Vector infrastructure enabled (Tier 3)")
+            else:
+                logger.info("VectorStorage unavailable, sibling edges disabled")
+        else:
+            logger.info("Embedder unavailable, vector features disabled")
+
+    # Create orchestrators with EPIC 4 implementations
+    manage = create_manage_orchestrator(
+        vector_storage=vector_storage,
+        embedder=embedder,
+    )
     structure = create_structure_orchestrator()
 
     return Router(

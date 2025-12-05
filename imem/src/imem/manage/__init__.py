@@ -42,6 +42,9 @@ from .validity import TemporalSignal, GitSignal
 # EPIC 2 imports
 from .graph import ValidatedByBuilder, SupersededByBuilder
 
+# EPIC 4 imports
+from .graph import SiblingBuilder, NoOpSiblingBuilder, create_sibling_builder
+
 # EPIC 3 imports
 from .validity.propagation import PropagationSignal, is_anchored, get_anchored_ids
 
@@ -391,21 +394,26 @@ class ManageOrchestrator:
             logger.warning(f"Failed to persist validity scores: {e}")
 
 
-def create_manage_orchestrator() -> ManageOrchestrator:
-    """Factory for ManageOrchestrator with EPIC 3 implementations
+def create_manage_orchestrator(
+    vector_storage=None,
+    embedder=None,
+) -> ManageOrchestrator:
+    """Factory for ManageOrchestrator with EPIC 4 implementations
 
-    EPIC 3: Validity Propagation - Three-phase validity computation.
+    EPIC 4: sqlite-vec Vectors
     - Link: Real timestamp cascade, commit_sha attachment
     - Signatures: Real code block extraction
     - Validity: Temporal + Git + Propagation signals (three-phase)
-    - Graph: ValidatedBy + SupersededBy builders
-
-    SiblingBuilder deferred to EPIC 4 (needs vectors).
+    - Graph: ValidatedBy + SupersededBy + SiblingBuilder (Tier 3)
 
     Three-phase flow:
     1. Phase 1: Anchored chunks scored with temporal + git
-    2. Phase 2: Edges built (needs anchored validity)
+    2. Phase 2: Edges built (includes sibling if vectors available)
     3. Phase 3: Unanchored chunks scored with temporal + propagation
+
+    Args:
+        vector_storage: Optional VectorStorage for sibling edges (Tier 3)
+        embedder: Optional Embedder for sibling edges (Tier 3)
     """
     # Create validity computer with all signals (EPIC 3)
     validity_computer = ValidityComputer(
@@ -416,13 +424,21 @@ def create_manage_orchestrator() -> ManageOrchestrator:
         ]
     )
 
-    # Create edge orchestrator with EPIC 2 builders
-    edge_orchestrator = EdgeOrchestrator(
-        builders=[
-            ValidatedByBuilder(),
-            SupersededByBuilder(),
-        ]
+    # Build list of edge builders
+    builders = [
+        ValidatedByBuilder(),
+        SupersededByBuilder(),
+    ]
+
+    # EPIC 4: Add SiblingBuilder if vector infrastructure available
+    sibling_builder = create_sibling_builder(
+        vector_storage=vector_storage,
+        embedder=embedder,
     )
+    builders.append(sibling_builder)
+
+    # Create edge orchestrator with all builders
+    edge_orchestrator = EdgeOrchestrator(builders=builders)
 
     return ManageOrchestrator(
         link=LinkModule(),
@@ -471,6 +487,10 @@ __all__ = [
     'PropagationSignal',
     'is_anchored',
     'get_anchored_ids',
+    # EPIC 4 modules
+    'SiblingBuilder',
+    'NoOpSiblingBuilder',
+    'create_sibling_builder',
     # Legacy exports
     'introspect',
     'get_coverage_stats',

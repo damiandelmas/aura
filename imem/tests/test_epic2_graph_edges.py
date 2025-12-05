@@ -302,11 +302,14 @@ class TestManageOrchestratorIntegration:
         orchestrator = create_manage_orchestrator()
 
         # Should have real graph orchestrator, not NoOp
-        assert len(orchestrator.graph.builders) == 2
+        # EPIC 4 adds SiblingBuilder (or NoOpSiblingBuilder)
+        assert len(orchestrator.graph.builders) >= 2
 
         builder_names = {b.name for b in orchestrator.graph.builders}
         assert 'validated_by' in builder_names
         assert 'superseded_by' in builder_names
+        # EPIC 4: sibling or sibling_noop should be present
+        assert any('sibling' in name for name in builder_names)
 
 
 if __name__ == '__main__':
