@@ -68,9 +68,11 @@ class EdgeCountSignal(CentralitySignal):
             )
 
         try:
+            # Count both to_id AND from_id because sibling edges use sorted normalization
+            # (min_id, max_id). Half the chunks appear in from_id, half in to_id.
             cursor = self.db.conn.execute(
-                'SELECT COUNT(*) FROM edges WHERE to_id = ?',
-                (chunk_id,)
+                'SELECT COUNT(*) FROM edges WHERE to_id = ? OR from_id = ?',
+                (chunk_id, chunk_id)
             )
             count = cursor.fetchone()[0]
 

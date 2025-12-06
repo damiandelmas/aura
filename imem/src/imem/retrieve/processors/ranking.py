@@ -135,11 +135,11 @@ class RankingModule:
         Returns:
             Chunks sorted by rank (highest first), with rank field set
         """
-        # Get weights (query override > default)
+        # Get weights (config override > default)
         weights = self.default_weights.copy()
-        if hasattr(context, 'query') and isinstance(context.query, dict):
-            query_weights = context.query.get('weights', {})
-            weights.update(query_weights)
+        if hasattr(context, 'config') and isinstance(context.config, dict):
+            config_weights = context.config.get('weights', {})
+            weights.update(config_weights)
 
         # Compute rank for each chunk
         for chunk in chunks:

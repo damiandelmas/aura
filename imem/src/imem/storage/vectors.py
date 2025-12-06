@@ -59,9 +59,22 @@ class VectorFilters:
     Attributes:
         phase: Filter by phase (design, develop, etc.)
         section_type: Filter by section type
+        git_status: Filter by git validation status
+        validity_min: Minimum validity threshold
+        validity_max: Maximum validity threshold
+        section_name: Filter by section name
+        session_id: Filter by session ID
+        file_path: Filter by file path (substring match)
     """
     phase: Optional[str] = None
     section_type: Optional[str] = None
+    # Extended filters for semantic mode
+    git_status: Optional[str] = None
+    validity_min: Optional[float] = None
+    validity_max: Optional[float] = None
+    section_name: Optional[str] = None
+    session_id: Optional[str] = None
+    file_path: Optional[str] = None
 
 
 class VectorStorage(ABC):
@@ -401,26 +414,71 @@ class SQLiteVecStorage(VectorStorage):
         neighbors: List[Neighbor],
         filters: VectorFilters,
     ) -> List[Neighbor]:
-        """Apply metadata filters to neighbors (post-filter)"""
-        if not filters.phase and not filters.section_type:
+        """Apply metadata filters to neighbors (post-filter)
+
+        Post-filters KNN results using both vector_meta and chunks table.
+        This enables semantic search with all metadata filters.
+        """
+        # Check if any filters are set
+        has_basic_filters = filters.phase or filters.section_type
+        has_extended_filters = (
+            filters.git_status or
+            filters.validity_min is not None or
+            filters.validity_max is not None or
+            filters.section_name or
+            filters.session_id or
+            filters.file_path
+        )
+
+        if not has_basic_filters and not has_extended_filters:
             return neighbors
 
         filtered = []
         for neighbor in neighbors:
-            # Look up metadata
+            # Look up full chunk data from chunks table for extended filtering
             cursor = self.db.conn.execute('''
-                SELECT phase, section_type FROM vector_meta
-                WHERE chunk_id = ?
+                SELECT phase, section_type, git_status, validity, section_name,
+                       session_id, file_path
+                FROM chunks
+                WHERE id = ?
             ''', (neighbor.chunk_id,))
             row = cursor.fetchone()
 
-            if row:
+            if not row:
+                # Fallback to vector_meta for basic filters
+                cursor = self.db.conn.execute('''
+                    SELECT phase, section_type FROM vector_meta
+                    WHERE chunk_id = ?
+                ''', (neighbor.chunk_id,))
+                row = cursor.fetchone()
+                if not row:
+                    continue
                 phase, section_type = row
-                if filters.phase and phase != filters.phase:
-                    continue
-                if filters.section_type and section_type != filters.section_type:
-                    continue
-                filtered.append(neighbor)
+                git_status = validity = section_name = session_id = file_path = None
+            else:
+                phase, section_type, git_status, validity, section_name, session_id, file_path = row
+
+            # Basic filters
+            if filters.phase and phase != filters.phase:
+                continue
+            if filters.section_type and section_type != filters.section_type:
+                continue
+
+            # Extended filters
+            if filters.git_status and git_status != filters.git_status:
+                continue
+            if filters.validity_min is not None and (validity is None or validity < filters.validity_min):
+                continue
+            if filters.validity_max is not None and (validity is None or validity > filters.validity_max):
+                continue
+            if filters.section_name and section_name != filters.section_name:
+                continue
+            if filters.session_id and session_id != filters.session_id:
+                continue
+            if filters.file_path and (file_path is None or filters.file_path not in file_path):
+                continue
+
+            filtered.append(neighbor)
 
         return filtered
 

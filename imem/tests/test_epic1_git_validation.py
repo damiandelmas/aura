@@ -281,12 +281,15 @@ class TestLinkModule:
         assert result.year == 2025
 
     def test_parse_timestamp_datetime_object(self):
-        """Handles datetime objects directly"""
+        """Handles datetime objects directly, normalizing to UTC"""
+        from datetime import timezone
         module = LinkModule()
 
         dt = datetime(2025, 1, 15)
         result = module._parse_timestamp(dt)
-        assert result == dt
+        # Now returns UTC-normalized (naive assumed UTC)
+        expected = datetime(2025, 1, 15, tzinfo=timezone.utc)
+        assert result == expected
 
     def test_execute_populates_timestamp(self):
         """Execute populates timestamp and source"""

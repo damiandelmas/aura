@@ -87,10 +87,7 @@ class NarrateModule(Module):
         Returns:
             Formatted output (MarkdownOutput, JSONOutput, or ContextOutput)
         """
-        if not chunks:
-            return self._empty_output()
-
-        # Determine output format from query config
+        # Determine output format from query config (needed for empty results too)
         query_config = getattr(context, 'query', {}) or {}
         format_str = query_config.get('output_format', self.default_format.value)
 
@@ -98,6 +95,9 @@ class NarrateModule(Module):
             output_format = OutputFormat(format_str)
         except ValueError:
             output_format = self.default_format
+
+        if not chunks:
+            return self._empty_output(output_format)
 
         # Apply formatter
         if output_format == OutputFormat.MARKDOWN:
@@ -109,12 +109,30 @@ class NarrateModule(Module):
         else:
             return self._format_markdown(chunks, context)
 
-    def _empty_output(self) -> MarkdownOutput:
-        """Return empty output for no chunks"""
-        return MarkdownOutput(
-            content="*No results found.*",
-            sections=[],
-        )
+    def _empty_output(self, output_format: OutputFormat = OutputFormat.MARKDOWN) -> Output:
+        """Return empty output for no chunks, respecting requested format
+
+        Args:
+            output_format: Desired output format
+
+        Returns:
+            Empty output in the requested format
+        """
+        if output_format == OutputFormat.JSON:
+            return JSONOutput(
+                chunks=[],
+                metadata={'count': 0, 'message': 'No results found'},
+            )
+        elif output_format == OutputFormat.CONTEXT:
+            return ContextOutput(
+                context='',
+                confidence=0.0,
+            )
+        else:
+            return MarkdownOutput(
+                content="*No results found.*",
+                sections=[],
+            )
 
     # ========================================================================
     # Markdown Formatter

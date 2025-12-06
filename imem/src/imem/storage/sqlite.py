@@ -18,6 +18,68 @@ from ..config import config
 logger = logging.getLogger(__name__)
 
 
+def _apply_operator_filter(
+    sql: str,
+    params: list,
+    field: str,
+    filter_value
+) -> tuple:
+    """Apply MongoDB-style operator filter to SQL query
+
+    Supports:
+        {'validity': {'$gte': 0.8}}              # validity >= 0.8
+        {'validity': {'$lte': 0.5}}              # validity <= 0.5
+        {'validity': {'$gte': 0.3, '$lte': 0.7}} # range
+        {'validity': 0.5}                         # exact match
+        {'git_status': {'$ne': 'contradicted'}}  # not equal
+        {'phase': {'$in': ['develop', 'design']}} # in list
+
+    Args:
+        sql: Current SQL query string
+        params: Current query parameters list
+        field: Database column name
+        filter_value: Filter value (scalar or dict with operators)
+
+    Returns:
+        Tuple of (updated_sql, updated_params)
+    """
+    if filter_value is None:
+        return sql, params
+
+    if isinstance(filter_value, dict):
+        # MongoDB-style operators
+        if '$gte' in filter_value:
+            sql += f" AND {field} >= ?"
+            params.append(filter_value['$gte'])
+        if '$gt' in filter_value:
+            sql += f" AND {field} > ?"
+            params.append(filter_value['$gt'])
+        if '$lte' in filter_value:
+            sql += f" AND {field} <= ?"
+            params.append(filter_value['$lte'])
+        if '$lt' in filter_value:
+            sql += f" AND {field} < ?"
+            params.append(filter_value['$lt'])
+        if '$ne' in filter_value:
+            sql += f" AND {field} != ?"
+            params.append(filter_value['$ne'])
+        if '$eq' in filter_value:
+            sql += f" AND {field} = ?"
+            params.append(filter_value['$eq'])
+        if '$in' in filter_value:
+            values = filter_value['$in']
+            if values:
+                placeholders = ','.join(['?' for _ in values])
+                sql += f" AND {field} IN ({placeholders})"
+                params.extend(values)
+    else:
+        # Direct value = exact match
+        sql += f" AND {field} = ?"
+        params.append(filter_value)
+
+    return sql, params
+
+
 class SQLiteStore:
     """Store chunks in SQLite for fast metadata queries"""
 
@@ -188,11 +250,15 @@ class SQLiteStore:
 
         Args:
             filters: Dictionary of filter conditions:
-                - phase: Exact phase match
-                - section_type: Exact section type match
+                - phase: Exact match or MongoDB-style operators
+                - section_type: Exact match or operators
+                - section_name: Exact match or operators
                 - file_path: Substring match (LIKE)
                 - timestamp_after: Greater than or equal to timestamp
                 - text: Content search (substring)
+                - validity: Numeric with MongoDB operators {'$gte': 0.8}
+                - centrality: Numeric with MongoDB operators
+                - git_status: String with operators {'$ne': 'contradicted'}
             limit: Maximum number of results
 
         Returns:
@@ -204,13 +270,17 @@ class SQLiteStore:
         sql = "SELECT * FROM chunks WHERE 1=1"
         params = []
 
-        if filters.get('phase'):
-            sql += " AND phase = ?"
-            params.append(filters['phase'])
+        # Phase filter (supports operators)
+        if 'phase' in filters:
+            sql, params = _apply_operator_filter(sql, params, 'phase', filters['phase'])
 
-        if filters.get('section_type'):
-            sql += " AND section_type = ?"
-            params.append(filters['section_type'])
+        # Section type filter (supports operators)
+        if 'section_type' in filters:
+            sql, params = _apply_operator_filter(sql, params, 'section_type', filters['section_type'])
+
+        # Section name filter (supports operators)
+        if 'section_name' in filters:
+            sql, params = _apply_operator_filter(sql, params, 'section_name', filters['section_name'])
 
         if filters.get('file_path'):
             sql += " AND file_path LIKE ?"
@@ -228,6 +298,18 @@ class SQLiteStore:
         if filters.get('text'):
             sql += " AND content LIKE ?"
             params.append(f"%{filters['text']}%")
+
+        # Validity filter (MongoDB-style operators)
+        if 'validity' in filters:
+            sql, params = _apply_operator_filter(sql, params, 'validity', filters['validity'])
+
+        # Centrality filter (MongoDB-style operators)
+        if 'centrality' in filters:
+            sql, params = _apply_operator_filter(sql, params, 'centrality', filters['centrality'])
+
+        # Git status filter (MongoDB-style operators)
+        if 'git_status' in filters:
+            sql, params = _apply_operator_filter(sql, params, 'git_status', filters['git_status'])
 
         # Order by timestamp descending (most recent first)
         sql += " ORDER BY timestamp DESC"

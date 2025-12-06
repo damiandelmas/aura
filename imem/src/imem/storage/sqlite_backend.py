@@ -139,10 +139,28 @@ class SQLiteVectorStore:
             query_embedding = self._embedder.embed_single(query)
 
             # 2. Build vector filters from metadata filters
+            # Pass all filterable fields through for post-filtering after KNN
             from .vectors import VectorFilters
+
+            # Extract validity range from MongoDB-style operators if present
+            validity_filter = filters.get('validity', {})
+            validity_min = None
+            validity_max = None
+            if isinstance(validity_filter, dict):
+                validity_min = validity_filter.get('$gte') or validity_filter.get('$gt')
+                validity_max = validity_filter.get('$lte') or validity_filter.get('$lt')
+            elif isinstance(validity_filter, (int, float)):
+                validity_min = validity_max = validity_filter
+
             vector_filters = VectorFilters(
                 phase=filters.get('phase'),
                 section_type=filters.get('section_type'),
+                git_status=filters.get('git_status'),
+                validity_min=validity_min,
+                validity_max=validity_max,
+                section_name=filters.get('section_name'),
+                session_id=filters.get('session_id'),
+                file_path=filters.get('file_path'),
             )
 
             # 3. KNN query

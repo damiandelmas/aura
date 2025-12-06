@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Any, Dict, TYPE_CHECKING
 
 from ...protocols import Signal, SignalResult
+from ..utils import to_utc, utc_now
 
 if TYPE_CHECKING:
     from ...context import IndexContext
@@ -79,10 +80,9 @@ class TemporalSignal(Signal):
                 )
 
         # Calculate age for informational purposes
-        now = datetime.now()
-        if timestamp.tzinfo:
-            # Make naive for comparison
-            timestamp = timestamp.replace(tzinfo=None)
+        # Normalize both timestamps to UTC-aware for safe comparison
+        now = utc_now()
+        timestamp = to_utc(timestamp)
 
         age_days = (now - timestamp).days
 

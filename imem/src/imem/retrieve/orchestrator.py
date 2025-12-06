@@ -195,7 +195,8 @@ def compose(
         from ..context import Infrastructure, QueryContext
         try:
             # If we have SQLite store, get db from it
-            db = getattr(store, '_store', None) or getattr(store, 'db', None)
+            # SQLiteVectorStore wraps SQLiteStore in .store attribute
+            db = getattr(store, 'store', None) or getattr(store, '_store', None) or getattr(store, 'db', None)
             if db is None and hasattr(store, 'conn'):
                 db = store
 
@@ -229,6 +230,12 @@ def compose(
             logger.debug(f"Applied ranking to {len(result_ctx.results)} results")
         except Exception as e:
             logger.warning(f"Ranking failed: {e}")
+
+    # Enforce limit after discovery expansion and ranking
+    # Discovery may expand beyond original limit; this ensures final count matches request
+    limit = config.get('limit')
+    if limit and result_ctx.results:
+        result_ctx.results = result_ctx.results[:limit]
 
     # Format response
     return {

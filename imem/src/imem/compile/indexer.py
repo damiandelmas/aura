@@ -15,6 +15,29 @@ from .parser import parse_markdown_file, parse_conversation_file
 logger = logging.getLogger(__name__)
 
 
+def infer_phase(file_path: str) -> str:
+    """Infer phase from file path
+
+    Args:
+        file_path: Path to check for phase patterns
+
+    Returns:
+        Inferred phase name or 'unknown'
+    """
+    path_lower = file_path.lower()
+
+    if '/develop/' in path_lower or path_lower.endswith('/develop'):
+        return 'develop'
+    if '/design/' in path_lower or path_lower.endswith('/design'):
+        return 'design'
+    if '/designate/' in path_lower or path_lower.endswith('/designate'):
+        return 'designate'
+    if '/document/' in path_lower or path_lower.endswith('/document'):
+        return 'document'
+
+    return 'unknown'
+
+
 class DocumentIndexer:
     """Compiles markdown documents into searchable chunks
 
@@ -143,6 +166,104 @@ class DocumentIndexer:
             'skipped': 0,
             'errors': errors,
             'collection_name': collection_name
+        }
+
+    def index_directory(
+        self,
+        directory: Path,
+        force: bool = False,
+        limit: Optional[int] = None,
+        collection_override: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Index any directory, inferring phase from path
+
+        This is the flexible entry point for CLI usage. It works with any
+        directory structure, not just .context/phase.
+
+        Args:
+            directory: Directory to index (phase inferred from path)
+            force: If True, clear existing chunks before indexing
+            limit: Optional limit for number of documents
+            collection_override: Optional collection name override
+
+        Returns:
+            Dictionary with indexing results
+        """
+        directory = Path(directory).resolve()
+        if not directory.exists():
+            raise ValueError(f"Directory not found: {directory}")
+
+        # Infer phase from path
+        phase = infer_phase(str(directory))
+        logger.info(f"Inferred phase '{phase}' from path: {directory}")
+
+        # Determine project root (parent of context folder, or directory itself)
+        project_root = directory.parent.parent if 'context' in str(directory).lower() else directory
+
+        # Get collection name
+        if collection_override:
+            collection_name = collection_override
+        else:
+            try:
+                collections = self.registry.get_project_info(project_root).get('collections')
+                if not collections:
+                    collections = self.registry.register_project(project_root)
+                collection_name = collections.get('context', 'default')
+            except Exception:
+                collection_name = 'default'
+
+        # Clear existing if force
+        if force:
+            logger.info(f"Force mode: clearing existing chunks...")
+            try:
+                self.store.delete_collection(collection_name)
+            except Exception as e:
+                logger.warning(f"Could not clear collection: {e}")
+
+        # Index all .md files in directory
+        total_indexed = 0
+        total_chunks = 0
+        errors = []
+
+        md_files = list(directory.rglob("*.md"))
+        if limit:
+            md_files = md_files[:limit]
+
+        logger.info(f"Found {len(md_files)} markdown files in {directory}")
+
+        for md_file in md_files:
+            try:
+                # Infer phase per-file (handles nested structures)
+                file_phase = infer_phase(str(md_file))
+                if file_phase == 'unknown':
+                    file_phase = phase  # Fall back to directory phase
+
+                chunks = parse_markdown_file(
+                    md_file,
+                    phase=file_phase,
+                    collection_name=collection_name
+                )
+
+                if chunks:
+                    self.store.upsert(chunks)
+                    total_indexed += 1
+                    total_chunks += len(chunks)
+                    logger.debug(f"Indexed {len(chunks)} chunks from {md_file.name}")
+
+            except Exception as e:
+                error_msg = f"{md_file.name}: {e}"
+                logger.error(error_msg)
+                errors.append(error_msg)
+
+        logger.info(f"Indexed {total_indexed} files, {total_chunks} chunks")
+
+        return {
+            'indexed': total_indexed,
+            'chunks': total_chunks,
+            'skipped': 0,
+            'errors': errors,
+            'collection_name': collection_name,
+            'phase': phase,
         }
 
     def index_conversations(

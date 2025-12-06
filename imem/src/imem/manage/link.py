@@ -8,13 +8,14 @@ LinkModule connects documentation chunks to git history:
 EPIC 1 implementation.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import logging
 import os
 
 from ..protocols import Module
+from .utils import to_utc, utc_now
 
 if TYPE_CHECKING:
     from ..context import IndexContext
@@ -127,7 +128,8 @@ class LinkModule(Module):
                     full_path = Path(full_path)
                 file_full_path = full_path / file_path
                 if file_full_path.exists():
-                    mtime = datetime.fromtimestamp(os.path.getmtime(file_full_path))
+                    # Use UTC-aware mtime
+                    mtime = datetime.fromtimestamp(os.path.getmtime(file_full_path), tz=timezone.utc)
                     return mtime, 'mtime'
             except (OSError, ValueError) as e:
                 logger.debug(f"Could not get mtime for {file_path}: {e}")
@@ -137,26 +139,28 @@ class LinkModule(Module):
         if indexed_at:
             ts = self._parse_timestamp(indexed_at)
             if ts:
-                return ts, 'indexed'
+                return to_utc(ts), 'indexed'
 
-        return datetime.now(), 'indexed'
+        return utc_now(), 'indexed'
 
     def _parse_timestamp(self, value: Any) -> Optional[datetime]:
-        """Parse timestamp from various formats"""
+        """Parse timestamp from various formats, returning UTC-aware datetime"""
         if isinstance(value, datetime):
-            return value
+            return to_utc(value)
 
         if isinstance(value, str):
-            # Try ISO format
+            # Try ISO format (handles timezone offsets like -0700)
             try:
-                return datetime.fromisoformat(value.replace('Z', '+00:00'))
+                parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                return to_utc(parsed)
             except ValueError:
                 pass
 
-            # Try common date formats
+            # Try common date formats (naive, will be assumed UTC)
             for fmt in ['%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%Y/%m/%d']:
                 try:
-                    return datetime.strptime(value, fmt)
+                    parsed = datetime.strptime(value, fmt)
+                    return to_utc(parsed)
                 except ValueError:
                     continue
 
@@ -179,6 +183,9 @@ class LinkModule(Module):
 
         git = context.infrastructure.git
 
+        # Ensure timestamp is UTC-aware for comparison
+        timestamp = to_utc(timestamp)
+
         # Search within time window
         since = timestamp - timedelta(days=self.COMMIT_WINDOW_DAYS)
         until = timestamp + timedelta(days=self.COMMIT_WINDOW_DAYS)
@@ -192,10 +199,10 @@ class LinkModule(Module):
         if not commits:
             return None
 
-        # Find commit nearest to timestamp
+        # Find commit nearest to timestamp (normalize commit timestamps to UTC)
         nearest = min(
             commits,
-            key=lambda c: abs((c.timestamp - timestamp).total_seconds())
+            key=lambda c: abs((to_utc(c.timestamp) - timestamp).total_seconds())
         )
 
         return nearest.sha
