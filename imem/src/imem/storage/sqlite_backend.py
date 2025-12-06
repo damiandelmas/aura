@@ -2,14 +2,20 @@
 
 Wraps the existing SQLiteStore class to implement the unified VectorStore interface.
 Enables backend-agnostic code while maintaining all SQLite-specific functionality.
+
+EPIC 4/Review Pass 2: Semantic search via sqlite-vec + sentence-transformers.
 """
 
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import logging
 
 from .protocol import SearchResult, StorageError
 from .sqlite import SQLiteStore
+
+if TYPE_CHECKING:
+    from ..infrastructure.embedder import Embedder
+    from .vectors import VectorStorage
 
 logger = logging.getLogger(__name__)
 
@@ -20,31 +26,45 @@ class SQLiteVectorStore:
     Features:
     - Fast metadata-only queries (< 10ms for 10k chunks)
     - Full discovery primitives (siblings, genealogy, temporal)
-    - Optional vector support via sqlite-vss extension (future)
-    - No external dependencies (pure SQLite)
+    - Semantic vector search via sqlite-vec (Tier 3)
+    - Graceful degradation when vectors unavailable
 
     Performance:
     - Metadata search: < 10ms
-    - Discovery queries: < 5ms
+    - Semantic search: ~50-100ms (KNN query)
     - Index 10k chunks: ~2 seconds
     """
 
-    def __init__(self, project_root: Path, enable_vectors: bool = False):
+    def __init__(
+        self,
+        project_root: Path,
+        enable_vectors: bool = False,
+        embedder: Optional['Embedder'] = None,
+        vector_storage: Optional['VectorStorage'] = None,
+    ):
         """Initialize SQLite backend
 
         Args:
             project_root: Project root directory (creates .imem/metadata.db)
-            enable_vectors: If True, load sqlite-vss for vector similarity
-                           (Currently not implemented - reserved for future)
+            enable_vectors: If True, enable vector similarity search
+            embedder: Embedder for generating query embeddings (Tier 3)
+            vector_storage: VectorStorage for KNN queries (Tier 3)
         """
         self.store = SQLiteStore(project_root)
         self.enable_vectors = enable_vectors
+        self._embedder = embedder
+        self._vector_storage = vector_storage
 
-        if enable_vectors:
+        # Log vector capability status
+        if embedder and vector_storage:
+            if embedder.is_available and vector_storage.is_available:
+                logger.info("SQLiteVectorStore: Semantic search enabled (Tier 3)")
+            else:
+                logger.info("SQLiteVectorStore: Vector infrastructure available but not ready")
+        elif enable_vectors:
             logger.warning(
-                "Vector support not yet implemented for SQLite backend. "
-                "Falling back to metadata + text search. "
-                "Future: sqlite-vss extension for HNSW vectors."
+                "enable_vectors=True but embedder/vector_storage not provided. "
+                "Semantic search will fall back to text search."
             )
 
     def upsert(self, chunks: List[Dict[str, Any]]) -> None:
@@ -66,27 +86,106 @@ class SQLiteVectorStore:
         query: str,
         limit: int = 10,
         filters: Optional[Dict[str, Any]] = None,
-        use_vector: bool = True
+        mode: str = 'semantic'
     ) -> List[SearchResult]:
-        """Search for chunks by metadata or text similarity
+        """Search for chunks by metadata or vector similarity
 
         SQLite search strategy:
-        1. If use_vector=False: Pure metadata filters (< 10ms)
-        2. If use_vector=True: Metadata filters + text substring search
-        3. Future: Vector similarity via sqlite-vss extension
+        1. mode='metadata': Pure metadata + text substring filters (< 10ms)
+        2. mode='semantic' AND vector infrastructure available:
+           Semantic KNN search via sqlite-vec (~50-100ms)
+        3. Graceful fallback to text search if vectors unavailable
 
         Args:
-            query: Search query text (used for text substring match)
+            query: Search query text
             limit: Maximum number of results
             filters: Metadata filters (phase, section_type, file_path, etc.)
-            use_vector: Ignored for now (always does metadata + text search)
+            mode: Search mode - 'semantic' (vector KNN) or 'metadata' (text/SQL)
 
         Returns:
-            List of SearchResult objects ordered by relevance
+            List of SearchResult objects ordered by relevance/similarity
         """
         if filters is None:
             filters = {}
 
+        # Attempt semantic search if requested and available
+        if mode == 'semantic' and query and query.strip():
+            semantic_results = self._semantic_search(query, limit, filters)
+            if semantic_results is not None:
+                return semantic_results
+            # Fall through to text search if semantic search not available
+
+        # Text/metadata search (fallback or explicit)
+        return self._text_search(query, limit, filters)
+
+    def _semantic_search(
+        self,
+        query: str,
+        limit: int,
+        filters: Dict[str, Any]
+    ) -> Optional[List[SearchResult]]:
+        """Semantic vector similarity search via sqlite-vec
+
+        Returns None if vector infrastructure unavailable (graceful degradation).
+        """
+        # Check vector infrastructure availability
+        if not self._embedder or not self._vector_storage:
+            return None
+        if not self._embedder.is_available or not self._vector_storage.is_available:
+            return None
+
+        try:
+            # 1. Embed the query
+            query_embedding = self._embedder.embed_single(query)
+
+            # 2. Build vector filters from metadata filters
+            from .vectors import VectorFilters
+            vector_filters = VectorFilters(
+                phase=filters.get('phase'),
+                section_type=filters.get('section_type'),
+            )
+
+            # 3. KNN query
+            # Note: threshold=0.0 returns all k neighbors, let ranking handle filtering
+            neighbors = self._vector_storage.query_knn(
+                embedding=query_embedding,
+                k=limit,
+                threshold=0.0,  # No threshold - return all k, ranking handles quality
+                filters=vector_filters,
+            )
+
+            if not neighbors:
+                logger.debug(f"Semantic search returned 0 results for '{query[:50]}...'")
+                return None  # Fall back to text search
+
+            # 4. Fetch full chunk data for neighbors
+            neighbor_ids = [n.chunk_id for n in neighbors]
+            similarity_map = {n.chunk_id: n.similarity for n in neighbors}
+
+            # Get chunks by IDs
+            results = self.get_by_ids(neighbor_ids)
+
+            # Update scores with similarity
+            for result in results:
+                result.score = similarity_map.get(result.id, 0.5)
+
+            # Sort by similarity (highest first)
+            results.sort(key=lambda r: r.score, reverse=True)
+
+            logger.info(f"search.semantic: k={len(results)} query='{query[:50]}' filters={filters}")
+            return results
+
+        except Exception as e:
+            logger.warning(f"Semantic search failed, falling back to text: {e}")
+            return None
+
+    def _text_search(
+        self,
+        query: str,
+        limit: int,
+        filters: Dict[str, Any]
+    ) -> List[SearchResult]:
+        """Text substring + metadata search (fallback)"""
         # Add text query to filters if provided
         if query and query.strip():
             filters['text'] = query
@@ -101,7 +200,7 @@ class SQLiteVectorStore:
                 results.append(SearchResult(
                     id=chunk['id'],
                     content=chunk.get('content', ''),
-                    score=1.0,  # Metadata-only search doesn't have similarity scores
+                    score=1.0,  # Text search doesn't have similarity scores
                     metadata={
                         'file_path': chunk.get('file_path'),
                         'phase': chunk.get('phase'),

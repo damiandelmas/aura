@@ -43,6 +43,9 @@ class Router:
     - CentralityComputer: Computes importance from graph structure
     - RankingModule: Combines validity × centrality × recency
 
+    Review Pass 2: Semantic search
+    - Embedder + VectorStorage enable query-time semantic search
+
     Usage:
         router = create_router(project_root)
         chunks = router.index(files)
@@ -57,6 +60,7 @@ class Router:
         centrality: Optional[CentralityComputer] = None,
         ranking: Optional[RankingModule] = None,
         vector_storage: Optional[VectorStorage] = None,
+        embedder: Optional[Embedder] = None,
     ):
         """Initialize Router with infrastructure and orchestrators
 
@@ -67,6 +71,7 @@ class Router:
             centrality: CentralityComputer (EPIC 5)
             ranking: RankingModule (EPIC 5)
             vector_storage: VectorStorage for sibling density (Tier 3)
+            embedder: Embedder for semantic search (Tier 3)
         """
         self.infrastructure = infrastructure
         self.manage = manage or create_manage_orchestrator()
@@ -74,7 +79,9 @@ class Router:
         # EPIC 5: Centrality & Ranking
         self.centrality = centrality
         self.ranking = ranking or RankingModule()
+        # Tier 3: Vector infrastructure
         self.vector_storage = vector_storage
+        self._embedder = embedder
 
     def index(
         self,
@@ -222,11 +229,14 @@ class Router:
         """Query: RETRIEVE → STRUCTURE
 
         EPIC 5: Flow includes centrality & ranking.
+        Review Pass 2: Semantic search via sqlite-vec.
+
         search → discovery → centrality → ranking → structure
 
         Args:
             config: Query configuration with:
                 - search: {text, mode, filters}
+                  - mode: 'metadata' (text) or 'semantic' (vector)
                 - discovery: {siblings, temporal, genealogy}
                 - ranking: {phases: [...]}
                 - weights: {validity, centrality, recency} (optional)
@@ -236,8 +246,12 @@ class Router:
         """
         from .storage import create_store
 
-        # 1. Get store
-        store = create_store(project_root=self.infrastructure.db.project_root)
+        # 1. Get store with vector infrastructure for semantic search
+        store = create_store(
+            project_root=self.infrastructure.db.project_root,
+            embedder=self._embedder,
+            vector_storage=self.vector_storage,
+        )
 
         # 2. Execute RETRIEVE via compose() with EPIC 5 centrality & ranking
         query_text = config.get('search', {}).get('text', '')
@@ -376,6 +390,7 @@ def create_router(
         centrality=centrality,
         ranking=ranking,
         vector_storage=vector_storage,
+        embedder=embedder,
     )
 
 

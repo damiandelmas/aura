@@ -1,15 +1,19 @@
 """Storage backend factory for creating VectorStore instances
 
 SQLite-first storage factory. SQLite is THE store.
-Future: HNSW vector support via sqlite-vss extension.
+EPIC 4: HNSW vector support via sqlite-vec extension.
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 import logging
 
 from .protocol import VectorStore
 from .sqlite_backend import SQLiteVectorStore
+
+if TYPE_CHECKING:
+    from ..infrastructure.embedder import Embedder
+    from .vectors import VectorStorage
 
 logger = logging.getLogger(__name__)
 
@@ -17,13 +21,17 @@ logger = logging.getLogger(__name__)
 def create_store(
     project_root: Optional[Path] = None,
     enable_vectors: bool = False,
+    embedder: Optional['Embedder'] = None,
+    vector_storage: Optional['VectorStorage'] = None,
     **kwargs
 ) -> VectorStore:
     """Create SQLite storage backend
 
     Args:
         project_root: Project root directory (required)
-        enable_vectors: Enable vector similarity (future: sqlite-vss)
+        enable_vectors: Enable vector similarity search
+        embedder: Optional Embedder for semantic search (Tier 3)
+        vector_storage: Optional VectorStorage for KNN queries (Tier 3)
         **kwargs: Reserved for future options
 
     Returns:
@@ -35,13 +43,23 @@ def create_store(
     Example:
         >>> store = create_store(project_root=Path("/path/to/project"))
         >>> results = store.search("query", filters={"phase": "develop"})
+
+        # With semantic search:
+        >>> store = create_store(
+        ...     project_root=Path("/path/to/project"),
+        ...     embedder=embedder,
+        ...     vector_storage=vector_storage
+        ... )
+        >>> results = store.search("auth patterns", mode='semantic')
     """
     if project_root is None:
         raise ValueError("project_root is required for SQLite store")
 
     return SQLiteVectorStore(
         project_root=project_root,
-        enable_vectors=enable_vectors
+        enable_vectors=enable_vectors,
+        embedder=embedder,
+        vector_storage=vector_storage,
     )
 
 
