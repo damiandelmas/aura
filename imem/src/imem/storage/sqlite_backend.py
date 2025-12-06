@@ -109,6 +109,12 @@ class SQLiteVectorStore:
                         'section_name': chunk.get('section_name'),
                         'timestamp': chunk.get('timestamp'),
                         'session_id': chunk.get('session_id'),
+                        # EPIC 0: Enrichment fields
+                        'validity': chunk.get('validity'),
+                        'centrality': chunk.get('centrality'),
+                        'rank': chunk.get('rank'),
+                        'git_status': chunk.get('git_status'),
+                        'commit_sha': chunk.get('commit_sha'),
                         **chunk.get('metadata', {})
                     }
                 ))
@@ -137,7 +143,8 @@ class SQLiteVectorStore:
         query = f"""
             SELECT
                 id, content, file_path, phase, section_type,
-                section_name, timestamp, session_id, metadata
+                section_name, timestamp, session_id, metadata,
+                validity, centrality, rank, git_status, commit_sha
             FROM chunks
             WHERE id IN ({placeholders})
         """
@@ -161,6 +168,12 @@ class SQLiteVectorStore:
                     'section_name': row['section_name'],
                     'timestamp': row['timestamp'],
                     'session_id': row['session_id'],
+                    # EPIC 0: Enrichment fields
+                    'validity': row['validity'],
+                    'centrality': row['centrality'],
+                    'rank': row['rank'],
+                    'git_status': row['git_status'],
+                    'commit_sha': row['commit_sha'],
                     **json.loads(row['metadata'] or '{}')
                 }
             ))
