@@ -69,12 +69,12 @@ class VectorStore(Protocol):
         query: str,
         limit: int = 10,
         filters: Optional[Dict[str, Any]] = None,
-        use_vector: bool = True
+        mode: str = 'semantic'
     ) -> List[SearchResult]:
-        """Search for chunks by metadata filters or text similarity
+        """Search for chunks by metadata filters or vector similarity
 
         Args:
-            query: Search query text (used for text search)
+            query: Search query text
             limit: Maximum number of results
             filters: Metadata filters:
                 - phase: Filter by phase (exact match)
@@ -83,8 +83,9 @@ class VectorStore(Protocol):
                 - timestamp_after: Only chunks after this timestamp
                 - timestamp_before: Only chunks before this timestamp
                 - session_id: Filter by conversation session
-            use_vector: If True, use vector similarity (future: sqlite-vss)
-                       If False, pure metadata + text search (fast, default behavior)
+            mode: Search mode:
+                - 'semantic': Vector KNN similarity search (~50-100ms)
+                - 'metadata': Pure text + SQL filters (< 10ms)
 
         Returns:
             List of SearchResult objects, ordered by relevance

@@ -67,16 +67,13 @@ class SearchProcessor(Processor):
         filters = search_config.get('filters', {})
         limit = search_config.get('limit', 10)
 
-        # Determine vector mode
-        use_vector = (self.mode == 'semantic')
-
         try:
-            # Execute search
+            # Execute search with mode passed through
             results = self.store.search(
                 query=query_text,
                 filters=filters,
                 limit=limit,
-                use_vector=use_vector
+                mode=self.mode
             )
 
             # Convert SearchResult objects to dicts
