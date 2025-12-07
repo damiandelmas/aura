@@ -66,7 +66,11 @@ class SearchProcessor(Processor):
         query_text = search_config.get('text', ctx.query or '')
         filters = search_config.get('filters', {})
         # Check search.limit first, then top-level limit, then default
-        limit = search_config.get('limit') or ctx.config.get('limit', 10)
+        # If max_tokens is set without explicit limit, fetch large pool for token packing
+        if ctx.config.get('max_tokens') and not ctx.config.get('limit'):
+            limit = 150  # Large fetch pool for greedy token packing
+        else:
+            limit = search_config.get('limit') or ctx.config.get('limit', 10)
 
         try:
             # Execute search with mode passed through

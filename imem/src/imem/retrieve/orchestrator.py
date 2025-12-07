@@ -237,11 +237,15 @@ def compose(
         except Exception as e:
             logger.warning(f"Ranking failed: {e}")
 
-    # Enforce limit after discovery expansion and ranking
-    # Discovery may expand beyond original limit; this ensures final count matches request
-    limit = config.get('limit')
-    if limit and result_ctx.results:
-        result_ctx.results = result_ctx.results[:limit]
+    # Enforce token budget or limit after discovery expansion and ranking
+    # Token budget: greedy pack by rank until budget exhausted
+    # Limit: backward-compat fixed chunk count
+    max_tokens = config.get('max_tokens')
+    if max_tokens and result_ctx.results:
+        from imem.structure.tokenizer import greedy_pack
+        result_ctx.results = greedy_pack(result_ctx.results, max_tokens)
+    elif config.get('limit') and result_ctx.results:
+        result_ctx.results = result_ctx.results[:config.get('limit')]
 
     # Format response
     return {
