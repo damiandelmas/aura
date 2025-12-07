@@ -94,10 +94,10 @@ class SiblingDensitySignal(CentralitySignal):
                 )
 
             # Count neighbors above similarity threshold
-            # neighbors is list of (chunk_id, similarity)
+            # neighbors is list of Neighbor objects
             above_threshold = sum(
-                1 for _, similarity in neighbors
-                if similarity >= self.threshold
+                1 for neighbor in neighbors
+                if neighbor.similarity >= self.threshold
             )
 
             # Density = count / k

@@ -140,6 +140,31 @@ class VectorStorage(ABC):
         pass
 
     @abstractmethod
+    def query_by_chunk_id(
+        self,
+        chunk_id: str,
+        k: int = 20,
+        threshold: float = 0.0,
+        filters: Optional[VectorFilters] = None,
+    ) -> List[Neighbor]:
+        """Query k nearest neighbors for an existing chunk
+
+        Looks up the chunk's embedding and queries for similar chunks.
+        Used by SiblingDensitySignal to find semantic clusters.
+
+        Args:
+            chunk_id: ID of chunk already in storage
+            k: Number of neighbors to return
+            threshold: Minimum similarity threshold (0.0-1.0)
+            filters: Optional metadata filters
+
+        Returns:
+            List of Neighbor results sorted by similarity (desc),
+            excluding the query chunk itself
+        """
+        pass
+
+    @abstractmethod
     def delete(self, chunk_id: str) -> None:
         """Delete embedding for a chunk
 
@@ -361,6 +386,89 @@ class SQLiteVecStorage(VectorStorage):
             logger.warning(f"KNN query failed: {e}")
             return self._query_brute_force(embedding, k, threshold, filters)
 
+    def query_knn_filtered(
+        self,
+        embedding: List[float],
+        k: int = 20,
+        filters: Optional[VectorFilters] = None,
+    ) -> List[Neighbor]:
+        """Filter-first KNN: get matching chunks, then brute-force similarity
+
+        Use this when filters are present. Gets all chunks matching filters,
+        computes similarity on that subset, returns top k.
+
+        More accurate than query_knn + post-filter for sparse filter matches.
+        """
+        if not self._has_vec0 or not embedding or not filters:
+            return []
+
+        try:
+            # 1. Build SQL filter for chunks table
+            sql = "SELECT id FROM chunks WHERE 1=1"
+            params = []
+
+            if filters.phase:
+                sql += " AND phase = ?"
+                params.append(filters.phase)
+            if filters.section_type:
+                sql += " AND section_type = ?"
+                params.append(filters.section_type)
+            if filters.git_status:
+                sql += " AND git_status = ?"
+                params.append(filters.git_status)
+            if filters.validity_min is not None:
+                sql += " AND validity >= ?"
+                params.append(filters.validity_min)
+            if filters.validity_max is not None:
+                sql += " AND validity <= ?"
+                params.append(filters.validity_max)
+            if filters.section_name:
+                sql += " AND section_name = ?"
+                params.append(filters.section_name)
+            if filters.session_id:
+                sql += " AND session_id = ?"
+                params.append(filters.session_id)
+            if filters.file_path:
+                sql += " AND file_path LIKE ?"
+                params.append(f"%{filters.file_path}%")
+
+            # 2. Get matching chunk IDs
+            matching_ids = [row[0] for row in self.db.conn.execute(sql, params).fetchall()]
+
+            if not matching_ids:
+                return []
+
+            logger.debug(f"query_knn_filtered: {len(matching_ids)} chunks match filters")
+
+            # 3. Get embeddings for matching chunks and compute similarity
+            neighbors = []
+            for chunk_id in matching_ids:
+                # Get embedding from vector_meta + chunk_vectors
+                cursor = self.db.conn.execute('''
+                    SELECT cv.embedding
+                    FROM vector_meta vm
+                    JOIN chunk_vectors cv ON vm.rowid = cv.rowid
+                    WHERE vm.chunk_id = ?
+                ''', (chunk_id,))
+                row = cursor.fetchone()
+
+                if row and row[0]:
+                    stored_emb = self._deserialize_f32(row[0])
+                    similarity = self._cosine_similarity(embedding, stored_emb)
+                    neighbors.append(Neighbor(
+                        chunk_id=chunk_id,
+                        similarity=similarity,
+                        distance=1.0 - similarity,
+                    ))
+
+            # 4. Sort by similarity, take top k
+            neighbors.sort(key=lambda n: n.similarity, reverse=True)
+            return neighbors[:k]
+
+        except Exception as e:
+            logger.warning(f"Filtered KNN query failed: {e}")
+            return []
+
     def _query_brute_force(
         self,
         embedding: List[float],
@@ -483,6 +591,53 @@ class SQLiteVecStorage(VectorStorage):
 
         return filtered
 
+    def query_by_chunk_id(
+        self,
+        chunk_id: str,
+        k: int = 20,
+        threshold: float = 0.0,
+        filters: Optional[VectorFilters] = None,
+    ) -> List[Neighbor]:
+        """Query k nearest neighbors for an existing chunk"""
+        if not self._has_vec0:
+            return []
+
+        try:
+            # Get the chunk's rowid from metadata
+            cursor = self.db.conn.execute(
+                'SELECT rowid FROM vector_meta WHERE chunk_id = ?',
+                (chunk_id,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                logger.debug(f"No embedding found for chunk {chunk_id}")
+                return []
+
+            rowid = row[0]
+
+            # Get the embedding for this chunk
+            cursor = self.db.conn.execute(
+                'SELECT embedding FROM chunk_vectors WHERE rowid = ?',
+                (rowid,)
+            )
+            row = cursor.fetchone()
+            if not row or not row[0]:
+                logger.debug(f"No embedding data for chunk {chunk_id}")
+                return []
+
+            embedding = self._deserialize_f32(row[0])
+
+            # Query for neighbors using the embedding
+            # Request k+1 since we'll exclude the query chunk itself
+            neighbors = self.query_knn(embedding, k + 1, threshold, filters)
+
+            # Filter out the query chunk itself
+            return [n for n in neighbors if n.chunk_id != chunk_id][:k]
+
+        except Exception as e:
+            logger.warning(f"query_by_chunk_id failed for {chunk_id}: {e}")
+            return []
+
     def delete(self, chunk_id: str) -> None:
         """Delete embedding for a chunk"""
         if not self._has_vec0:
@@ -571,6 +726,16 @@ class NoOpVectorStorage(VectorStorage):
     def query_knn(
         self,
         embedding: List[float],
+        k: int = 20,
+        threshold: float = 0.0,
+        filters: Optional[VectorFilters] = None,
+    ) -> List[Neighbor]:
+        """No-op: returns empty list"""
+        return []
+
+    def query_by_chunk_id(
+        self,
+        chunk_id: str,
         k: int = 20,
         threshold: float = 0.0,
         filters: Optional[VectorFilters] = None,

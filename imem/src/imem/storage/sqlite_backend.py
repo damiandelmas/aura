@@ -163,14 +163,32 @@ class SQLiteVectorStore:
                 file_path=filters.get('file_path'),
             )
 
-            # 3. KNN query
-            # Note: threshold=0.0 returns all k neighbors, let ranking handle filtering
-            neighbors = self._vector_storage.query_knn(
-                embedding=query_embedding,
-                k=limit,
-                threshold=0.0,  # No threshold - return all k, ranking handles quality
-                filters=vector_filters,
-            )
+            # 3. KNN query - use filtered subset when filters present
+            has_filters = any([
+                filters.get('phase'),
+                filters.get('section_type'),
+                filters.get('git_status'),
+                validity_min is not None,
+                validity_max is not None,
+                filters.get('section_name'),
+                filters.get('session_id'),
+                filters.get('file_path'),
+            ])
+
+            if has_filters:
+                # Filter first, then brute-force KNN on subset
+                neighbors = self._vector_storage.query_knn_filtered(
+                    embedding=query_embedding,
+                    k=limit,
+                    filters=vector_filters,
+                )
+            else:
+                # No filters - use indexed KNN on full corpus
+                neighbors = self._vector_storage.query_knn(
+                    embedding=query_embedding,
+                    k=limit,
+                    threshold=0.0,
+                )
 
             if not neighbors:
                 logger.debug(f"Semantic search returned 0 results for '{query[:50]}...'")
