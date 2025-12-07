@@ -86,25 +86,31 @@ class CurateModule(Module):
             return []
 
         # Get config overrides from context
+        # Check both 'max_results' and 'limit' for flexibility
         query_config = getattr(context, 'query', {}) or {}
-        max_results = query_config.get('max_results', self.max_results)
+        max_results = query_config.get('max_results') or query_config.get('limit', self.max_results)
 
         # 1. Filter by validity threshold
         filtered = self._filter_by_validity(chunks)
         logger.debug(f"CurateModule: {len(chunks)} → {len(filtered)} after validity filter")
 
-        # 2. Deduplicate (by section_name + file_path, keeping higher rank)
-        deduped = self._deduplicate(filtered)
-        logger.debug(f"CurateModule: {len(filtered)} → {len(deduped)} after dedup")
+        # 2. Order by rank descending (should already be sorted, but ensure)
+        ordered = self._order_by_rank(filtered)
 
-        # 3. Order by rank descending (should already be sorted, but ensure)
-        ordered = self._order_by_rank(deduped)
-
-        # 4. Limit to max_results
+        # 3. Limit to max_results
         limited = ordered[:max_results]
 
+        # 4. Deduplicate (opt-in, off by default)
+        # Dedup AFTER limit so it only operates on final result set
+        enable_dedup = query_config.get('dedupe', False)
+        if enable_dedup:
+            deduped = self._deduplicate(limited)
+            logger.debug(f"CurateModule: {len(limited)} → {len(deduped)} after dedup")
+        else:
+            deduped = limited
+
         # 5. Add presentation flags
-        flagged = self._add_flags(limited)
+        flagged = self._add_flags(deduped)
 
         logger.info(f"CurateModule: {len(chunks)} input → {len(flagged)} curated")
 
@@ -159,11 +165,10 @@ class CurateModule(Module):
             section_name = chunk.get('section_name', '')
             file_path = chunk.get('file_path', '')
 
-            # Use directory + section_name as key
-            # This groups same sections from same file
-            import os
-            directory = os.path.dirname(file_path)
-            key = f"{directory}:{section_name}"
+            # Use file_path + section_name as key
+            # This dedupes same section from same file (re-indexed)
+            # but keeps sections from different files
+            key = f"{file_path}:{section_name}"
 
             if key not in seen:
                 seen[key] = chunk

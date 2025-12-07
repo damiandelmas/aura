@@ -65,7 +65,8 @@ class SearchProcessor(Processor):
         # Extract search parameters
         query_text = search_config.get('text', ctx.query or '')
         filters = search_config.get('filters', {})
-        limit = search_config.get('limit', 10)
+        # Check search.limit first, then top-level limit, then default
+        limit = search_config.get('limit') or ctx.config.get('limit', 10)
 
         try:
             # Execute search with mode passed through

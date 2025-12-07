@@ -339,9 +339,10 @@ class SQLiteVecStorage(VectorStorage):
                 distance = row[1]
                 chunk_id = row[2]
 
-                # Convert distance to similarity
-                # For cosine distance: similarity = 1 - distance
-                similarity = 1.0 - distance
+                # Convert L2 distance to cosine similarity
+                # sqlite-vec uses L2 distance. For normalized vectors:
+                # L2² = 2(1 - cosine_sim), so cosine_sim = 1 - L2²/2
+                similarity = 1.0 - (distance ** 2) / 2
 
                 if similarity >= threshold:
                     neighbors.append(Neighbor(

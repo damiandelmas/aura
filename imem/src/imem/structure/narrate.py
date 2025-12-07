@@ -340,6 +340,7 @@ class NarrateModule(Module):
             'phase': chunk.get('phase'),
             'file_path': chunk.get('file_path'),
             'timestamp': chunk.get('timestamp'),
+            'similarity': chunk.get('similarity', 0.5),  # Semantic search score
             'validity': chunk.get('validity', 0.5),
             'centrality': chunk.get('centrality', 0.5),
             'rank': chunk.get('rank', 0.5),

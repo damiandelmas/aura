@@ -189,6 +189,12 @@ def compose(
     # Execute chain (search → discovery)
     result_ctx = chain.execute(ctx)
 
+    # Preserve similarity score before ranking (similarity comes from semantic search)
+    # RankingModule will add 'rank' but we want to keep original similarity visible
+    for chunk in result_ctx.results:
+        if 'similarity' not in chunk:
+            chunk['similarity'] = chunk.get('score', 0.5)
+
     # EPIC 5: Compute centrality for each result
     if centrality_computer is not None and result_ctx.results:
         # Create a mock QueryContext for signal evaluation
