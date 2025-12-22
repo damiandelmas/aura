@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""
+mesh-ctl - CLI to interact with the agent mesh.
+
+Usage:
+    mesh-ctl discover                     # List all agents
+    mesh-ctl send oracle "what's status?" # Send message
+    mesh-ctl broadcast "sync point"       # Message all agents
+    mesh-ctl converse oracle "topic" 5    # Start conversation
+    mesh-ctl status                       # Mesh status
+"""
+
+import sys
+import json
+import socket
+import argparse
+from pathlib import Path
+
+MESH_SOCKET = Path("/tmp/aura/mesh.sock")
+
+
+def send_to_mesh(cmd: dict) -> dict:
+    """Send command to mesh daemon."""
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(str(MESH_SOCKET))
+        sock.send(json.dumps(cmd).encode('utf-8'))
+        response = sock.recv(8192).decode('utf-8')
+        return json.loads(response)
+    except FileNotFoundError:
+        return {"error": "mesh not running. Start with: mesh.py"}
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        sock.close()
+
+
+def cmd_discover(args):
+    """List all registered agents."""
+    result = send_to_mesh({"action": "discover"})
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    agents = result.get("agents", [])
+    if not agents:
+        print("No agents registered")
+        return
+
+    print(f"{'Name':<15} {'Session':<12} {'Status':<10} {'Last Seen'}")
+    print("-" * 60)
+    for agent in agents:
+        name = agent.get("name", "?")
+        session = agent.get("session_id", "?")[:8]
+        status = agent.get("status", "?")
+        last_seen = agent.get("last_seen", "?")[11:19]  # Just time
+        print(f"{name:<15} {session:<12} {status:<10} {last_seen}")
+
+
+def cmd_send(args):
+    """Send message to agent."""
+    result = send_to_mesh({
+        "action": "send",
+        "from": args.sender or "cli",
+        "to": args.target,
+        "content": args.message
+    })
+    print(json.dumps(result, indent=2))
+
+
+def cmd_broadcast(args):
+    """Broadcast to all agents."""
+    result = send_to_mesh({
+        "action": "send",
+        "from": args.sender or "cli",
+        "to": "all",
+        "content": args.message
+    })
+    print(json.dumps(result, indent=2))
+
+
+def cmd_converse(args):
+    """Start a conversation."""
+    # Start conversation
+    result = send_to_mesh({
+        "action": "start_conversation",
+        "initiator": args.initiator or "cli",
+        "target": args.target,
+        "topic": args.topic,
+        "max_turns": args.max_turns
+    })
+
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    conv_id = result.get("conversation_id")
+    print(f"Started conversation: {conv_id}")
+
+    # Send opening message
+    send_to_mesh({
+        "action": "send",
+        "from": args.initiator or "cli",
+        "to": args.target,
+        "content": args.topic,
+        "conversation_id": conv_id
+    })
+    print(f"Sent opening message to {args.target}")
+
+
+def cmd_status(args):
+    """Get mesh status."""
+    result = send_to_mesh({"action": "discover"})
+    if "error" in result:
+        print(f"Mesh: offline ({result['error']})")
+    else:
+        agents = result.get("agents", [])
+        print(f"Mesh: online")
+        print(f"Agents: {len(agents)}")
+        for a in agents:
+            print(f"  - {a['name']} ({a['status']})")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="mesh-ctl - Agent mesh control")
+    subparsers = parser.add_subparsers(dest="command")
+
+    # discover
+    subparsers.add_parser("discover", help="List all agents")
+
+    # send
+    p_send = subparsers.add_parser("send", help="Send message to agent")
+    p_send.add_argument("target", help="Target agent name")
+    p_send.add_argument("message", help="Message content")
+    p_send.add_argument("--from", dest="sender", help="Sender name")
+
+    # broadcast
+    p_broadcast = subparsers.add_parser("broadcast", help="Message all agents")
+    p_broadcast.add_argument("message", help="Message content")
+    p_broadcast.add_argument("--from", dest="sender", help="Sender name")
+
+    # converse
+    p_converse = subparsers.add_parser("converse", help="Start conversation")
+    p_converse.add_argument("target", help="Target agent")
+    p_converse.add_argument("topic", help="Conversation topic/opening")
+    p_converse.add_argument("max_turns", type=int, nargs="?", default=5)
+    p_converse.add_argument("--from", dest="initiator", help="Initiator name")
+
+    # status
+    subparsers.add_parser("status", help="Mesh status")
+
+    args = parser.parse_args()
+
+    if args.command == "discover":
+        cmd_discover(args)
+    elif args.command == "send":
+        cmd_send(args)
+    elif args.command == "broadcast":
+        cmd_broadcast(args)
+    elif args.command == "converse":
+        cmd_converse(args)
+    elif args.command == "status":
+        cmd_status(args)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""
+aura-ctl - Send control commands to running aura instance.
+
+Usage:
+    aura-ctl status                    # Get status
+    aura-ctl refresh                   # Trigger refresh
+    aura-ctl restart                   # Restart Claude
+    aura-ctl fork --name oracle        # Fork session
+    aura-ctl stop                      # Stop Claude
+
+    aura-ctl --socket /tmp/aura/x.sock status  # Specific socket
+    aura-ctl --list                    # List active aura sockets
+"""
+
+import sys
+import json
+import socket
+import argparse
+from pathlib import Path
+
+SOCKET_DIR = Path("/tmp/aura")
+
+
+def list_sockets():
+    """List active aura sockets."""
+    if not SOCKET_DIR.exists():
+        print("No aura sockets found")
+        return
+
+    sockets = list(SOCKET_DIR.glob("*.sock"))
+    if not sockets:
+        print("No aura sockets found")
+        return
+
+    print("Active aura instances:")
+    for sock in sockets:
+        print(f"  {sock}")
+
+
+def send_command(socket_path: str, cmd: dict) -> dict:
+    """Send command to aura socket, return response."""
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(socket_path)
+        sock.send(json.dumps(cmd).encode('utf-8'))
+        response = sock.recv(4096).decode('utf-8')
+        return json.loads(response)
+    finally:
+        sock.close()
+
+
+def find_socket(session_hint: str = None) -> str | None:
+    """Find socket path, optionally matching session hint."""
+    if not SOCKET_DIR.exists():
+        return None
+
+    sockets = list(SOCKET_DIR.glob("*.sock"))
+    if not sockets:
+        return None
+
+    if session_hint:
+        for sock in sockets:
+            if session_hint in sock.stem:
+                return str(sock)
+
+    # Return most recent
+    return str(max(sockets, key=lambda p: p.stat().st_mtime))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="aura-ctl - Control running aura instances")
+    parser.add_argument("--socket", "-s", metavar="PATH", help="Socket path")
+    parser.add_argument("--list", "-l", action="store_true", help="List active sockets")
+    parser.add_argument("action", nargs="?", choices=["status", "refresh", "restart", "fork", "stop"])
+    parser.add_argument("--name", help="Name for fork")
+    parser.add_argument("--at", type=int, help="Message number for fork")
+    args = parser.parse_args()
+
+    if args.list:
+        list_sockets()
+        return
+
+    if not args.action:
+        parser.print_help()
+        return
+
+    # Find socket
+    socket_path = args.socket or find_socket()
+    if not socket_path:
+        print("No aura socket found. Is aura running?", file=sys.stderr)
+        sys.exit(1)
+
+    # Build command
+    cmd = {"action": args.action}
+    if args.action == "fork":
+        if args.name:
+            cmd["name"] = args.name
+        if args.at:
+            cmd["at"] = args.at
+
+    # Send and print response
+    try:
+        response = send_command(socket_path, cmd)
+        print(json.dumps(response, indent=2))
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
