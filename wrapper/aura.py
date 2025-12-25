@@ -38,9 +38,29 @@ MESH_SOCKET = Path("/tmp/aura/mesh.sock")
 MEMORY_CLI = "memory"  # TODO: actual path when exists
 ORCA_CLI = "orca"      # TODO: actual path when exists
 
+# Nexus paths
+NEXUS_SRC = Path.home() / "projects/nexus/main"
+SESSIONS_DIR = Path.home() / ".nexus/sessions"
+INJECTED_DIR = Path.home() / ".nexus/.injected"
+
 # Paths to actual scripts (until CLI exists)
 REFRESH_SCRIPT = Path.home() / "projects/claude-code/invocation/skills/active/refresh/scripts/external_refresh.py"
 SPAWN_SCRIPT = Path.home() / "projects/fleet/hangar/code/orca/main/primitives/spawn/async-tmux-state.sh"
+BUILD_PAYLOAD_SCRIPT = NEXUS_SRC / "inject/build-payload.py"
+
+# Import JSONL library for session slicing
+_lib_path = Path(__file__).parent.parent / "lib"
+if _lib_path.exists():
+    import sys as _sys
+    _sys.path.insert(0, str(_lib_path))
+    try:
+        from jsonl import find_jsonl, slice_at
+    except ImportError:
+        find_jsonl = None
+        slice_at = None
+else:
+    find_jsonl = None
+    slice_at = None
 
 
 def mesh_request(cmd: dict) -> dict | None:
@@ -61,12 +81,13 @@ def mesh_request(cmd: dict) -> dict | None:
 class Aura:
     """Thin wrapper around Claude with control handles."""
 
-    def __init__(self, claude_args: list[str] = None, socket_path: str = None, name: str = None, gate: bool = False):
+    def __init__(self, claude_args: list[str] = None, socket_path: str = None, name: str = None, gate: bool = False, nexus_session: str = None):
         self.claude_args = claude_args or []
         self.session_id = self._extract_session_id()
         self.socket_path = socket_path or self._default_socket_path()
         self.name = name or self._default_name()
         self.gate = gate  # If True, wait for Enter; if False, auto-execute
+        self.nexus_session = nexus_session  # Nexus session name for NEXUS_SESSION env var
 
         self.master_fd = None
         self.child_pid = None
@@ -196,7 +217,11 @@ class Aura:
         pid, fd = pty.fork()
 
         if pid == 0:
-            # Child - exec claude
+            # Child - set environment and exec claude
+            # Set NEXUS_SESSION env var if we have a nexus session
+            if self.nexus_session:
+                os.environ["NEXUS_SESSION"] = self.nexus_session
+
             cmd = [CLAUDE_BIN] + self.claude_args
             os.execvp(cmd[0], cmd)
         else:
@@ -206,7 +231,7 @@ class Aura:
             self.running = True
             # Sync initial size
             self.sync_pty_size()
-            self._emit("started", {"pid": pid, "session": self.session_id})
+            self._emit("started", {"pid": pid, "session": self.session_id, "nexus_session": self.nexus_session})
 
     def stop_claude(self, graceful=True):
         """Stop Claude subprocess."""
@@ -402,6 +427,8 @@ class Aura:
         sys.stderr.write(f"\033[36m[aura]\033[0m Control: {self.socket_path}\n")
         sys.stderr.write(f"\033[36m[aura]\033[0m Mesh: {'connected' if self.mesh_connected else 'offline'}\n")
         sys.stderr.write(f"\033[36m[aura]\033[0m Mode: {'gated' if self.gate else 'auto-execute'}\n")
+        if self.nexus_session:
+            sys.stderr.write(f"\033[36m[aura]\033[0m Nexus: {self.nexus_session}\n")
         sys.stderr.flush()
 
         old_settings = termios.tcgetattr(sys.stdin)
@@ -467,24 +494,159 @@ class Aura:
                     os.unlink(self.socket_path)
 
 
+def _setup_nexus_session(from_session: str = None, onboard: bool = False,
+                          session: str = None, delta: str = None) -> str | None:
+    """
+    Setup Nexus session based on knowledge flags.
+
+    Args:
+        from_session: Parent session to inherit from (copies runway.md)
+        onboard: Build payload from onboard manifest
+        session: Use existing session context
+        delta: Additional context file (with --from)
+
+    Returns:
+        Session name or None
+    """
+    import shutil
+    from datetime import datetime
+
+    # Clear injected markers before spawn
+    if INJECTED_DIR.exists():
+        for marker in INJECTED_DIR.glob("*"):
+            try:
+                marker.unlink()
+            except OSError:
+                pass
+
+    # --session: Just return existing session name
+    if session:
+        session_dir = SESSIONS_DIR / session
+        if session_dir.exists():
+            sys.stderr.write(f"\033[36m[aura]\033[0m Using session: {session}\n")
+            return session
+        else:
+            sys.stderr.write(f"\033[33m[aura]\033[0m Warning: Session '{session}' not found\n")
+            return session  # Return anyway, might be created later
+
+    # --onboard: Build payload from manifest
+    if onboard:
+        if BUILD_PAYLOAD_SCRIPT.exists():
+            sys.stderr.write(f"\033[36m[aura]\033[0m Building onboard payload...\n")
+            result = subprocess.run(
+                ["python3", str(BUILD_PAYLOAD_SCRIPT)],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                # Extract session name from output if available
+                session_name = result.stdout.strip().split('\n')[-1] if result.stdout.strip() else None
+                sys.stderr.write(f"\033[36m[aura]\033[0m Onboard payload built\n")
+                return session_name
+            else:
+                sys.stderr.write(f"\033[31m[aura]\033[0m Onboard build failed: {result.stderr[:200]}\n")
+        else:
+            sys.stderr.write(f"\033[31m[aura]\033[0m build-payload.py not found at {BUILD_PAYLOAD_SCRIPT}\n")
+        return None
+
+    # --from: Inherit from parent session
+    if from_session:
+        parent_dir = SESSIONS_DIR / from_session
+        if not parent_dir.exists():
+            # Try finding by prefix
+            matches = list(SESSIONS_DIR.glob(f"{from_session}*"))
+            if matches:
+                parent_dir = matches[0]
+            else:
+                sys.stderr.write(f"\033[31m[aura]\033[0m Parent session '{from_session}' not found\n")
+                return None
+
+        # Create new session inheriting from parent
+        new_session = f"child-{from_session[:8]}-{datetime.now().strftime('%H%M%S')}"
+        new_dir = SESSIONS_DIR / new_session
+        new_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy parent's runway.md
+        parent_runway = parent_dir / "runway.md"
+        new_runway = new_dir / "runway.md"
+
+        if parent_runway.exists():
+            shutil.copy(parent_runway, new_runway)
+            sys.stderr.write(f"\033[36m[aura]\033[0m Inherited runway from {from_session}\n")
+
+            # Append delta if provided
+            if delta:
+                delta_path = Path(delta).expanduser()
+                if delta_path.exists():
+                    with open(new_runway, "a") as f:
+                        f.write("\n\n# === DELTA CONTEXT ===\n\n")
+                        with open(delta_path, "r") as d:
+                            f.write(d.read())
+                    sys.stderr.write(f"\033[36m[aura]\033[0m Appended delta: {delta}\n")
+                else:
+                    sys.stderr.write(f"\033[33m[aura]\033[0m Delta file not found: {delta}\n")
+        else:
+            sys.stderr.write(f"\033[33m[aura]\033[0m No runway.md in parent session\n")
+
+        sys.stderr.write(f"\033[36m[aura]\033[0m Created session: {new_session}\n")
+        return new_session
+
+    return None
+
+
 def main():
     import argparse
+    import shutil
     parser = argparse.ArgumentParser(description="aura - Claude Code wrapper with control handles")
     parser.add_argument("-r", "--resume", metavar="SESSION", help="Resume session")
     parser.add_argument("-n", "--name", metavar="NAME", help="Agent name for mesh")
     parser.add_argument("--socket", metavar="PATH", help="Control socket path")
     parser.add_argument("--gate", action="store_true", help="Gate mode: wait for Enter to inject messages (default: auto-execute)")
     parser.add_argument("--dangerously-skip-permissions", action="store_true", default=True)
+
+    # Nexus knowledge flags
+    parser.add_argument("--from", dest="from_session", metavar="SESSION",
+                        help="Inherit knowledge from parent session (copies runway.md)")
+    parser.add_argument("--onboard", action="store_true",
+                        help="Build payload from onboard manifest")
+    parser.add_argument("--session", metavar="NAME",
+                        help="Use existing session context")
+    parser.add_argument("--delta", metavar="FILE",
+                        help="Additional context file (use with --from)")
+
+    # JSONL slicing
+    parser.add_argument("--at", metavar="N", type=int,
+                        help="Slice session at message N (use with -r)")
+
     args, extra = parser.parse_known_args()
 
     claude_args = extra
-    if args.resume:
-        claude_args = ["-r", args.resume] + claude_args
+
+    # Handle --at slicing: if resuming with --at, slice the session first
+    resume_session = args.resume
+    if args.at and args.resume and find_jsonl and slice_at:
+        jsonl_path = find_jsonl(args.resume)
+        if jsonl_path:
+            sys.stderr.write(f"\033[36m[aura]\033[0m Slicing session at message {args.at}...\n")
+            new_session_id = slice_at(jsonl_path, args.at)
+            sys.stderr.write(f"\033[36m[aura]\033[0m Created sliced session: {new_session_id[:8]}...\n")
+            resume_session = new_session_id
+        else:
+            sys.stderr.write(f"\033[33m[aura]\033[0m Warning: Could not find JSONL for session {args.resume}\n")
+    elif args.at and not args.resume:
+        sys.stderr.write(f"\033[33m[aura]\033[0m Warning: --at requires -r/--resume\n")
+    elif args.at and (not find_jsonl or not slice_at):
+        sys.stderr.write(f"\033[33m[aura]\033[0m Warning: JSONL library not available for slicing\n")
+
+    if resume_session:
+        claude_args = ["-r", resume_session] + claude_args
     if args.dangerously_skip_permissions:
         if "--dangerously-skip-permissions" not in claude_args:
             claude_args.append("--dangerously-skip-permissions")
 
-    wrapper = Aura(claude_args, args.socket, args.name, args.gate)
+    # Setup Nexus session before creating wrapper
+    nexus_session = _setup_nexus_session(args.from_session, args.onboard, args.session, args.delta)
+
+    wrapper = Aura(claude_args, args.socket, args.name, args.gate, nexus_session=nexus_session)
     wrapper.run()
 
 

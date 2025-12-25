@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+#
+# batch - Batch spawner for Claude agents via aura/claude-mesh
+#
+# Reads a manifest file and spawns multiple agents with different configurations.
+# Each agent is spawned in its own tmux window with a delay between spawns.
+#
+# Manifest format (pipe-delimited, # for comments):
+#   # name|mode|source|prompt
+#   worker-1|from|npta|Execute task 1
+#   worker-2|resume|abc123|Continue work
+#   worker-3|fresh||Start fresh with no context
+#
+# Modes:
+#   from   - Inherit from parent session (source = session name)
+#   resume - Resume existing Claude session (source = session id)
+#   fresh  - Start fresh with no context (source ignored)
+#
+# Usage:
+#   batch manifest.txt              # Spawn all workers in manifest
+#   batch manifest.txt --dry-run    # Show what would be spawned
+#   batch manifest.txt --delay 1.0  # Custom delay between spawns (default: 0.5s)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AURA_BIN="${AURA_BIN:-aura}"
+TMUX_SESSION="${TMUX_SESSION:-claude-batch}"
+SPAWN_DELAY="${SPAWN_DELAY:-0.5}"
+DRY_RUN=false
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+log_info() {
+    echo -e "${CYAN}[batch]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}[batch]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[batch]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[batch]${NC} $1" >&2
+}
+
+usage() {
+    cat << EOF
+Usage: batch MANIFEST [OPTIONS]
+
+Spawn multiple Claude agents from a manifest file.
+
+Options:
+    --dry-run       Show what would be spawned without spawning
+    --delay SECS    Delay between spawns (default: 0.5)
+    --session NAME  tmux session name (default: claude-batch)
+    -h, --help      Show this help
+
+Manifest format:
+    # name|mode|source|prompt
+    worker-1|from|parent-session|Task description
+    worker-2|resume|abc123|Continue previous work
+    worker-3|fresh||Start with no context
+
+Modes:
+    from   - Inherit from parent session (source = nexus session name)
+    resume - Resume existing Claude session (source = Claude session id)
+    fresh  - Start fresh (source field ignored)
+EOF
+}
+
+build_aura_args() {
+    local name="$1"
+    local mode="$2"
+    local source="$3"
+    local prompt="$4"
+
+    local args=""
+    args+=" --name ${name}"
+
+    case "$mode" in
+        from)
+            if [[ -n "$source" ]]; then
+                args+=" --from ${source}"
+            else
+                log_error "Mode 'from' requires a source session"
+                return 1
+            fi
+            ;;
+        resume)
+            if [[ -n "$source" ]]; then
+                args+=" -r ${source}"
+            else
+                log_error "Mode 'resume' requires a session id"
+                return 1
+            fi
+            ;;
+        fresh)
+            # No special args for fresh mode
+            ;;
+        session)
+            if [[ -n "$source" ]]; then
+                args+=" --session ${source}"
+            else
+                log_error "Mode 'session' requires a session name"
+                return 1
+            fi
+            ;;
+        onboard)
+            args+=" --onboard"
+            ;;
+        *)
+            log_error "Unknown mode: $mode"
+            return 1
+            ;;
+    esac
+
+    # Add prompt if provided
+    if [[ -n "$prompt" ]]; then
+        args+=" -p \"${prompt}\""
+    fi
+
+    echo "$args"
+}
+
+spawn_in_tmux() {
+    local name="$1"
+    local aura_args="$2"
+
+    # Ensure tmux session exists
+    if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        log_info "Creating tmux session: $TMUX_SESSION"
+        tmux new-session -d -s "$TMUX_SESSION" -n "$name"
+        # First window is already created, just run the command
+        tmux send-keys -t "$TMUX_SESSION:$name" "${AURA_BIN} ${aura_args}" C-m
+    else
+        # Create new window
+        tmux new-window -t "$TMUX_SESSION" -n "$name"
+        tmux send-keys -t "$TMUX_SESSION:$name" "${AURA_BIN} ${aura_args}" C-m
+    fi
+
+    log_success "Spawned: $name in tmux:$TMUX_SESSION:$name"
+}
+
+process_manifest() {
+    local manifest="$1"
+    local spawn_count=0
+    local error_count=0
+
+    log_info "Processing manifest: $manifest"
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Skip empty lines and comments
+        [[ -z "$line" ]] && continue
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+
+        # Parse pipe-delimited fields
+        IFS='|' read -r name mode source prompt <<< "$line"
+
+        # Trim whitespace
+        name="${name// /}"
+        mode="${mode// /}"
+        source="${source// /}"
+        prompt="${prompt#"${prompt%%[![:space:]]*}"}"  # ltrim
+        prompt="${prompt%"${prompt##*[![:space:]]}"}"  # rtrim
+
+        if [[ -z "$name" || -z "$mode" ]]; then
+            log_warn "Skipping invalid line: $line"
+            continue
+        fi
+
+        log_info "Processing: $name (mode=$mode, source=$source)"
+
+        # Build aura arguments
+        local aura_args
+        if ! aura_args=$(build_aura_args "$name" "$mode" "$source" "$prompt"); then
+            ((error_count++))
+            continue
+        fi
+
+        if $DRY_RUN; then
+            log_info "[DRY-RUN] Would spawn: ${AURA_BIN}${aura_args}"
+        else
+            spawn_in_tmux "$name" "$aura_args"
+            ((spawn_count++))
+
+            # Delay between spawns
+            if [[ "$SPAWN_DELAY" != "0" ]]; then
+                sleep "$SPAWN_DELAY"
+            fi
+        fi
+
+    done < "$manifest"
+
+    log_info "Processed manifest: $spawn_count spawned, $error_count errors"
+
+    if ! $DRY_RUN && [[ $spawn_count -gt 0 ]]; then
+        log_success "Attach with: tmux attach -t $TMUX_SESSION"
+    fi
+}
+
+# Parse arguments
+MANIFEST=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --delay)
+            SPAWN_DELAY="$2"
+            shift 2
+            ;;
+        --session)
+            TMUX_SESSION="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -*)
+            log_error "Unknown option: $1"
+            usage
+            exit 1
+            ;;
+        *)
+            if [[ -z "$MANIFEST" ]]; then
+                MANIFEST="$1"
+            else
+                log_error "Only one manifest file allowed"
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Validate
+if [[ -z "$MANIFEST" ]]; then
+    log_error "Manifest file required"
+    usage
+    exit 1
+fi
+
+if [[ ! -f "$MANIFEST" ]]; then
+    log_error "Manifest not found: $MANIFEST"
+    exit 1
+fi
+
+# Check dependencies
+if ! command -v tmux &>/dev/null; then
+    log_error "tmux is required but not installed"
+    exit 1
+fi
+
+if ! command -v "$AURA_BIN" &>/dev/null; then
+    log_warn "aura not in PATH, trying python3 wrapper directly"
+    AURA_BIN="python3 $(dirname "$SCRIPT_DIR")/wrapper/aura.py"
+fi
+
+# Run
+process_manifest "$MANIFEST"

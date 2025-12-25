@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""
+aura - AI-first agent orchestration.
+
+Single command for spawning, messaging, and managing Claude agents.
+All output is JSON by default (pretty table if TTY).
+
+Usage:
+    aura spawn worker --knowledge npta
+    aura send worker "do the thing"
+    aura check worker
+    aura set worker --mode queue
+    aura cut worker
+    aura list
+"""
+
+import argparse
+import sys
+import os
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd
+from lib.output import output
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="aura",
+        description="AI-first agent orchestration"
+    )
+    parser.add_argument("--json", action="store_true", help="Force JSON output")
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # spawn
+    p_spawn = subparsers.add_parser("spawn", help="Create a new agent")
+    p_spawn.add_argument("name", help="Agent name")
+    p_spawn.add_argument("--knowledge", "-k", metavar="SESSION",
+                         help="Nexus session to inherit knowledge from")
+    p_spawn.add_argument("--memory", "-m", metavar="SESSION_ID",
+                         help="JSONL session to resume")
+    p_spawn.add_argument("--slice", "-s", type=int, metavar="N",
+                         help="Slice memory at message N")
+    p_spawn.add_argument("--prompt", "-p", metavar="TEXT",
+                         help="Initial prompt (implies --wait)")
+    p_spawn.add_argument("--wait", "-w", action="store_true",
+                         help="Wait for mesh registration")
+    p_spawn.add_argument("--timeout", type=int, default=30,
+                         help="Timeout for --wait (default: 30)")
+
+    # send
+    p_send = subparsers.add_parser("send", help="Send message to agent")
+    p_send.add_argument("target", help="Target agent name")
+    p_send.add_argument("message", help="Message content")
+    p_send.add_argument("--as", dest="sender", default="cli",
+                        help="Send as (default: cli)")
+    p_send.add_argument("--mode", choices=["immediate", "queue", "notify"],
+                        help="Force delivery mode")
+
+    # check
+    p_check = subparsers.add_parser("check", help="Check agent status")
+    p_check.add_argument("name", help="Agent name")
+    p_check.add_argument("--output", "-o", action="store_true",
+                         help="Include terminal output")
+    p_check.add_argument("--lines", type=int, default=20,
+                         help="Number of output lines (default: 20)")
+
+    # set
+    p_set = subparsers.add_parser("set", help="Set agent properties")
+    p_set.add_argument("name", help="Agent name")
+    p_set.add_argument("--mode", choices=["immediate", "queue", "notify"],
+                       help="Delivery mode")
+
+    # cut
+    p_cut = subparsers.add_parser("cut", help="End agent shift")
+    p_cut.add_argument("name", help="Agent name")
+    p_cut.add_argument("--force", action="store_true",
+                       help="Skip graceful shutdown")
+
+    # list
+    p_list = subparsers.add_parser("list", help="List all agents")
+    p_list.add_argument("--status", choices=["idle", "busy", "waiting"],
+                        help="Filter by status")
+    p_list.add_argument("--mode", choices=["immediate", "queue", "notify"],
+                        help="Filter by mode")
+
+    args = parser.parse_args()
+
+    # Dispatch to command handler
+    try:
+        if args.command == "spawn":
+            result = spawn.run(args)
+        elif args.command == "send":
+            result = send.run(args)
+        elif args.command == "check":
+            result = check.run(args)
+        elif args.command == "set":
+            result = set_cmd.run(args)
+        elif args.command == "cut":
+            result = cut.run(args)
+        elif args.command == "list":
+            result = list_cmd.run(args)
+        else:
+            result = {"error": f"unknown command: {args.command}"}
+    except Exception as e:
+        result = {"error": str(e)}
+
+    # Output result
+    output(result, force_json=args.json)
+
+    # Exit with error code if not ok
+    if isinstance(result, dict) and result.get("error"):
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
