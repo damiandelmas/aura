@@ -18,10 +18,14 @@ Usage:
 import os
 import sys
 import pty
+import tty
 import json
+import time
+import fcntl
 import select
 import signal
 import socket
+import termios
 import threading
 import subprocess
 from pathlib import Path
@@ -57,11 +61,12 @@ def mesh_request(cmd: dict) -> dict | None:
 class Aura:
     """Thin wrapper around Claude with control handles."""
 
-    def __init__(self, claude_args: list[str] = None, socket_path: str = None, name: str = None):
+    def __init__(self, claude_args: list[str] = None, socket_path: str = None, name: str = None, gate: bool = False):
         self.claude_args = claude_args or []
         self.session_id = self._extract_session_id()
         self.socket_path = socket_path or self._default_socket_path()
         self.name = name or self._default_name()
+        self.gate = gate  # If True, wait for Enter; if False, auto-execute
 
         self.master_fd = None
         self.child_pid = None
@@ -114,12 +119,19 @@ class Aura:
     def mesh_heartbeat(self, status: str = "idle"):
         """Send heartbeat to mesh."""
         if self.mesh_connected:
-            mesh_request({"action": "heartbeat", "name": self.name, "status": status})
+            result = mesh_request({"action": "heartbeat", "name": self.name, "status": status})
+            if result is None:
+                # Mesh went away
+                self.mesh_connected = False
+                self._emit("mesh_disconnected", {})
 
     def mesh_poll_messages(self):
         """Poll mesh for pending messages."""
         if not self.mesh_connected:
-            return
+            # Try to reconnect
+            self.mesh_register()
+            if not self.mesh_connected:
+                return
 
         result = mesh_request({"action": "receive", "name": self.name})
         if result and result.get("messages"):
@@ -129,6 +141,28 @@ class Aura:
                 formatted = f"<system-reminder>\nMessage from @{from_agent}:\n{content}\n</system-reminder>\n"
                 self.message_queue.append(formatted)
                 self._emit("message_received", {"from": from_agent})
+
+            # Auto-execute: inject immediately if not gated
+            if not self.gate and self.master_fd and self.message_queue:
+                self._inject_messages()
+
+    def _inject_messages(self, send_enter: bool = True):
+        """Inject queued messages to Claude's PTY.
+
+        Args:
+            send_enter: If True, send Enter after messages (for auto-execute).
+                       If False, just inject messages (gated mode, user's Enter follows).
+        """
+        if not self.message_queue or not self.master_fd:
+            return
+        for msg in self.message_queue:
+            os.write(self.master_fd, msg.encode('utf-8'))
+        self.message_queue = []
+        self._emit("messages_injected", {})
+        if send_enter:
+            # Small delay then Enter (like send-to-brother.sh)
+            time.sleep(0.3)
+            os.write(self.master_fd, b'\r')
 
     def mesh_send(self, to_agent: str, content: str) -> dict:
         """Send message to another agent via mesh."""
@@ -140,6 +174,22 @@ class Aura:
         }) or {"error": "mesh unavailable"}
 
     # === LIFECYCLE ===
+
+    def sync_pty_size(self):
+        """Sync PTY size to match outer terminal."""
+        if not self.master_fd:
+            return
+        try:
+            # Get outer terminal size
+            winsize = fcntl.ioctl(sys.stdin.fileno(), termios.TIOCGWINSZ, b'\x00' * 8)
+            # Apply to inner PTY
+            fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, winsize)
+        except (OSError, IOError):
+            pass  # Not a TTY or other error
+
+    def handle_sigwinch(self, signum, frame):
+        """Handle terminal resize signal."""
+        self.sync_pty_size()
 
     def start_claude(self):
         """Spawn Claude in PTY."""
@@ -154,6 +204,8 @@ class Aura:
             self.child_pid = pid
             self.master_fd = fd
             self.running = True
+            # Sync initial size
+            self.sync_pty_size()
             self._emit("started", {"pid": pid, "session": self.session_id})
 
     def stop_claude(self, graceful=True):
@@ -342,14 +394,16 @@ class Aura:
         self.start_control_socket()
         self.mesh_register()
 
+        # Handle terminal resize
+        signal.signal(signal.SIGWINCH, self.handle_sigwinch)
+
         # Print info
         sys.stderr.write(f"\033[36m[aura]\033[0m Name: {self.name}\n")
         sys.stderr.write(f"\033[36m[aura]\033[0m Control: {self.socket_path}\n")
         sys.stderr.write(f"\033[36m[aura]\033[0m Mesh: {'connected' if self.mesh_connected else 'offline'}\n")
+        sys.stderr.write(f"\033[36m[aura]\033[0m Mode: {'gated' if self.gate else 'auto-execute'}\n")
         sys.stderr.flush()
 
-        import tty
-        import termios
         old_settings = termios.tcgetattr(sys.stdin)
 
         input_buffer = b""  # Buffer to detect Enter key
@@ -383,15 +437,11 @@ class Aura:
                             self.running = False
                             break
 
-                        # Check for Enter key - inject queued messages
+                        # Check for Enter key - inject queued messages (gated mode)
                         if b'\r' in data or b'\n' in data:
-                            if self.message_queue:
-                                # Inject messages before user's input
-                                for msg in self.message_queue:
-                                    os.write(self.master_fd, msg.encode('utf-8'))
-                                    os.write(self.master_fd, b'\n')
-                                self.message_queue = []
-                                self._emit("messages_injected", {})
+                            if self.gate and self.message_queue:
+                                self._inject_messages(send_enter=False)  # User's Enter follows
+                                time.sleep(0.3)  # Claude Code needs delay before Enter
 
                         os.write(self.master_fd, data)
                         input_buffer = b""  # Reset on send
@@ -423,6 +473,7 @@ def main():
     parser.add_argument("-r", "--resume", metavar="SESSION", help="Resume session")
     parser.add_argument("-n", "--name", metavar="NAME", help="Agent name for mesh")
     parser.add_argument("--socket", metavar="PATH", help="Control socket path")
+    parser.add_argument("--gate", action="store_true", help="Gate mode: wait for Enter to inject messages (default: auto-execute)")
     parser.add_argument("--dangerously-skip-permissions", action="store_true", default=True)
     args, extra = parser.parse_known_args()
 
@@ -433,7 +484,7 @@ def main():
         if "--dangerously-skip-permissions" not in claude_args:
             claude_args.append("--dangerously-skip-permissions")
 
-    wrapper = Aura(claude_args, args.socket, args.name)
+    wrapper = Aura(claude_args, args.socket, args.name, args.gate)
     wrapper.run()
 
 
