@@ -622,7 +622,14 @@ def main():
     claude_args = extra
 
     # Handle --at slicing: if resuming with --at, slice the session first
+    # Also expand partial UUID to full UUID for proper resume
     resume_session = args.resume
+    if args.resume and find_jsonl:
+        jsonl_path = find_jsonl(args.resume)
+        if jsonl_path:
+            # Use full UUID from filename for reliable resume
+            resume_session = jsonl_path.stem
+
     if args.at and args.resume and find_jsonl and slice_at:
         jsonl_path = find_jsonl(args.resume)
         if jsonl_path:

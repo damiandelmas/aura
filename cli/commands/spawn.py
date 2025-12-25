@@ -1,7 +1,11 @@
 """Spawn new agent."""
 
-import time
 import os
+import sys
+import time
+
+# Add lib to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'lib'))
 
 
 def run(args):
@@ -15,8 +19,34 @@ def run(args):
     if tmux.window_exists(args.name):
         return {"ok": False, "error": f"agent already exists: {args.name}"}
 
-    # Create window
+    # Determine working directory
     workdir = os.getcwd()
+    full_session_id = None
+
+    # If resuming a session, find it and extract workdir
+    if args.memory:
+        try:
+            from jsonl import find_jsonl, extract_workdir
+
+            jsonl_path = find_jsonl(args.memory)
+            if jsonl_path:
+                # Get full session ID from filename
+                full_session_id = jsonl_path.stem
+
+                # Extract original working directory
+                session_workdir = extract_workdir(jsonl_path)
+                if session_workdir and os.path.isdir(session_workdir):
+                    workdir = session_workdir
+
+                # Handle cross-project resume with symlink
+                _ensure_session_accessible(jsonl_path, workdir)
+            else:
+                return {"ok": False, "error": f"session not found: {args.memory}"}
+        except ImportError:
+            # jsonl lib not available, use partial ID
+            full_session_id = args.memory
+
+    # Create window in the correct working directory
     tmux.create_window(args.name, workdir)
 
     # Build aura.py command
@@ -24,7 +54,9 @@ def run(args):
     cmd_parts = ["python3", aura_wrapper, "--name", args.name]
 
     if args.memory:
-        cmd_parts.extend(["-r", args.memory])
+        # Use full session ID if we found it
+        session_id = full_session_id or args.memory
+        cmd_parts.extend(["-r", session_id])
 
     if args.slice:
         cmd_parts.extend(["--at", str(args.slice)])
@@ -62,3 +94,35 @@ def run(args):
             return {"ok": True, "name": args.name, "registered": True, "prompt_sent": True}
 
     return {"ok": True, "name": args.name, "spawned": True}
+
+
+def _ensure_session_accessible(jsonl_path, target_workdir):
+    """Create symlink if session is from different project.
+
+    Claude Code stores sessions in project-specific directories.
+    To resume a session from a different project, we need a symlink.
+    """
+    from pathlib import Path
+
+    claude_dir = Path.home() / ".claude/projects"
+
+    # Encode target workdir to Claude's directory format
+    # /home/axp/projects/foo -> -home-axp-projects-foo
+    encoded = target_workdir.replace("/", "-")
+    if not encoded.startswith("-"):
+        encoded = "-" + encoded
+
+    target_claude_dir = claude_dir / encoded
+    target_claude_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check if session is from a different project
+    if jsonl_path.parent != target_claude_dir:
+        symlink_path = target_claude_dir / jsonl_path.name
+
+        # Remove existing symlink if present
+        if symlink_path.is_symlink():
+            symlink_path.unlink()
+
+        # Create symlink only if file doesn't exist
+        if not symlink_path.exists():
+            symlink_path.symlink_to(jsonl_path)
