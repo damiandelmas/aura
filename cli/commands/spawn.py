@@ -26,19 +26,25 @@ def run(args):
     # If resuming a session, find it and extract workdir
     if args.memory:
         try:
-            from jsonl import find_jsonl, extract_workdir
+            from jsonl import find_jsonl, extract_workdir, slice_at
 
             jsonl_path = find_jsonl(args.memory)
             if jsonl_path:
-                # Get full session ID from filename
-                full_session_id = jsonl_path.stem
-
-                # Extract original working directory
+                # Extract original working directory BEFORE any slicing
                 session_workdir = extract_workdir(jsonl_path)
                 if session_workdir and os.path.isdir(session_workdir):
                     workdir = session_workdir
 
-                # Handle cross-project resume with symlink
+                # If slicing, do it HERE so we can symlink the result
+                if args.slice:
+                    new_session_id = slice_at(jsonl_path, args.slice)
+                    # Update jsonl_path to point to sliced file
+                    jsonl_path = jsonl_path.parent / f"{new_session_id}.jsonl"
+                    full_session_id = new_session_id
+                else:
+                    full_session_id = jsonl_path.stem
+
+                # Handle cross-project resume with symlink (for original OR sliced)
                 _ensure_session_accessible(jsonl_path, workdir)
             else:
                 return {"ok": False, "error": f"session not found: {args.memory}"}
@@ -54,12 +60,10 @@ def run(args):
     cmd_parts = ["python3", aura_wrapper, "--name", args.name]
 
     if args.memory:
-        # Use full session ID if we found it
+        # Use full session ID if we found it (may be sliced session)
         session_id = full_session_id or args.memory
         cmd_parts.extend(["-r", session_id])
-
-    if args.slice:
-        cmd_parts.extend(["--at", str(args.slice)])
+        # Note: --slice is handled above in spawn.py, not passed to aura.py
 
     if args.knowledge:
         cmd_parts.extend(["--from", args.knowledge])

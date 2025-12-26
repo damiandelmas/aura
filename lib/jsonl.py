@@ -91,6 +91,8 @@ def slice_at(jsonl_path: Path, at_message: int) -> str:
     # Read all lines and find cutoff point
     lines_to_keep = []
     message_count = 0
+    last_uuid = None
+    summary_index = None
 
     with open(jsonl_path, 'r') as f:
         for line in f:
@@ -106,6 +108,10 @@ def slice_at(jsonl_path: Path, at_message: int) -> str:
 
             msg_type = entry.get("type")
 
+            # Track summary line index for later update
+            if msg_type == "summary":
+                summary_index = len(lines_to_keep)
+
             # Count user/assistant messages
             if msg_type in ("user", "assistant"):
                 message_count += 1
@@ -114,11 +120,21 @@ def slice_at(jsonl_path: Path, at_message: int) -> str:
                 if message_count > at_message:
                     break
 
+                # Track last message UUID for leafUuid update
+                if "uuid" in entry:
+                    last_uuid = entry["uuid"]
+
             # Rewrite sessionId in all entries
             if "sessionId" in entry:
                 entry["sessionId"] = new_session_id
 
             lines_to_keep.append(json.dumps(entry) + "\n")
+
+    # Update summary's leafUuid to point to last message in slice
+    if summary_index is not None and last_uuid:
+        summary_entry = json.loads(lines_to_keep[summary_index])
+        summary_entry["leafUuid"] = last_uuid
+        lines_to_keep[summary_index] = json.dumps(summary_entry) + "\n"
 
     # Save to same directory as original
     output_path = jsonl_path.parent / f"{new_session_id}.jsonl"
