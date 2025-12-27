@@ -79,6 +79,14 @@ def count_messages(jsonl_path: Path) -> int:
 def slice_at(jsonl_path: Path, at_message: int) -> str:
     """Create sliced copy at message N, return new session ID.
 
+    Mimics the old bash approach: copy lines verbatim, only modify
+    sessionId via regex replacement. This preserves JSON formatting
+    which Claude Code may validate.
+
+    IMPORTANT: Sessions must start with a 'summary' type line for
+    Claude Code to load history on resume. If the source session
+    starts with 'file-history-snapshot', we prepend a summary.
+
     Args:
         jsonl_path: Path to original JSONL file
         at_message: Message number to slice at (1-indexed)
@@ -86,55 +94,106 @@ def slice_at(jsonl_path: Path, at_message: int) -> str:
     Returns:
         New UUID for the sliced session
     """
+    import re
+
     new_session_id = str(uuid.uuid4())
 
-    # Read all lines and find cutoff point
-    lines_to_keep = []
+    # Phase 1: Find cutoff line number (like grep -n | head -n N | tail -1)
     message_count = 0
-    last_uuid = None
-    summary_index = None
+    cutoff_line = 0
+    existing_summary = None  # Track if we find a summary to copy
 
     with open(jsonl_path, 'r') as f:
-        for line in f:
+        for line_num, line in enumerate(f, 1):
             if not line.strip():
                 continue
-
             try:
                 entry = json.loads(line)
+                msg_type = entry.get("type")
+
+                # Capture existing summary text if we find one
+                if msg_type == "summary" and existing_summary is None:
+                    existing_summary = entry.get("summary", "Sliced session")
+
+                if msg_type in ("user", "assistant"):
+                    message_count += 1
+                    cutoff_line = line_num
+                    if message_count >= at_message:
+                        break
             except json.JSONDecodeError:
-                # Keep non-JSON lines as-is
-                lines_to_keep.append(line)
                 continue
 
-            msg_type = entry.get("type")
+    if cutoff_line == 0:
+        raise ValueError(f"Could not find message {at_message}")
 
-            # Track summary line index for later update
-            if msg_type == "summary":
-                summary_index = len(lines_to_keep)
+    # Phase 2: Copy lines verbatim up to cutoff (like head -n)
+    lines_to_keep = []
+    with open(jsonl_path, 'r') as f:
+        for line_num, line in enumerate(f, 1):
+            if line_num > cutoff_line:
+                break
+            lines_to_keep.append(line)
 
-            # Count user/assistant messages
-            if msg_type in ("user", "assistant"):
-                message_count += 1
+    # Phase 3: Replace sessionId via regex (like sed -i)
+    # Pattern matches: "sessionId": "any-uuid-here"
+    session_pattern = re.compile(r'"sessionId"\s*:\s*"[^"]*"')
+    replacement = f'"sessionId": "{new_session_id}"'
 
-                # Stop if we've reached the cutoff
-                if message_count > at_message:
-                    break
+    for i, line in enumerate(lines_to_keep):
+        lines_to_keep[i] = session_pattern.sub(replacement, line)
 
-                # Track last message UUID for leafUuid update
-                if "uuid" in entry:
-                    last_uuid = entry["uuid"]
+    # Phase 4: Find the last uuid in the slice for leafUuid
+    last_uuid = None
+    for line in reversed(lines_to_keep):
+        try:
+            entry = json.loads(line)
+            if entry.get("uuid"):
+                last_uuid = entry["uuid"]
+                break
+        except json.JSONDecodeError:
+            continue
 
-            # Rewrite sessionId in all entries
-            if "sessionId" in entry:
-                entry["sessionId"] = new_session_id
+    # Phase 5: Ensure proper structure for history loading
+    # Claude Code requires:
+    # 1. First line must be "summary" type
+    # 2. file-history-snapshot must NOT be before first user/assistant message
 
-            lines_to_keep.append(json.dumps(entry) + "\n")
+    # Separate entries by type
+    summary_lines = []
+    fhs_lines = []  # file-history-snapshot
+    message_lines = []
 
-    # Update summary's leafUuid to point to last message in slice
-    if summary_index is not None and last_uuid:
-        summary_entry = json.loads(lines_to_keep[summary_index])
-        summary_entry["leafUuid"] = last_uuid
-        lines_to_keep[summary_index] = json.dumps(summary_entry) + "\n"
+    for line in lines_to_keep:
+        try:
+            entry = json.loads(line)
+            entry_type = entry.get("type")
+            if entry_type == "summary":
+                summary_lines.append(line)
+            elif entry_type == "file-history-snapshot":
+                fhs_lines.append(line)
+            else:
+                message_lines.append(line)
+        except json.JSONDecodeError:
+            message_lines.append(line)
+
+    # If no summary, create one
+    if not summary_lines:
+        summary_text = existing_summary or "Sliced session"
+        summary_entry = {
+            "type": "summary",
+            "summary": summary_text,
+            "leafUuid": last_uuid or new_session_id
+        }
+        summary_lines = [json.dumps(summary_entry) + "\n"]
+    else:
+        # Update leafUuid in existing summary
+        if last_uuid:
+            leaf_pattern = re.compile(r'"leafUuid"\s*:\s*"[^"]*"')
+            leaf_replacement = f'"leafUuid": "{last_uuid}"'
+            summary_lines[0] = leaf_pattern.sub(leaf_replacement, summary_lines[0])
+
+    # Rebuild: summaries first, then messages, then file-history-snapshots at end
+    lines_to_keep = summary_lines + message_lines + fhs_lines
 
     # Save to same directory as original
     output_path = jsonl_path.parent / f"{new_session_id}.jsonl"
