@@ -93,7 +93,8 @@ def run(args):
 
         # Send prompt if specified
         if args.prompt:
-            time.sleep(1)  # Extra wait for Claude to be ready
+            # Longer wait for Claude to be fully ready (hooks, rendering, etc.)
+            time.sleep(2)
             mesh.send_message(args.name, args.prompt)
             return {"ok": True, "name": args.name, "registered": True, "prompt_sent": True}
 

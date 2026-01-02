@@ -176,13 +176,20 @@ class Aura:
         """
         if not self.message_queue or not self.master_fd:
             return
+
+        # Calculate total size for delay scaling
+        total_bytes = sum(len(msg.encode('utf-8')) for msg in self.message_queue)
+
         for msg in self.message_queue:
             os.write(self.master_fd, msg.encode('utf-8'))
         self.message_queue = []
         self._emit("messages_injected", {})
+
         if send_enter:
-            # Small delay then Enter (like send-to-brother.sh)
-            time.sleep(0.3)
+            # Scale delay based on message size (min 0.3s, max 2s)
+            # ~500 bytes = 0.3s, ~5000 bytes = 2s
+            delay = min(2.0, max(0.3, total_bytes / 2500))
+            time.sleep(delay)
             os.write(self.master_fd, b'\r')
 
     def mesh_send(self, to_agent: str, content: str) -> dict:
@@ -218,6 +225,10 @@ class Aura:
 
         if pid == 0:
             # Child - set environment and exec claude
+            # Set session ID for self-identification
+            if self.session_id:
+                os.environ["AURA_SESSION_ID"] = self.session_id
+
             # Set NEXUS_SESSION env var if we have a nexus session
             if self.nexus_session:
                 os.environ["NEXUS_SESSION"] = self.nexus_session
