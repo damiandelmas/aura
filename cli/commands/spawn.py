@@ -36,8 +36,10 @@ def run(args):
                     workdir = session_workdir
 
                 # If slicing, do it HERE so we can symlink the result
-                if args.slice:
-                    new_session_id = slice_at(jsonl_path, args.slice)
+                # --at is preferred, --slice is legacy fallback
+                slice_ref = getattr(args, 'at', None) or getattr(args, 'slice', None)
+                if slice_ref:
+                    new_session_id = slice_at(jsonl_path, slice_ref)
                     # Update jsonl_path to point to sliced file
                     jsonl_path = jsonl_path.parent / f"{new_session_id}.jsonl"
                     full_session_id = new_session_id
@@ -81,22 +83,41 @@ def run(args):
         timeout = args.timeout
         start = time.time()
         registered = False
+        mesh_available = True
 
-        while time.time() - start < timeout:
-            if mesh.agent_registered(args.name):
-                registered = True
-                break
-            time.sleep(0.5)
+        # Check if mesh is running before waiting
+        mesh_check = mesh.discover()
+        if mesh_check.get("error"):
+            mesh_available = False
 
-        if not registered:
-            return {"ok": False, "error": "timeout waiting for registration", "name": args.name}
+        if mesh_available:
+            while time.time() - start < timeout:
+                if mesh.agent_registered(args.name):
+                    registered = True
+                    break
+                time.sleep(0.5)
+
+            if not registered:
+                return {"ok": False, "error": "timeout waiting for registration", "name": args.name}
 
         # Send prompt if specified
         if args.prompt:
             # Longer wait for Claude to be fully ready (hooks, rendering, etc.)
             time.sleep(2)
-            mesh.send_message(args.name, args.prompt)
-            return {"ok": True, "name": args.name, "registered": True, "prompt_sent": True}
+
+            if mesh_available:
+                result = mesh.send_message(args.name, args.prompt)
+                if not result.get("error"):
+                    return {"ok": True, "name": args.name, "registered": True, "prompt_sent": True}
+
+            # Mesh unavailable or send failed - fall back to direct tmux with delay scaling
+            # Delay formula from aura.py: handles long prompts (up to 5KB+)
+            prompt_bytes = len(args.prompt.encode('utf-8'))
+            delay = min(2.0, max(0.3, prompt_bytes / 2500))
+            tmux.send_keys(args.name, args.prompt)
+            time.sleep(delay)
+            tmux.send_keys(args.name, "", enter=True)
+            return {"ok": True, "name": args.name, "prompt_sent": True, "fallback": "tmux"}
 
     return {"ok": True, "name": args.name, "spawned": True}
 
