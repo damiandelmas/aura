@@ -3,14 +3,19 @@ JSONL slicing library for Claude Code session manipulation.
 
 Provides functions to find, count, slice, and extract metadata from
 Claude Code JSONL session files.
+
+Uses Thread's database for message lookups when available.
 """
 
 import json
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 
 
 CLAUDE_DIR = Path.home() / ".claude/projects"
+THREAD_FIND = Path.home() / "projects/thread/main/scripts/find-message.py"
 
 
 def find_jsonl(session_id: str) -> Path | None:
@@ -76,12 +81,62 @@ def count_messages(jsonl_path: Path) -> int:
     return count
 
 
-def slice_at(jsonl_path: Path, at_message: int) -> str:
-    """Create sliced copy at message N, return new session ID.
+def query_thread(session_id: str, at: str) -> dict | None:
+    """Query Thread's database to find slice point.
 
-    Mimics the old bash approach: copy lines verbatim, only modify
-    sessionId via regex replacement. This preserves JSON formatting
-    which Claude Code may validate.
+    Args:
+        session_id: Session ID (prefix ok)
+        at: Slice reference - can be:
+            - Content string: "crossover solution"
+            - Message number: "42"
+            - UUID prefix: "4550d0e6"
+            - Line number prefixed with 'L': "L225"
+
+    Returns:
+        Dict with jsonl_line, or None if not found
+    """
+    if not THREAD_FIND.exists():
+        return None
+
+    # Determine query type
+    if at.startswith('L') and at[1:].isdigit():
+        # Line number: L225
+        cmd = [sys.executable, str(THREAD_FIND), session_id, "--line", at[1:]]
+    elif at.isdigit():
+        # Message number: 42
+        cmd = [sys.executable, str(THREAD_FIND), session_id, "--msg", at]
+    elif len(at) >= 8 and all(c in '0123456789abcdef-' for c in at[:8]):
+        # UUID prefix: 4550d0e6
+        cmd = [sys.executable, str(THREAD_FIND), "--uuid", at]
+    else:
+        # Content search - try user messages first, then assistant
+        cmd = [sys.executable, str(THREAD_FIND), session_id, "--content", at, "--user"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            if data and 'jsonl_line' in data:
+                return data
+        # Fall back to assistant messages
+        cmd = [sys.executable, str(THREAD_FIND), session_id, "--content", at]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+
+    try:
+        data = json.loads(result.stdout)
+        if 'error' in data:
+            return None
+        return data
+    except json.JSONDecodeError:
+        return None
+
+
+def slice_at(jsonl_path: Path, at: str | int) -> str:
+    """Create sliced copy at specified point, return new session ID.
+
+    Uses Thread's database for smart lookups when available, falls back
+    to line counting for legacy support.
 
     IMPORTANT: Sessions must start with a 'summary' type line for
     Claude Code to load history on resume. If the source session
@@ -89,7 +144,12 @@ def slice_at(jsonl_path: Path, at_message: int) -> str:
 
     Args:
         jsonl_path: Path to original JSONL file
-        at_message: Message number to slice at (1-indexed)
+        at: Slice point - can be:
+            - int: Legacy message number (1-indexed, counts user/assistant)
+            - str starting with 'L': Line number (e.g., "L225")
+            - str digits: Message number (e.g., "42")
+            - str UUID: Message UUID prefix (e.g., "4550d0e6")
+            - str other: Content search (e.g., "crossover solution")
 
     Returns:
         New UUID for the sliced session
@@ -97,34 +157,72 @@ def slice_at(jsonl_path: Path, at_message: int) -> str:
     import re
 
     new_session_id = str(uuid.uuid4())
-
-    # Phase 1: Find cutoff line number (like grep -n | head -n N | tail -1)
-    message_count = 0
+    session_id = jsonl_path.stem
     cutoff_line = 0
-    existing_summary = None  # Track if we find a summary to copy
+    existing_summary = None
 
-    with open(jsonl_path, 'r') as f:
-        for line_num, line in enumerate(f, 1):
-            if not line.strip():
-                continue
-            try:
-                entry = json.loads(line)
-                msg_type = entry.get("type")
+    # Try Thread lookup first for string arguments
+    if isinstance(at, str):
+        thread_result = query_thread(session_id, at)
+        if thread_result and thread_result.get('jsonl_line'):
+            cutoff_line = thread_result['jsonl_line']
+            # Get existing summary while we're reading the file
+            with open(jsonl_path, 'r') as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line)
+                        if entry.get('type') == 'summary':
+                            existing_summary = entry.get('summary', 'Sliced session')
+                            break
+                    except json.JSONDecodeError:
+                        continue
 
-                # Capture existing summary text if we find one
-                if msg_type == "summary" and existing_summary is None:
-                    existing_summary = entry.get("summary", "Sliced session")
+    # Legacy fallback: count messages (for int or if Thread lookup failed)
+    if cutoff_line == 0:
+        # Handle direct line number (L76 syntax) without Thread
+        if isinstance(at, str) and at.startswith('L') and at[1:].isdigit():
+            cutoff_line = int(at[1:])
+            # Get existing summary
+            with open(jsonl_path, 'r') as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line)
+                        if entry.get('type') == 'summary':
+                            existing_summary = entry.get('summary', 'Sliced session')
+                            break
+                    except json.JSONDecodeError:
+                        continue
+        elif isinstance(at, str) and at.isdigit():
+            at_message = int(at)
+        elif isinstance(at, int):
+            at_message = at
+        else:
+            raise ValueError(f"Could not find slice point: {at}")
 
-                if msg_type in ("user", "assistant"):
-                    message_count += 1
-                    cutoff_line = line_num
-                    if message_count >= at_message:
-                        break
-            except json.JSONDecodeError:
-                continue
+        # Count messages if we still need cutoff_line
+        if cutoff_line == 0 and 'at_message' in dir():
+            message_count = 0
+            with open(jsonl_path, 'r') as f:
+                for line_num, line in enumerate(f, 1):
+                    if not line.strip():
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        msg_type = entry.get("type")
+
+                        if msg_type == "summary" and existing_summary is None:
+                            existing_summary = entry.get("summary", "Sliced session")
+
+                        if msg_type in ("user", "assistant"):
+                            message_count += 1
+                            cutoff_line = line_num
+                            if message_count >= at_message:
+                                break
+                    except json.JSONDecodeError:
+                        continue
 
     if cutoff_line == 0:
-        raise ValueError(f"Could not find message {at_message}")
+        raise ValueError(f"Could not find slice point: {at}")
 
     # Phase 2: Copy lines verbatim up to cutoff (like head -n)
     lines_to_keep = []
@@ -153,7 +251,43 @@ def slice_at(jsonl_path: Path, at_message: int) -> str:
         except json.JSONDecodeError:
             continue
 
-    # Phase 5: Ensure proper structure for history loading
+    # Phase 5: Fix parentUuid tree (ensure single root)
+    # Sessions with Nexus injection may have multiple parentUuid: null entries
+    # We need to relink them so only the first user/assistant is the root
+    first_root_uuid = None
+    prev_uuid = None
+    fixed_lines = []
+
+    # Use regex to preserve original JSON formatting
+    null_parent_pattern = re.compile(r'"parentUuid"\s*:\s*null')
+
+    for line in lines_to_keep:
+        try:
+            entry = json.loads(line)
+            entry_type = entry.get("type")
+
+            if entry_type in ("user", "assistant"):
+                current_uuid = entry.get("uuid")
+                parent_uuid = entry.get("parentUuid")
+
+                # If this is a null parent entry
+                if parent_uuid is None:
+                    if first_root_uuid is None:
+                        # First root - keep it as the root
+                        first_root_uuid = current_uuid
+                    else:
+                        # Subsequent null parent - relink via regex (preserves formatting)
+                        line = null_parent_pattern.sub(f'"parentUuid": "{prev_uuid}"', line)
+
+                prev_uuid = current_uuid
+
+            fixed_lines.append(line)
+        except json.JSONDecodeError:
+            fixed_lines.append(line)
+
+    lines_to_keep = fixed_lines
+
+    # Phase 6: Ensure proper structure for history loading
     # Claude Code requires:
     # 1. First line must be "summary" type
     # 2. file-history-snapshot must NOT be before first user/assistant message
@@ -175,6 +309,17 @@ def slice_at(jsonl_path: Path, at_message: int) -> str:
                 message_lines.append(line)
         except json.JSONDecodeError:
             message_lines.append(line)
+
+    # Recalculate last_uuid from message_lines (after all fixes applied)
+    last_uuid = None
+    for line in reversed(message_lines):
+        try:
+            entry = json.loads(line)
+            if entry.get("uuid"):
+                last_uuid = entry["uuid"]
+                break
+        except json.JSONDecodeError:
+            continue
 
     # If no summary, create one
     if not summary_lines:

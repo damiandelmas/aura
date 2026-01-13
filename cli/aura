@@ -41,8 +41,10 @@ def main():
                          help="Nexus session to inherit knowledge from")
     p_spawn.add_argument("--memory", "-m", metavar="SESSION_ID",
                          help="JSONL session to resume")
-    p_spawn.add_argument("--slice", "-s", type=int, metavar="N",
-                         help="Slice memory at message N")
+    p_spawn.add_argument("--at", "-a", metavar="REF",
+                         help="Slice at: content search, 'L225' (line), '42' (msg#), or UUID")
+    p_spawn.add_argument("--slice", "-s", metavar="N",
+                         help="[DEPRECATED] Use --at instead. Legacy message number.")
     p_spawn.add_argument("--prompt", "-p", metavar="TEXT",
                          help="Initial prompt (implies --wait)")
     p_spawn.add_argument("--wait", "-w", action="store_true",
