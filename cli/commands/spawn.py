@@ -10,13 +10,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'lib'))
 
 def run(args):
     """Spawn a new agent."""
-    from lib import mesh, tmux
+    # Set project/session name from knowledge BEFORE importing terminal
+    # This affects which tmux session agents are spawned into
+    if args.knowledge:
+        os.environ["AURA_PROJECT"] = args.knowledge
 
-    # Ensure tmux session exists
-    tmux.ensure_session()
+    from lib import mesh, terminal
+
+    # Ensure terminal session exists
+    terminal.ensure_session()
 
     # Check if window already exists
-    if tmux.window_exists(args.name):
+    if terminal.window_exists(args.name):
         return {"ok": False, "error": f"agent already exists: {args.name}"}
 
     # Determine working directory
@@ -55,7 +60,7 @@ def run(args):
             full_session_id = args.memory
 
     # Create window in the correct working directory
-    tmux.create_window(args.name, workdir)
+    terminal.create_window(args.name, workdir)
 
     # Build aura.py command
     aura_wrapper = "/home/axp/projects/aura/main/wrapper/aura.py"
@@ -74,9 +79,9 @@ def run(args):
 
     cmd = " ".join(cmd_parts)
 
-    # Send command to tmux
+    # Send command to terminal
     time.sleep(0.5)
-    tmux.send_keys(args.name, cmd, enter=True)
+    terminal.send_keys(args.name, cmd, enter=True)
 
     # If --wait or --prompt, poll for registration
     if args.wait or args.prompt:
@@ -110,14 +115,14 @@ def run(args):
                 if not result.get("error"):
                     return {"ok": True, "name": args.name, "registered": True, "prompt_sent": True}
 
-            # Mesh unavailable or send failed - fall back to direct tmux with delay scaling
+            # Mesh unavailable or send failed - fall back to direct terminal with delay scaling
             # Delay formula from aura.py: handles long prompts (up to 5KB+)
             prompt_bytes = len(args.prompt.encode('utf-8'))
             delay = min(2.0, max(0.3, prompt_bytes / 2500))
-            tmux.send_keys(args.name, args.prompt)
+            terminal.send_keys(args.name, args.prompt)
             time.sleep(delay)
-            tmux.send_keys(args.name, "", enter=True)
-            return {"ok": True, "name": args.name, "prompt_sent": True, "fallback": "tmux"}
+            terminal.send_keys(args.name, "", enter=True)
+            return {"ok": True, "name": args.name, "prompt_sent": True, "fallback": terminal.BACKEND_NAME}
 
     return {"ok": True, "name": args.name, "spawned": True}
 

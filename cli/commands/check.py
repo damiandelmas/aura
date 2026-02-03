@@ -3,7 +3,7 @@
 
 def run(args):
     """Check status of specific agent."""
-    from lib import mesh, tmux
+    from lib import mesh, terminal
 
     result = mesh.discover()
     if not result.get("ok"):
@@ -25,6 +25,6 @@ def run(args):
     }
 
     if args.output:
-        response["output"] = tmux.capture_output(args.name, args.lines)
+        response["output"] = terminal.capture_output(args.name, args.lines)
 
     return response

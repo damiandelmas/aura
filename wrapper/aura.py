@@ -84,8 +84,9 @@ class Aura:
     def __init__(self, claude_args: list[str] = None, socket_path: str = None, name: str = None, gate: bool = False, nexus_session: str = None):
         self.claude_args = claude_args or []
         self.session_id = self._extract_session_id()
-        self.socket_path = socket_path or self._default_socket_path()
+        # Set name BEFORE socket_path so socket can use name
         self.name = name or self._default_name()
+        self.socket_path = socket_path or self._default_socket_path()
         self.gate = gate  # If True, wait for Enter; if False, auto-execute
         self.nexus_session = nexus_session  # Nexus session name for NEXUS_SESSION env var
 
@@ -106,10 +107,12 @@ class Aura:
         return None
 
     def _default_socket_path(self) -> str:
-        """Generate socket path."""
+        """Generate socket path based on agent name (unique)."""
         SOCKET_DIR.mkdir(exist_ok=True)
-        sid = self.session_id or f"new-{os.getpid()}"
-        return str(SOCKET_DIR / f"{sid[:8]}.sock")
+        # Use name for socket (names are unique across mesh)
+        # Fall back to PID if no name
+        identifier = self.name or f"new-{os.getpid()}"
+        return str(SOCKET_DIR / f"{identifier}.sock")
 
     def _default_name(self) -> str:
         """Generate agent name."""
@@ -159,7 +162,7 @@ class Aura:
             for msg in result["messages"]:
                 from_agent = msg.get("from_agent", "unknown")
                 content = msg.get("content", "")
-                formatted = f"<system-reminder>\nMessage from @{from_agent}:\n{content}\n</system-reminder>\n"
+                formatted = f"@{from_agent}:\n{content}\n"
                 self.message_queue.append(formatted)
                 self._emit("message_received", {"from": from_agent})
 
@@ -228,6 +231,10 @@ class Aura:
             # Set session ID for self-identification
             if self.session_id:
                 os.environ["AURA_SESSION_ID"] = self.session_id
+
+            # Set agent name for status line / identification
+            if self.name:
+                os.environ["AURA_AGENT_NAME"] = self.name
 
             # Set NEXUS_SESSION env var if we have a nexus session
             if self.nexus_session:

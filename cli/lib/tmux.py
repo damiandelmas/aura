@@ -1,9 +1,12 @@
-"""Tmux wrapper for orca session management (hidden from AI)."""
+"""Tmux wrapper for aura session management (hidden from AI)."""
 
+import os
 import subprocess
 import time
 
-TMUX_SESSION = "orca"
+# Session name from env, knowledge session, or default
+# Set AURA_TMUX_SESSION or pass --knowledge to aura spawn
+TMUX_SESSION = os.environ.get("AURA_TMUX_SESSION") or os.environ.get("AURA_PROJECT") or "aura"
 
 
 def ensure_session():
