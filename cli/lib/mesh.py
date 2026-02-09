@@ -1,9 +1,45 @@
 """Mesh socket client for agent communication."""
 
+import os
 import socket
 import json
+import subprocess
+import time
 
 MESH_SOCKET = "/tmp/aura/mesh.sock"
+MESH_DAEMON = "/home/axp/projects/aura/main/mesh/mesh.py"
+
+
+def ensure_running():
+    """Start mesh daemon if not running.
+
+    Returns:
+        True if mesh is now running
+    """
+    # Check if already running
+    result = discover()
+    if not result.get("error"):
+        return True
+
+    # Check if process exists
+    try:
+        output = subprocess.check_output(["pgrep", "-f", "mesh/mesh.py"], stderr=subprocess.DEVNULL)
+        if output.strip():
+            # Process exists but socket not ready, wait a bit
+            time.sleep(0.5)
+            return not discover().get("error")
+    except subprocess.CalledProcessError:
+        pass
+
+    # Start daemon
+    subprocess.Popen(
+        ["python3", MESH_DAEMON],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True
+    )
+    time.sleep(0.5)
+    return not discover().get("error")
 
 
 def request(cmd: dict) -> dict:

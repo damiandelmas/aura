@@ -17,6 +17,9 @@ def run(args):
 
     from lib import mesh, terminal
 
+    # Ensure mesh daemon is running
+    mesh.ensure_running()
+
     # Ensure terminal session exists
     terminal.ensure_session()
 
