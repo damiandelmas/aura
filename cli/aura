@@ -21,7 +21,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd
+from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd
 from lib.output import output
 
 
@@ -37,6 +37,8 @@ def main():
     # spawn
     p_spawn = subparsers.add_parser("spawn", help="Create a new agent")
     p_spawn.add_argument("name", help="Agent name")
+    p_spawn.add_argument("--fleet", "-f", metavar="NAME",
+                         help="Fleet name (groups agents in one tmux session)")
     p_spawn.add_argument("--knowledge", "-k", metavar="SESSION",
                          help="Nexus session to inherit knowledge from")
     p_spawn.add_argument("--memory", "-m", metavar="SESSION_ID",
@@ -51,15 +53,25 @@ def main():
                          help="Wait for mesh registration")
     p_spawn.add_argument("--timeout", type=int, default=30,
                          help="Timeout for --wait (default: 30)")
+    p_spawn.add_argument("--model", metavar="MODEL",
+                         help="Claude model alias (opus, sonnet) or full name. Passed through to claude.")
+    p_spawn.add_argument("--as-pane", dest="as_pane", action="store_true",
+                         help="Spawn without stealing focus (tmux -d). Use when spawning from a session a human is watching.")
+    p_spawn.add_argument("--silent", dest="silent", action="store_true",
+                         help="Silent keeper: skip AGENT_STARTED/AGENT_STOPPED lifecycle hooks. For ledger clones and similar background agents.")
+    p_spawn.add_argument("--clone", dest="clone", action="store_true",
+                         help="Force a real fork of --memory session (new UUID, isolated JSONL). Without --clone, --memory resumes in-place (parent and child share JSONL). Equivalent to --at L<tail> unless --at is also set.")
 
     # send
     p_send = subparsers.add_parser("send", help="Send message to agent")
     p_send.add_argument("target", help="Target agent name")
-    p_send.add_argument("message", help="Message content")
+    p_send.add_argument("message", nargs="?", default="", help="Message content")
     p_send.add_argument("--as", dest="sender", default="cli",
                         help="Send as (default: cli)")
-    p_send.add_argument("--mode", choices=["immediate", "queue", "notify"],
-                        help="Force delivery mode")
+    p_send.add_argument("--mode", choices=["immediate", "queue", "notify", "auto"],
+                        help="Force delivery mode. 'auto' → immediate if target idle, queue if busy.")
+    p_send.add_argument("--nudge", action="store_true",
+                        help="Send Enter keystroke to unstick delivery")
 
     # check
     p_check = subparsers.add_parser("check", help="Check agent status")
@@ -88,6 +100,28 @@ def main():
     p_list.add_argument("--mode", choices=["immediate", "queue", "notify"],
                         help="Filter by mode")
 
+    # resolve
+    p_resolve = subparsers.add_parser("resolve", help="Resolve agent name or tmux group → session_id + window + status")
+    p_resolve.add_argument("target", help="Agent name, comma-separated names, or tmux session name")
+
+    # sleep — self-schedule a deferred aura-send
+    p_sleep = subparsers.add_parser("sleep", help="Schedule deferred wake-up message")
+    p_sleep.add_argument("seconds", help="Delay in seconds before firing")
+    p_sleep.add_argument("message", help="Message to deliver")
+    p_sleep.add_argument("--target", metavar="NAME",
+                         help="Recipient agent (default: self via $AURA_AGENT_NAME)")
+    p_sleep.add_argument("--as", dest="sender", metavar="NAME",
+                         help="Sender label (default: $AURA_AGENT_NAME or 'cli')")
+
+    # ledger
+    p_ledger = subparsers.add_parser("ledger", help="Query agent spawn history")
+    p_ledger.add_argument("name", nargs="?", default=None,
+                          help="Filter by agent name (substring match)")
+    p_ledger.add_argument("--fleet", help="Filter by fleet")
+    p_ledger.add_argument("--parent", help="Filter by parent session (prefix match)")
+    p_ledger.add_argument("--limit", "-n", type=int, default=20,
+                          help="Number of entries (default: 20)")
+
     args = parser.parse_args()
 
     # Dispatch to command handler
@@ -104,6 +138,12 @@ def main():
             result = cut.run(args)
         elif args.command == "list":
             result = list_cmd.run(args)
+        elif args.command == "resolve":
+            result = resolve.run(args)
+        elif args.command == "sleep":
+            result = sleep_cmd.run(args)
+        elif args.command == "ledger":
+            result = ledger.run(args)
         else:
             result = {"error": f"unknown command: {args.command}"}
     except Exception as e:

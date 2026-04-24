@@ -23,6 +23,14 @@ import threading
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
+
+# Event log (extreme-external edge observability). Noop if import fails.
+try:
+    sys.path.insert(0, "/home/axp/projects/headquarters")
+    from runway.port._shared.event_log import log as _event_log
+except Exception:
+    def _event_log(edge, payload):
+        pass
 from typing import Optional
 
 # === CONFIG ===
@@ -38,6 +46,7 @@ class Agent:
     socket_path: str
     registered_at: str = field(default_factory=lambda: datetime.now().isoformat())
     status: str = "idle"  # idle, busy, waiting
+    delivery_mode: str = "immediate"  # immediate, queue, notify
     last_seen: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
@@ -92,7 +101,7 @@ class Mesh:
             socket_path=socket_path
         )
         self.agents[name] = agent
-        self.queues[name] = []
+        self.queues.setdefault(name, [])  # preserve pending messages on re-register
         self._log(f"registered: {name} ({session_id[:8]})")
         return {"ok": True, "action": "register", "name": name}
 
@@ -121,6 +130,16 @@ class Mesh:
             "action": "discover",
             "agents": [asdict(a) for a in self.agents.values()]
         }
+
+    def set_mode(self, name: str, mode: str) -> dict:
+        """Set agent delivery mode."""
+        if name not in self.agents:
+            return {"error": f"agent not found: {name}"}
+        if mode not in ("immediate", "queue", "notify"):
+            return {"error": f"invalid mode: {mode}"}
+        self.agents[name].delivery_mode = mode
+        self._log(f"mode set: {name} → {mode}")
+        return {"ok": True, "action": "set_mode", "name": name, "mode": mode}
 
     # === MESSAGING ===
 
@@ -171,10 +190,13 @@ class Mesh:
         for msg_id in msg_ids:
             if msg_id in self.messages:
                 msg = self.messages[msg_id]
-                msg.delivered = True
                 messages.append(asdict(msg))
 
-        self.queues[agent_name] = []  # Clear queue
+        # Clear queue and mark delivered only after building response
+        for msg_id in msg_ids:
+            if msg_id in self.messages:
+                self.messages[msg_id].delivered = True
+        self.queues[agent_name] = []
         return {"ok": True, "action": "receive", "messages": messages}
 
     # === CONVERSATIONS ===
@@ -243,6 +265,7 @@ class Mesh:
                 req.get("topic"), req.get("max_turns", 5)
             ),
             "get_conversation": lambda: self.get_conversation(req.get("conversation_id")),
+            "set_mode": lambda: self.set_mode(req.get("name"), req.get("mode")),
         }
 
         if action in handlers:
@@ -273,9 +296,40 @@ class Mesh:
                 for sock in readable:
                     conn, _ = self.server_socket.accept()
                     try:
-                        data = conn.recv(8192).decode('utf-8')
+                        # Read until client closes its write half (shutdown SHUT_WR)
+                        # or a full JSON payload is collected. Fixes truncation at
+                        # 8KB which surfaced as {"error": "invalid json"} on large
+                        # DMs (e.g. bridge-forwarded Telegram tables).
+                        chunks: list[bytes] = []
+                        conn.settimeout(5.0)
+                        while True:
+                            try:
+                                buf = conn.recv(65536)
+                            except socket.timeout:
+                                break
+                            if not buf:
+                                break
+                            chunks.append(buf)
+                            # Fast-path: if we got a complete JSON object and no
+                            # more data is buffered, stop reading to avoid waiting
+                            # for client SHUT_WR that may never come.
+                            try:
+                                joined = b"".join(chunks).decode('utf-8')
+                                json.loads(joined)
+                                break
+                            except (json.JSONDecodeError, UnicodeDecodeError):
+                                continue
+                        data = b"".join(chunks).decode('utf-8', errors='replace')
                         if data:
+                            try:
+                                _event_log("mesh:in", json.loads(data))
+                            except Exception:
+                                _event_log("mesh:in", {"raw": data[:4000]})
                             response = self.handle_request(data)
+                            try:
+                                _event_log("mesh:out", json.loads(response))
+                            except Exception:
+                                _event_log("mesh:out", {"raw": response[:4000]})
                             conn.send(response.encode('utf-8'))
                     finally:
                         conn.close()

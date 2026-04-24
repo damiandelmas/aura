@@ -7,7 +7,7 @@ Provides traction (hooks) for external processes to control Claude:
 - Telemetry emission
 - Lifecycle management (restart without losing session)
 
-Delegates actual operations to memory/orca CLIs.
+Delegates actual operations to memory/aura CLIs.
 
 Usage:
     aura                      # Fresh Claude session
@@ -29,14 +29,14 @@ import termios
 import threading
 import subprocess
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 # === CONFIG ===
 CLAUDE_BIN = "claude"
 SOCKET_DIR = Path("/tmp/aura")
 MESH_SOCKET = Path("/tmp/aura/mesh.sock")
 MEMORY_CLI = "memory"  # TODO: actual path when exists
-ORCA_CLI = "orca"      # TODO: actual path when exists
+AURA_CLI = "aura"      # TODO: actual path when exists
 
 # Nexus paths
 NEXUS_SRC = Path.home() / "projects/nexus/main"
@@ -45,8 +45,9 @@ INJECTED_DIR = Path.home() / ".nexus/.injected"
 
 # Paths to actual scripts (until CLI exists)
 REFRESH_SCRIPT = Path.home() / "projects/claude-code/invocation/skills/active/refresh/scripts/external_refresh.py"
-SPAWN_SCRIPT = Path.home() / "projects/fleet/hangar/code/orca/main/primitives/spawn/async-tmux-state.sh"
+SPAWN_SCRIPT = Path.home() / "projects/fleet/hangar/code/orca/main/primitives/spawn/async-tmux-state.sh"  # TODO: legacy path, migrate to aura spawn
 BUILD_PAYLOAD_SCRIPT = NEXUS_SRC / "inject/build-payload.py"
+SEAT_RESOLVER = Path("/home/axp/projects/desks/axplabs/shared/roles/resolve_seat.py")
 
 # Import JSONL library for session slicing
 _lib_path = Path(__file__).parent.parent / "lib"
@@ -71,10 +72,20 @@ def mesh_request(cmd: dict) -> dict | None:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.connect(str(MESH_SOCKET))
         sock.send(json.dumps(cmd).encode('utf-8'))
-        response = sock.recv(8192).decode('utf-8')
+        # Read until mesh closes the connection. Previous code used recv(8192)
+        # which silently truncated any response over 8KB (e.g. receive responses
+        # containing big Telegram DMs). Mesh already clears the queue before
+        # replying, so those messages were lost permanently. (260416 bug)
+        chunks = []
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
         sock.close()
+        response = b"".join(chunks).decode('utf-8')
         return json.loads(response)
-    except:
+    except Exception:
         return None
 
 
@@ -97,6 +108,10 @@ class Aura:
         self.control_thread = None
         self.message_queue: list[str] = []  # Pending messages to inject
         self.mesh_connected = False
+        self.claude_ready = False  # True after startup output settles
+        self._last_output_time = 0.0
+        self._has_output = False
+        self._start_time = time.time()
 
     def _extract_session_id(self) -> str | None:
         """Extract session ID from args if resuming."""
@@ -151,6 +166,9 @@ class Aura:
 
     def mesh_poll_messages(self):
         """Poll mesh for pending messages."""
+        if not self.claude_ready:
+            return  # Don't pull messages until Claude finishes startup
+
         if not self.mesh_connected:
             # Try to reconnect
             self.mesh_register()
@@ -170,6 +188,32 @@ class Aura:
             if not self.gate and self.master_fd and self.message_queue:
                 self._inject_messages()
 
+    def _pty_write_all(self, data: bytes) -> int:
+        """Write fully to PTY master, handling short writes.
+
+        os.write on a PTY master can return a short write when the pty buffer
+        fills (typically ~4KB on Linux). The previous code ignored the return
+        value, silently dropping the tail of large messages. This was the
+        260416 pm-community bug: 3 big Telegram DMs (~4KB each) were logged
+        as delivered by mesh but never surfaced in Claude's pane.
+        """
+        mv = memoryview(data)
+        total = 0
+        while total < len(mv):
+            try:
+                n = os.write(self.master_fd, mv[total:])
+            except BlockingIOError:
+                time.sleep(0.01)
+                continue
+            if n <= 0:
+                time.sleep(0.01)
+                continue
+            total += n
+            # Let the child drain; PTY buffer is tiny.
+            if total < len(mv):
+                time.sleep(0.02)
+        return total
+
     def _inject_messages(self, send_enter: bool = True):
         """Inject queued messages to Claude's PTY.
 
@@ -182,18 +226,23 @@ class Aura:
 
         # Calculate total size for delay scaling
         total_bytes = sum(len(msg.encode('utf-8')) for msg in self.message_queue)
+        injected_bytes = 0
 
         for msg in self.message_queue:
-            os.write(self.master_fd, msg.encode('utf-8'))
+            payload = msg.encode('utf-8')
+            written = self._pty_write_all(payload)
+            injected_bytes += written
+            if written != len(payload):
+                self._emit("inject_short_write", {"expected": len(payload), "written": written})
         self.message_queue = []
-        self._emit("messages_injected", {})
+        self._emit("messages_injected", {"bytes": injected_bytes, "expected": total_bytes})
 
         if send_enter:
             # Scale delay based on message size (min 0.3s, max 2s)
             # ~500 bytes = 0.3s, ~5000 bytes = 2s
             delay = min(2.0, max(0.3, total_bytes / 2500))
             time.sleep(delay)
-            os.write(self.master_fd, b'\r')
+            self._pty_write_all(b'\r')
 
     def mesh_send(self, to_agent: str, content: str) -> dict:
         """Send message to another agent via mesh."""
@@ -236,9 +285,24 @@ class Aura:
             if self.name:
                 os.environ["AURA_AGENT_NAME"] = self.name
 
+            # Pass parent session ID for ledger lineage
+            parent_sid = os.environ.get("CLAUDE_SESSION_ID", "")
+            if parent_sid:
+                os.environ["AURA_PARENT_SESSION"] = parent_sid
+
+            # Pass fleet name so agent knows its group
+            fleet = (os.environ.get("AURA_FLEET")
+                     or os.environ.get("AURA_TMUX_SESSION")
+                     or os.environ.get("AURA_PROJECT"))
+            if fleet:
+                os.environ["AURA_FLEET"] = fleet
+
             # Set NEXUS_SESSION env var if we have a nexus session
             if self.nexus_session:
                 os.environ["NEXUS_SESSION"] = self.nexus_session
+
+            # Unset CLAUDECODE to prevent nested session detection
+            os.environ.pop("CLAUDECODE", None)
 
             cmd = [CLAUDE_BIN] + self.claude_args
             os.execvp(cmd[0], cmd)
@@ -356,14 +420,14 @@ class Aura:
         return json.dumps({"ok": True, "action": "refresh"})
 
     def _do_fork(self, cmd: dict) -> str:
-        """Delegate fork to orca."""
+        """Delegate fork to aura."""
         name = cmd.get("name", f"fork-{datetime.now().strftime('%H%M%S')}")
         at = cmd.get("at")  # message number to slice at
 
         self._emit("fork_start", {"name": name, "at": at})
 
-        # Call orca.spawn with inherit
-        # TODO: use orca CLI when it exists
+        # Call aura spawn with inherit
+        # TODO: use aura CLI when it exists
         if SPAWN_SCRIPT.exists() and self.session_id:
             spawn_cmd = [str(SPAWN_SCRIPT), self.session_id, "--name", name]
             if at:
@@ -423,11 +487,27 @@ class Aura:
     # === TELEMETRY ===
 
     def _emit(self, event: str, data: dict):
-        """Emit telemetry event (for now, just stderr)."""
-        msg = json.dumps({"event": event, "ts": datetime.now().isoformat(), **data})
+        """Emit telemetry event to stderr and /tmp/aura/events.jsonl.
+
+        Wrapper events (message_received, messages_injected, inject_short_write,
+        claude_ready, etc.) are appended to the same events.jsonl the mesh daemon
+        writes to, under edge="wrapper:<agent>". This closes the observability
+        gap between mesh ack and Claude's pane — previously wrapper events only
+        hit stderr and were lost.
+        """
+        payload = {"ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                   "edge": f"wrapper:{self.name}",
+                   "event": event,
+                   **data}
         sys.stderr.write(f"\033[36m[aura]\033[0m {event}\n")
         sys.stderr.flush()
-        # TODO: emit to telemetry sink (file, socket, etc.)
+        try:
+            events_path = Path("/tmp/aura/events.jsonl")
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(events_path, "a") as f:
+                f.write(json.dumps(payload) + "\n")
+        except Exception:
+            pass
 
     # === MAIN LOOP ===
 
@@ -460,6 +540,17 @@ class Aura:
             while self.running:
                 # Check control socket
                 self.check_control_socket()
+
+                # Readiness detection: Claude ready after startup output settles (2s silence)
+                # Fallback: force ready after 30s regardless (prevents permanent gate stuck)
+                if not self.claude_ready:
+                    elapsed = time.time() - self._start_time
+                    if self._has_output and time.time() - self._last_output_time > 2.0:
+                        self.claude_ready = True
+                        self._emit("claude_ready", {})
+                    elif elapsed > 30.0:
+                        self.claude_ready = True
+                        self._emit("claude_ready", {"fallback": True, "elapsed": round(elapsed, 1)})
 
                 # Poll mesh for messages (every ~10 iterations = ~1 second)
                 poll_counter += 1
@@ -497,6 +588,10 @@ class Aura:
                             data = os.read(self.master_fd, 1024)
                             if data:
                                 os.write(sys.stdout.fileno(), data)
+                                # Track output for readiness detection
+                                if not self.claude_ready:
+                                    self._has_output = True
+                                    self._last_output_time = time.time()
                             else:
                                 self.running = False
                         except OSError:
@@ -566,24 +661,33 @@ def _setup_nexus_session(from_session: str = None, onboard: bool = False,
             sys.stderr.write(f"\033[31m[aura]\033[0m build-payload.py not found at {BUILD_PAYLOAD_SCRIPT}\n")
         return None
 
-    # --from: Inherit from parent session
+    # --from: Either resolve a canonical seat key or inherit from a legacy session
     if from_session:
+        if SEAT_RESOLVER.exists():
+            try:
+                result = subprocess.run(["python3", str(SEAT_RESOLVER), "resolve", from_session], capture_output=True, text=True)
+                if result.returncode == 0 and result.stdout.strip():
+                    payload = json.loads(result.stdout)
+                    canonical_name = payload.get("canonical_name")
+                    if canonical_name:
+                        sys.stderr.write(f"\033[36m[aura]\033[0m Using seat context: {canonical_name}\n")
+                        return canonical_name
+            except Exception:
+                pass
+
         parent_dir = SESSIONS_DIR / from_session
         if not parent_dir.exists():
-            # Try finding by prefix
             matches = list(SESSIONS_DIR.glob(f"{from_session}*"))
             if matches:
                 parent_dir = matches[0]
             else:
-                sys.stderr.write(f"\033[31m[aura]\033[0m Parent session '{from_session}' not found\n")
-                return None
+                sys.stderr.write(f"\033[31m[aura]\033[0m Parent session or seat '{from_session}' not found\n")
+                return from_session
 
-        # Create new session inheriting from parent
         new_session = f"child-{from_session[:8]}-{datetime.now().strftime('%H%M%S')}"
         new_dir = SESSIONS_DIR / new_session
         new_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copy parent's runway.md
         parent_runway = parent_dir / "runway.md"
         new_runway = new_dir / "runway.md"
 
@@ -591,7 +695,6 @@ def _setup_nexus_session(from_session: str = None, onboard: bool = False,
             shutil.copy(parent_runway, new_runway)
             sys.stderr.write(f"\033[36m[aura]\033[0m Inherited runway from {from_session}\n")
 
-            # Append delta if provided
             if delta:
                 delta_path = Path(delta).expanduser()
                 if delta_path.exists():

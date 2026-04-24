@@ -51,17 +51,28 @@ def request(cmd: dict) -> dict:
     Returns:
         Response dict from mesh, or error dict if failed
     """
+    sock = None
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.connect(MESH_SOCKET)
         sock.send(json.dumps(cmd).encode())
-        response = sock.recv(8192).decode()
-        sock.close()
+        # Drain until mesh closes; single recv(8192) silently truncated large
+        # responses (receive-with-big-DMs). 260416 bug.
+        chunks = []
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        response = b"".join(chunks).decode()
         return json.loads(response)
     except FileNotFoundError:
         return {"error": "mesh not running", "hint": "start mesh daemon first"}
     except Exception as e:
         return {"error": str(e)}
+    finally:
+        if sock:
+            sock.close()
 
 
 def discover():

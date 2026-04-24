@@ -1,6 +1,7 @@
 """Spawn new agent."""
 
 import os
+import subprocess
 import sys
 import time
 
@@ -8,14 +9,80 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'lib'))
 
 
+def _candidate_identities():
+    """Best-effort identities for the current spawning seat."""
+    import re
+
+    def _normalize(ident: str) -> str:
+        return re.sub(r"-\d+$", "", ident or "")
+
+    candidates = []
+    if os.environ.get("AURA_AGENT_NAME"):
+        candidates.append(os.environ["AURA_AGENT_NAME"])
+    pane = os.environ.get("TMUX_PANE")
+    if pane:
+        for fmt in ("#W", "#S"):
+            try:
+                r = subprocess.run(
+                    ["tmux", "display-message", "-p", "-t", pane, fmt],
+                    capture_output=True, text=True
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    candidates.append(r.stdout.strip())
+            except Exception:
+                pass
+
+    deduped = []
+    seen = set()
+    for candidate in candidates:
+        normalized = _normalize(candidate)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            deduped.append(normalized)
+    return deduped
+
+
+def _infer_parent_from_caller():
+    candidates = _candidate_identities()
+    return candidates[0] if candidates else None
+
+
+def _infer_fleet_from_caller():
+    """Route workers based on normalized manager/leader identities."""
+    for ident in _candidate_identities():
+        if ident.startswith("pm-"):
+            return f"{ident[3:]}-workers"
+        if ident.endswith("-manager-project"):
+            product = ident[: -len("-manager-project")]
+            return f"{product}-workers"
+        if "-leader-" in ident:
+            product, lane = ident.split("-leader-", 1)
+            return f"{product}-{lane}-workers"
+        if ident.endswith("-leader") and ident.count("-") >= 2:
+            base = ident[: -len("-leader")]
+            return f"{base}-workers"
+    return None
+
+
 def run(args):
     """Spawn a new agent."""
-    # Set project/session name from knowledge BEFORE importing terminal
-    # This affects which tmux session agents are spawned into
-    if args.knowledge:
-        os.environ["AURA_PROJECT"] = args.knowledge
+    # Determine fleet name BEFORE importing terminal (it reads env at import time)
+    # Priority: --fleet flag > caller-derived default.
+    fleet = getattr(args, 'fleet', None) or _infer_fleet_from_caller()
+    if fleet:
+        os.environ["AURA_FLEET"] = fleet
+        os.environ["AURA_PROJECT"] = fleet
 
     from lib import mesh, terminal
+
+    def _result(base: dict) -> dict:
+        """Add fleet/attach info to every spawn result."""
+        fleet_name = terminal.SESSION_NAME
+        name = base.get("name", args.name)
+        base["fleet"] = fleet_name
+        base["attach"] = f"tmux attach -t {fleet_name}" if terminal.BACKEND_NAME == "tmux" else f"zellij attach {fleet_name}"
+        base["window"] = f"{fleet_name}:{name}"
+        return base
 
     # Ensure mesh daemon is running
     mesh.ensure_running()
@@ -44,8 +111,18 @@ def run(args):
                     workdir = session_workdir
 
                 # If slicing, do it HERE so we can symlink the result
-                # --at is preferred, --slice is legacy fallback
+                # --at is preferred, --slice is legacy fallback.
+                # --clone (without --at) means "fork at tail": compute line count
+                # and use it as the slice ref, so the clone gets an isolated JSONL.
                 slice_ref = getattr(args, 'at', None) or getattr(args, 'slice', None)
+                if not slice_ref and getattr(args, 'clone', False):
+                    try:
+                        with open(jsonl_path, 'r') as _f:
+                            tail_line = sum(1 for _ in _f)
+                        if tail_line > 0:
+                            slice_ref = f"L{tail_line}"
+                    except Exception:
+                        pass
                 if slice_ref:
                     new_session_id = slice_at(jsonl_path, slice_ref)
                     # Update jsonl_path to point to sliced file
@@ -62,12 +139,26 @@ def run(args):
             # jsonl lib not available, use partial ID
             full_session_id = args.memory
 
+    # Inject Claude Code lifecycle hooks into <workdir>/.claude/settings.json
+    # so the new agent auto-reports AGENT_STARTED / AGENT_STOPPED via aura mesh.
+    # Picasso-steal from octogent. Idempotent.
+    try:
+        from lib import hooks
+        hook_result = hooks.inject(workdir, emit_lifecycle=not getattr(args, 'silent', False))
+    except Exception:
+        hook_result = None
+
     # Create window in the correct working directory
-    terminal.create_window(args.name, workdir)
+    # --as-pane → detached new-window so we don't steal focus from a human-watched session
+    terminal.create_window(args.name, workdir, detached=getattr(args, 'as_pane', False))
 
     # Build aura.py command
     aura_wrapper = "/home/axp/projects/aura/main/wrapper/aura.py"
-    cmd_parts = ["python3", aura_wrapper, "--name", args.name]
+    parent_name = _infer_parent_from_caller()
+    env_parts = []
+    if parent_name:
+        env_parts.append(f"AURA_PARENT={parent_name!r}")
+    cmd_parts = env_parts + ["python3", aura_wrapper, "--name", args.name]
 
     if args.memory:
         # Use full session ID if we found it (may be sliced session)
@@ -79,6 +170,18 @@ def run(args):
         cmd_parts.extend(["--from", args.knowledge])
 
     cmd_parts.append("--dangerously-skip-permissions")
+
+    # Pass --model through to Claude if specified.
+    # NOTE: the bare alias 'opus' resolves to the 200K-context Opus 4.6, NOT the 1M variant.
+    # For the 1M variant, pass the full model ID 'claude-opus-4-6[1m]' (brackets quoted).
+    # Omitting --model falls back to the user's configured default (typically 1M opus).
+    model = getattr(args, 'model', None)
+    if model:
+        # Shell-quote values with brackets so the shell doesn't interpret them as glob chars.
+        if any(c in model for c in "[]"):
+            cmd_parts.extend(["--model", f"'{model}'"])
+        else:
+            cmd_parts.extend(["--model", model])
 
     cmd = " ".join(cmd_parts)
 
@@ -106,17 +209,17 @@ def run(args):
                 time.sleep(0.5)
 
             if not registered:
-                return {"ok": False, "error": "timeout waiting for registration", "name": args.name}
+                return _result({"ok": False, "error": "timeout waiting for registration", "name": args.name})
 
         # Send prompt if specified
         if args.prompt:
-            # Longer wait for Claude to be fully ready (hooks, rendering, etc.)
-            time.sleep(2)
+            # Brief wait — wrapper gates message injection on Claude readiness
+            time.sleep(1)
 
             if mesh_available:
                 result = mesh.send_message(args.name, args.prompt)
                 if not result.get("error"):
-                    return {"ok": True, "name": args.name, "registered": True, "prompt_sent": True}
+                    return _result({"ok": True, "name": args.name, "registered": True, "prompt_sent": True})
 
             # Mesh unavailable or send failed - fall back to direct terminal with delay scaling
             # Delay formula from aura.py: handles long prompts (up to 5KB+)
@@ -125,9 +228,12 @@ def run(args):
             terminal.send_keys(args.name, args.prompt)
             time.sleep(delay)
             terminal.send_keys(args.name, "", enter=True)
-            return {"ok": True, "name": args.name, "prompt_sent": True, "fallback": terminal.BACKEND_NAME}
+            return _result({"ok": True, "name": args.name, "prompt_sent": True, "fallback": terminal.BACKEND_NAME})
 
-    return {"ok": True, "name": args.name, "spawned": True}
+    result = {"ok": True, "name": args.name, "spawned": True}
+    if hook_result:
+        result["hooks"] = hook_result
+    return _result(result)
 
 
 def _ensure_session_accessible(jsonl_path, target_workdir):
