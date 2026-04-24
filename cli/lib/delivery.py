@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
-DELIVERY_LOG = Path(os.environ.get("AURA_DELIVERY_LOG", "/tmp/aura/deliveries.jsonl"))
+from lib import state
 
 
 def now_iso() -> str:
@@ -37,17 +35,23 @@ def render_envelope(message_id: str, sender: str, body: str, sent_at: str | None
     )
 
 
+def delivery_log_path():
+    return state.delivery_log_path()
+
+
 def append_record(record: dict) -> dict:
-    DELIVERY_LOG.parent.mkdir(parents=True, exist_ok=True)
-    with DELIVERY_LOG.open("a", encoding="utf-8") as f:
+    log_path = delivery_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, sort_keys=True) + "\n")
     return record
 
 
 def iter_records(limit: int | None = None):
-    if not DELIVERY_LOG.exists():
+    log_path = delivery_log_path()
+    if not log_path.exists():
         return []
-    lines = DELIVERY_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
     if limit is not None:
         lines = lines[-limit:]
     records = []

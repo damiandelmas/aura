@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 from commands import check
+from lib import state
 
 
 READY_MARKERS = ("READY", "ACK", "idle", "waiting for input")
@@ -58,14 +58,11 @@ def _state_from_output(output: str, mechanical_status: str, terminal: str) -> tu
 
 
 def _root_dir() -> Path:
-    registry_path = os.environ.get("AURA_REGISTRY_PATH")
-    if registry_path:
-        return Path(registry_path).expanduser().resolve().parent
-    return Path(os.environ.get("AURA_STATE_DIR", "/tmp/aura")).expanduser()
+    return state.state_root()
 
 
 def _write_sense_record(seat: str, record: dict) -> None:
-    base = _root_dir() / "seats" / seat / "sense"
+    base = state.seat_dir(seat) / "sense"
     base.mkdir(parents=True, exist_ok=True)
     events = base / "events.jsonl"
     with events.open("a", encoding="utf-8") as f:

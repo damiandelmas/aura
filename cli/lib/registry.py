@@ -11,18 +11,17 @@ import json
 import os
 import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-DEFAULT_REGISTRY_PATH = Path("/tmp/aura/agents.json")
+from lib import state
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def registry_path() -> Path:
-    return Path(os.environ.get("AURA_REGISTRY_PATH", DEFAULT_REGISTRY_PATH))
+def registry_path():
+    return state.registry_path()
 
 
 def current_fleet(default: str = "aura") -> str:

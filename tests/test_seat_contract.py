@@ -95,6 +95,7 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
     env = {
         **os.environ,
         "AURA_FLEET": fleet,
+        "AURA_STATE_DIR": str(tmp_path),
         "AURA_REGISTRY_PATH": str(tmp_path / "agents.json"),
         "AURA_DELIVERY_LOG": str(tmp_path / "deliveries.jsonl"),
         "PYTHONDONTWRITEBYTECODE": "1",
