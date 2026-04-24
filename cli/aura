@@ -21,7 +21,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop
+from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense
 from lib.output import output
 
 
@@ -116,6 +116,14 @@ def main():
     p_capture.add_argument("--lines", type=int, default=20,
                            help="Number of output lines (default: 20)")
 
+    # sense
+    p_sense = subparsers.add_parser("sense", help="Sense inferred semantic state for a seat")
+    p_sense.add_argument("name", help="Seat/agent name")
+    p_sense.add_argument("--lines", type=int, default=80,
+                         help="Number of captured output lines to inspect (default: 80)")
+    p_sense.add_argument("--question", help="Optional question for semantic state inference")
+    p_sense.add_argument("--features", help="Optional comma-separated desired output features")
+
     # set
     p_set = subparsers.add_parser("set", help="Set agent properties")
     p_set.add_argument("name", help="Agent name")
@@ -177,6 +185,8 @@ def main():
             result = check.run(args)
         elif args.command == "capture":
             result = capture.run(args)
+        elif args.command == "sense":
+            result = sense.run(args)
         elif args.command == "set":
             result = set_cmd.run(args)
         elif args.command == "cut":
