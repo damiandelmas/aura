@@ -21,7 +21,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast
+from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop
 from lib.output import output
 
 
@@ -61,7 +61,7 @@ def main():
                          help="Silent keeper: skip AGENT_STARTED/AGENT_STOPPED lifecycle hooks. For ledger clones and similar background agents.")
     p_spawn.add_argument("--clone", dest="clone", action="store_true",
                          help="Force a real fork of --memory session (new UUID, isolated JSONL). Without --clone, --memory resumes in-place (parent and child share JSONL). Equivalent to --at L<tail> unless --at is also set.")
-    p_spawn.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "opencode"],
+    p_spawn.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "opencode", "openclaw", "shell"],
                          help="Run a generic terminal-backed runtime instead of the Claude wrapper path")
     p_spawn.add_argument("--profile", metavar="NAME",
                          help="Runtime profile name (defaults to agent name; used by Hermes)")
@@ -110,6 +110,12 @@ def main():
     p_check.add_argument("--lines", type=int, default=20,
                          help="Number of output lines (default: 20)")
 
+    # capture
+    p_capture = subparsers.add_parser("capture", help="Capture seat terminal output")
+    p_capture.add_argument("name", help="Seat/agent name")
+    p_capture.add_argument("--lines", type=int, default=20,
+                           help="Number of output lines (default: 20)")
+
     # set
     p_set = subparsers.add_parser("set", help="Set agent properties")
     p_set.add_argument("name", help="Agent name")
@@ -121,6 +127,12 @@ def main():
     p_cut.add_argument("name", help="Agent name")
     p_cut.add_argument("--force", action="store_true",
                        help="Skip graceful shutdown")
+
+    # stop
+    p_stop = subparsers.add_parser("stop", help="Stop a seat")
+    p_stop.add_argument("name", help="Seat/agent name")
+    p_stop.add_argument("--force", action="store_true",
+                        help="Skip graceful shutdown")
 
     # list
     p_list = subparsers.add_parser("list", help="List all agents")
@@ -163,10 +175,14 @@ def main():
             result = broadcast.run(args)
         elif args.command == "check":
             result = check.run(args)
+        elif args.command == "capture":
+            result = capture.run(args)
         elif args.command == "set":
             result = set_cmd.run(args)
         elif args.command == "cut":
             result = cut.run(args)
+        elif args.command == "stop":
+            result = stop.run(args)
         elif args.command == "list":
             result = list_cmd.run(args)
         elif args.command == "resolve":

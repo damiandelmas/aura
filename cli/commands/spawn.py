@@ -244,7 +244,10 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     """Spawn a generic terminal-backed runtime without Claude wrapper coupling."""
     from lib import runtimes
 
-    runtime, spec = runtimes.resolve_runtime(getattr(args, 'runtime', None) or "claude-code")
+    requested_runtime = getattr(args, 'runtime', None)
+    if not requested_runtime and getattr(args, 'launch_command', None):
+        requested_runtime = "command"
+    runtime, spec = runtimes.resolve_runtime(requested_runtime)
     profile = getattr(args, 'profile', None) or args.name
     command = runtimes.build_command(
         runtime,

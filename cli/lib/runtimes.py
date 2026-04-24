@@ -5,6 +5,21 @@ from __future__ import annotations
 import shlex
 
 RUNTIMES: dict[str, dict] = {
+    "command": {
+        "command": "{command}",
+        "graceful_exit": "/exit",
+        "submit_key": "Enter",
+    },
+    "shell": {
+        "command": "bash",
+        "graceful_exit": "exit",
+        "submit_key": "Enter",
+    },
+    "openclaw": {
+        "command": "openclaw",
+        "graceful_exit": "/exit",
+        "submit_key": "Enter",
+    },
     "claude-code": {
         "command": "claude",
         "graceful_exit": "/exit",
