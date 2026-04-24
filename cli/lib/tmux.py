@@ -7,7 +7,10 @@ Vendor: libtmux (MIT, pinned in requirements). Picasso steal — we adapt, not c
 """
 
 import os
+import subprocess
+import tempfile
 import time
+from pathlib import Path
 
 import libtmux
 
@@ -69,25 +72,92 @@ def create_window(name: str, workdir: str | None = None, detached: bool = False)
     return sess.new_window(**kwargs)
 
 
+def _window(name: str):
+    """Return a named window in the current fleet session, or None."""
+    sess = _session()
+    if sess is None:
+        return None
+    return sess.windows.get(window_name=name, default=None)
+
+
+def _target(name: str) -> str:
+    return f"{TMUX_SESSION}:{name}"
+
+
 def send_keys(name: str, text: str, enter: bool = True):
     """Send text to window, optionally followed by Enter.
 
-    Args:
-        name: Window name
-        text: Text to send
-        enter: If True, send Enter key after text (with delay for Claude)
+    Kept for legacy call sites. New multiline/message delivery should use
+    send_text(), which uses tmux buffers instead of shell/key quoting.
     """
-    sess = _session()
-    if sess is None:
-        return
-    win = sess.windows.get(window_name=name, default=None)
+    win = _window(name)
     if win is None:
-        return
+        return None
     pane = win.active_pane
     pane.send_keys(text, enter=False, suppress_history=False)
     if enter:
-        time.sleep(0.3)  # Critical delay for Claude
+        time.sleep(0.3)  # Critical delay for agent CLIs
         pane.enter()
+    return {"ok": True, "target": _target(name), "submitted": enter}
+
+
+def send_text(name: str, text: str, submit: bool = True, submit_key: str = "Enter") -> dict:
+    """Paste text into a tmux window safely, optionally submitting it.
+
+    Uses tmux load-buffer + paste-buffer so multiline prompts and message
+    envelopes are not mangled by shell quoting or libtmux send-keys behavior.
+    """
+    if not window_exists(name):
+        return {"ok": False, "error": f"window not found: {name}", "name": name}
+
+    Path("/tmp/aura/messages").mkdir(parents=True, exist_ok=True)
+    fd, path = tempfile.mkstemp(prefix="aura-msg-", suffix=".txt", dir="/tmp/aura/messages")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+
+        buffer_name = f"aura-{Path(path).stem}"
+        load = subprocess.run(
+            ["tmux", "load-buffer", "-b", buffer_name, path],
+            capture_output=True,
+            text=True,
+        )
+        if load.returncode != 0:
+            return {"ok": False, "error": load.stderr.strip() or "tmux load-buffer failed", "name": name}
+
+        paste = subprocess.run(
+            ["tmux", "paste-buffer", "-t", _target(name), "-b", buffer_name],
+            capture_output=True,
+            text=True,
+        )
+        if paste.returncode != 0:
+            return {"ok": False, "error": paste.stderr.strip() or "tmux paste-buffer failed", "name": name}
+
+        submitted = False
+        if submit:
+            time.sleep(0.2)
+            key = "Enter" if submit_key in ("Enter", "") else submit_key
+            submit_result = subprocess.run(
+                ["tmux", "send-keys", "-t", _target(name), key],
+                capture_output=True,
+                text=True,
+            )
+            if submit_result.returncode != 0:
+                return {"ok": False, "error": submit_result.stderr.strip() or "tmux submit failed", "name": name}
+            submitted = True
+
+        return {
+            "ok": True,
+            "name": name,
+            "target": _target(name),
+            "bytes": len(text.encode("utf-8")),
+            "submitted": submitted,
+        }
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def capture_output(name: str, lines: int = 20) -> list[str]:

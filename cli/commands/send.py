@@ -5,20 +5,25 @@ import threading
 
 def run(args):
     """Send message to agent."""
-    from lib import mesh
+    from lib import delivery, mesh, terminal
 
     nudge = getattr(args, 'nudge', False)
 
     # --nudge: just send Enter via tmux as a delivery kick
     if nudge:
-        from lib import terminal
         if terminal.window_exists(args.target):
-            terminal.send_keys(args.target, "", enter=True)
-            return {"ok": True, "nudged": True, "name": args.target}
+            result = terminal.send_keys(args.target, "", enter=True) or {}
+            return {"ok": True, "nudged": True, "name": args.target, "terminal_ref": result.get("target")}
         return {"error": f"window not found: {args.target}"}
 
-    # --mode auto: resolve at send-time from target's current status
-    # idle → immediate (deliver now), busy → queue (wait for them to finish)
+    transport = getattr(args, 'transport', 'auto') or 'auto'
+    if transport == 'auto':
+        transport = 'tmux' if terminal.window_exists(args.target) else 'mesh'
+
+    if transport == 'tmux':
+        return _send_tmux(args, terminal, delivery)
+
+    # Legacy mesh path remains available for wrapper-managed Claude sessions.
     mode = args.mode
     if mode == "auto":
         discovery = mesh.discover()
@@ -32,16 +37,79 @@ def run(args):
     result = mesh.send_message(args.target, args.message, args.sender, mode)
 
     if result.get("ok"):
-        # Fire background delivery confirmation via flex
         sender = args.sender or "cli"
         _confirm_delivery_async(args.target, args.message, sender)
 
         return {
             "ok": True,
             "queued": True,
+            "transport": "mesh",
             "message_id": result.get("message_id", "")
         }
     return result
+
+
+def _send_tmux(args, terminal, delivery):
+    sender = args.sender or "cli"
+    body = args.message or ""
+    dedupe_key = getattr(args, 'dedupe_key', None) or delivery.default_dedupe_key(args.target, sender, body)
+
+    if not getattr(args, 'force', False):
+        previous = delivery.has_successful_dedupe(args.target, dedupe_key)
+        if previous:
+            record = delivery.append_record({
+                "message_id": delivery.new_message_id(),
+                "target": args.target,
+                "sender": sender,
+                "transport": "tmux",
+                "dedupe_key": dedupe_key,
+                "state": "skipped_duplicate",
+                "previous_message_id": previous,
+                "created_at": delivery.now_iso(),
+            })
+            return {"ok": True, "skipped": True, "reason": "duplicate", "previous_message_id": previous, "record": record}
+
+    message_id = delivery.new_message_id()
+    sent_at = delivery.now_iso()
+    envelope = delivery.render_envelope(message_id, sender, body, sent_at=sent_at)
+
+    delivery.append_record({
+        "message_id": message_id,
+        "target": args.target,
+        "sender": sender,
+        "transport": "tmux",
+        "dedupe_key": dedupe_key,
+        "state": "pending",
+        "created_at": sent_at,
+        "body_hash": delivery.body_hash(body),
+    })
+
+    result = terminal.send_text(args.target, envelope, submit=True)
+    state = "delivered" if result.get("ok") else "failed"
+    record = delivery.append_record({
+        "message_id": message_id,
+        "target": args.target,
+        "sender": sender,
+        "transport": "tmux",
+        "dedupe_key": dedupe_key,
+        "state": state,
+        "updated_at": delivery.now_iso(),
+        "terminal_ref": result.get("target"),
+        "error": result.get("error"),
+        "bytes": result.get("bytes"),
+    })
+
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("error", "tmux send failed"), "message_id": message_id, "record": record}
+
+    return {
+        "ok": True,
+        "transport": "tmux",
+        "message_id": message_id,
+        "target": args.target,
+        "terminal_ref": result.get("target"),
+        "state": state,
+    }
 
 
 def _confirm_delivery_async(target, message, sender):

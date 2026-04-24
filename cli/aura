@@ -61,6 +61,12 @@ def main():
                          help="Silent keeper: skip AGENT_STARTED/AGENT_STOPPED lifecycle hooks. For ledger clones and similar background agents.")
     p_spawn.add_argument("--clone", dest="clone", action="store_true",
                          help="Force a real fork of --memory session (new UUID, isolated JSONL). Without --clone, --memory resumes in-place (parent and child share JSONL). Equivalent to --at L<tail> unless --at is also set.")
+    p_spawn.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "opencode"],
+                         help="Run a generic terminal-backed runtime instead of the Claude wrapper path")
+    p_spawn.add_argument("--profile", metavar="NAME",
+                         help="Runtime profile name (defaults to agent name; used by Hermes)")
+    p_spawn.add_argument("--command", dest="launch_command", metavar="CMD",
+                         help="Override runtime launch command for terminal-backed spawn")
 
     # send
     p_send = subparsers.add_parser("send", help="Send message to agent")
@@ -72,6 +78,12 @@ def main():
                         help="Force delivery mode. 'auto' → immediate if target idle, queue if busy.")
     p_send.add_argument("--nudge", action="store_true",
                         help="Send Enter keystroke to unstick delivery")
+    p_send.add_argument("--transport", choices=["auto", "tmux", "mesh"], default="auto",
+                        help="Delivery transport: auto uses tmux window if present, otherwise mesh")
+    p_send.add_argument("--dedupe-key", metavar="KEY",
+                        help="Skip send if this key was already delivered to the target")
+    p_send.add_argument("--force", action="store_true",
+                        help="Send even if dedupe-key was already delivered")
 
     # check
     p_check = subparsers.add_parser("check", help="Check agent status")

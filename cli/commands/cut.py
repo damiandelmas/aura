@@ -1,23 +1,45 @@
 """End agent shift."""
 
+import time
+
 
 def run(args):
     """Cut agent (graceful or forced stop)."""
     from lib import mesh, terminal
 
     force = getattr(args, 'force', False)
+    graceful_attempted = False
+
+    if terminal.window_exists(args.name) and not force:
+        graceful_attempted = True
+        # Runtime-agnostic best effort. Most agent CLIs accept /exit; if not,
+        # the window is still force-killed below after a short grace period.
+        terminal.send_text(args.name, "/exit", submit=True)
+        time.sleep(1.0)
 
     if not force:
-        # Graceful: unregister from mesh, let wrapper clean up
+        # Mesh unregister is best-effort; tmux remains the source of process truth.
         mesh.unregister(args.name)
 
-    # Kill terminal window (force or graceful both end here)
     if terminal.window_exists(args.name):
         terminal.kill_window(args.name)
-        return {"ok": True, "name": args.name, "cut": True, "force": force}
+        return {
+            "ok": True,
+            "name": args.name,
+            "cut": True,
+            "force": force,
+            "graceful_attempted": graceful_attempted,
+            "terminal": "killed",
+        }
 
-    # Window gone but still registered — clean up mesh
     if force:
         mesh.unregister(args.name)
 
-    return {"ok": True, "name": args.name, "cut": True, "note": "window not found"}
+    return {
+        "ok": True,
+        "name": args.name,
+        "cut": True,
+        "force": force,
+        "graceful_attempted": graceful_attempted,
+        "note": "window not found",
+    }

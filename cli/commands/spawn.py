@@ -84,15 +84,19 @@ def run(args):
         base["window"] = f"{fleet_name}:{name}"
         return base
 
-    # Ensure mesh daemon is running
-    mesh.ensure_running()
-
-    # Ensure terminal session exists
+    # Ensure terminal session exists; this is the baseline substrate for both
+    # generic runtimes and the legacy Claude wrapper path.
     terminal.ensure_session()
 
     # Check if window already exists
     if terminal.window_exists(args.name):
         return {"ok": False, "error": f"agent already exists: {args.name}"}
+
+    if getattr(args, 'runtime', None) or getattr(args, 'launch_command', None):
+        return _spawn_terminal_runtime(args, terminal, _result)
+
+    # Legacy Claude-wrapper path still uses mesh lifecycle hooks.
+    mesh.ensure_running()
 
     # Determine working directory
     workdir = os.getcwd()
@@ -234,6 +238,50 @@ def run(args):
     if hook_result:
         result["hooks"] = hook_result
     return _result(result)
+
+
+def _spawn_terminal_runtime(args, terminal, result_fn):
+    """Spawn a generic terminal-backed runtime without Claude wrapper coupling."""
+    from lib import runtimes
+
+    runtime, spec = runtimes.resolve_runtime(getattr(args, 'runtime', None) or "claude-code")
+    profile = getattr(args, 'profile', None) or args.name
+    command = runtimes.build_command(
+        runtime,
+        spec,
+        name=args.name,
+        profile=profile,
+        model=getattr(args, 'model', None),
+        command_override=getattr(args, 'launch_command', None),
+    )
+    workdir = os.getcwd()
+
+    terminal.create_window(args.name, workdir, detached=getattr(args, 'as_pane', False))
+    time.sleep(0.3)
+    launch = terminal.send_text(args.name, command, submit=True)
+    if not launch.get("ok"):
+        return result_fn({"ok": False, "error": launch.get("error", "launch failed"), "name": args.name})
+
+    result = {
+        "ok": True,
+        "name": args.name,
+        "spawned": True,
+        "runtime": runtime,
+        "profile": profile if runtime == "hermes" else None,
+        "command": command,
+        "workdir": workdir,
+        "terminal_ref": launch.get("target"),
+        "status": "starting",
+    }
+
+    if getattr(args, 'prompt', None):
+        time.sleep(1)
+        prompt_result = terminal.send_text(args.name, args.prompt, submit=True)
+        result["prompt_sent"] = bool(prompt_result.get("ok"))
+        if not prompt_result.get("ok"):
+            result["prompt_error"] = prompt_result.get("error")
+
+    return result_fn({k: v for k, v in result.items() if v is not None})
 
 
 def _ensure_session_accessible(jsonl_path, target_workdir):

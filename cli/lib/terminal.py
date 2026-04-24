@@ -16,6 +16,7 @@ from lib import tmux as backend
 ensure_session = backend.ensure_session
 create_window = backend.create_window
 send_keys = backend.send_keys
+send_text = backend.send_text
 capture_output = backend.capture_output
 kill_window = backend.kill_window
 window_exists = backend.window_exists
