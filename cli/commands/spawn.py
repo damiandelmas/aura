@@ -262,6 +262,22 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     if not launch.get("ok"):
         return result_fn({"ok": False, "error": launch.get("error", "launch failed"), "name": args.name})
 
+    from lib import registry
+
+    fleet = registry.current_fleet(default=getattr(terminal, "SESSION_NAME", "aura"))
+    registered = registry.upsert_agent({
+        "name": args.name,
+        "fleet": fleet,
+        "runtime": runtime,
+        "profile": profile if runtime == "hermes" else None,
+        "command": command,
+        "workdir": workdir,
+        "terminal_ref": launch.get("target"),
+        "transport": "tmux",
+        "status": "starting",
+        "registered": True,
+    })
+
     result = {
         "ok": True,
         "name": args.name,
@@ -272,6 +288,9 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "workdir": workdir,
         "terminal_ref": launch.get("target"),
         "status": "starting",
+        "registered": True,
+        "fleet": fleet,
+        "trace_cell": registered.get("trace_cell"),
     }
 
     if getattr(args, 'prompt', None):

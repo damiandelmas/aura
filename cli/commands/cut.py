@@ -5,7 +5,7 @@ import time
 
 def run(args):
     """Cut agent (graceful or forced stop)."""
-    from lib import mesh, terminal
+    from lib import mesh, registry, terminal
 
     force = getattr(args, 'force', False)
     graceful_attempted = False
@@ -23,6 +23,7 @@ def run(args):
 
     if terminal.window_exists(args.name):
         terminal.kill_window(args.name)
+        registry.mark_status(args.name, "dead")
         return {
             "ok": True,
             "name": args.name,

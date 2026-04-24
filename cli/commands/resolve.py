@@ -1,27 +1,28 @@
 """Resolve agent name or tmux group → session_id + window + status.
 
 Used by skills/tools that observe multiple agents at once (e.g. flex:workers).
-
-  aura resolve dev-goose                  # by agent name
-  aura resolve dev                        # by tmux session (enumerates windows)
-  aura resolve dev-goose,dev-goose-bench  # by comma-separated names
+Includes terminal-backed sidecars even when no Claude/Flex session_id exists so
+callers can fall back to tmux capture instead of dropping them.
 """
 
 import os
 import subprocess
 import sys
 
-# Add lib to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'lib'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 
 def _ledger_latest_session_id(name):
     """Return the most recent session_id for `name` from aura ledger (or None)."""
     try:
-        from ledger import read_ledger
+        from commands.ledger import read_ledger
         entries = read_ledger()
     except Exception:
-        return None
+        try:
+            from ledger import read_ledger
+            entries = read_ledger()
+        except Exception:
+            return None
     matches = [e for e in entries if e.get("name") == name]
     if not matches:
         return None
@@ -29,16 +30,15 @@ def _ledger_latest_session_id(name):
     return matches[0].get("session_id")
 
 
-def _pane_session_id(window):
-    """Parse the session_id footer from a tmux pane (bottom ~3 lines).
-
-    Aura's wrapper prints the session UUID in the pane footer. Works even when
-    the ledger has rotated entries off.
-    """
+def _pane_session_id(window, sessions=None):
+    """Parse a UUID from a tmux pane footer/history."""
     import re
-    for target in (window, f"aura:{window}", f"dev:{window}"):
+    targets = [window]
+    for session in sessions or ("aura", "dev"):
+        targets.append(f"{session}:{window}")
+    for target in targets:
         out = subprocess.run(
-            ["tmux", "capture-pane", "-t", target, "-p", "-S", "-5"],
+            ["tmux", "capture-pane", "-t", target, "-p", "-S", "-80"],
             capture_output=True, text=True, timeout=5,
         )
         if out.returncode == 0:
@@ -49,21 +49,15 @@ def _pane_session_id(window):
     return None
 
 
-def _aura_list():
-    """Return aura list as list of {name, status, last_seen} dicts."""
+def _mesh_lookup():
     try:
-        from mesh import discover, agent_status
-        info = discover()
+        from lib import mesh
+        info = mesh.discover()
         if info.get("error"):
-            return []
-        agents = []
-        for name in info.get("agents", []):
-            st = agent_status(name)
-            agents.append({"name": name, "status": st.get("status", "unknown"),
-                           "last_seen": st.get("last_seen")})
-        return agents
+            return {}
+        return {a.get("name"): a for a in info.get("agents", []) if a.get("name")}
     except Exception:
-        return []
+        return {}
 
 
 def _tmux_windows(session):
@@ -77,54 +71,61 @@ def _tmux_windows(session):
     return [w.strip() for w in out.stdout.splitlines() if w.strip()]
 
 
-def _resolve_one(name, live_lookup):
-    """Build a record for one agent name. Returns dict (or None if no session_id)."""
-    sid = _ledger_latest_session_id(name) or _pane_session_id(name)
-    if not sid:
-        return None
+def _resolve_one(name, live_lookup, registry_lookup, fleet=None):
+    from lib import registry
+
+    reg = registry_lookup.get(name) or registry.get_agent(name, fleet=fleet) or {}
+    live = live_lookup.get(name) or {}
+    sid = live.get("session_id") or reg.get("session_id") or _ledger_latest_session_id(name) or _pane_session_id(name, sessions=[fleet] if fleet else None)
+    terminal_ref = reg.get("terminal_ref") or (f"{fleet}:{name}" if fleet else name)
+    status = live.get("status") or reg.get("status") or "unknown"
     rec = {
         "name": name,
         "session_id": sid,
-        "status": "unknown",
-        "last_seen": None,
+        "status": status,
+        "last_seen": live.get("last_seen") or reg.get("last_seen"),
         "tmux_window": name,
+        "terminal_ref": terminal_ref,
+        "fleet": reg.get("fleet") or fleet,
+        "runtime": reg.get("runtime"),
+        "registered": bool(live.get("socket_path")) or bool(reg.get("registered")),
+        "trace_cell": reg.get("trace_cell"),
     }
-    if name in live_lookup:
-        rec["status"] = live_lookup[name]["status"]
-        rec["last_seen"] = live_lookup[name]["last_seen"]
-    return rec
+    return {k: v for k, v in rec.items() if v is not None or k == "session_id"}
 
 
 def run(args):
     """Resolve names or a tmux group into agent records."""
+    from lib import registry
+
     target = args.target.strip()
+    live = _mesh_lookup()
 
-    # Build live agent lookup once.
-    live = {a["name"]: a for a in _aura_list()}
-
-    # Detect mode: comma-separated names, single name, or tmux group.
     if "," in target:
         names = [n.strip() for n in target.split(",") if n.strip()]
         mode = "names"
-    elif target in live:
+        fleet = registry.current_fleet()
+    elif target in live or registry.get_agent(target):
         names = [target]
         mode = "name"
+        fleet = (registry.get_agent(target) or {}).get("fleet") or registry.current_fleet()
     else:
-        # Try tmux group: enumerate windows and treat each window as an agent name.
         windows = _tmux_windows(target)
-        if windows:
-            names = windows
+        registered = registry.list_agents(target)
+        if windows or registered:
+            names = []
+            for n in [a.get("name") for a in registered] + windows:
+                if n and n not in names:
+                    names.append(n)
             mode = "tmux-group"
+            fleet = target
         else:
-            # Fallback: single name even if not in live mesh (may still be in ledger).
             names = [target]
             mode = "name"
+            fleet = registry.current_fleet()
 
-    records = []
-    for n in names:
-        r = _resolve_one(n, live)
-        if r:
-            records.append(r)
+    registry_lookup = {a.get("name"): a for a in registry.list_agents(fleet) if a.get("name")}
+    records = [_resolve_one(n, live, registry_lookup, fleet=fleet) for n in names]
 
     return {"ok": True, "mode": mode, "target": target, "count": len(records),
             "agents": records}
