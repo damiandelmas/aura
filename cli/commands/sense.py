@@ -70,6 +70,17 @@ def _write_sense_record(seat: str, record: dict) -> None:
     (base / "latest.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _read_watch_latest(seat: str) -> dict | None:
+    path = state.seat_dir(seat) / "watch" / "latest.json"
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def run(args):
     """Return a compact semantic sense record for a seat."""
     lines = getattr(args, "lines", 80)
@@ -85,6 +96,21 @@ def run(args):
     mechanical_status = check_result.get("status", "unknown")
     terminal = check_result.get("terminal", "missing")
     state, confidence, evidence, next_action = _state_from_output(output, mechanical_status, terminal)
+    watch_latest = _read_watch_latest(args.name)
+    watch_source = None
+    if watch_latest:
+        stable_count = int(watch_latest.get("stable_count", 0) or 0)
+        silence_seconds = watch_latest.get("silence_seconds")
+        watch_source = {
+            "stable_count": stable_count,
+            "silence_seconds": silence_seconds,
+            "output_changed": watch_latest.get("output_changed"),
+        }
+        if terminal == "alive" and stable_count >= 3 and state in {"busy", "unknown"}:
+            state = "stuck"
+            confidence = max(confidence, 0.76)
+            evidence.append(f"watch output stable for {stable_count} samples")
+            next_action = "inspect"
 
     now = datetime.now(timezone.utc).isoformat()
     record = {
@@ -102,6 +128,7 @@ def run(args):
             "mechanical_status": mechanical_status,
             "terminal": terminal,
             "provider": None,
+            "watch": watch_source,
         },
         "question": question,
         "state": state,

@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -139,6 +140,42 @@ def test_stop_uses_runtime_specific_graceful_exit(monkeypatch, tmp_path):
     assert sent[0][1] == "exit"
     assert sessions == ["unitfleet"]
     assert registry.get_agent("shellseat", fleet="unitfleet")["status"] == "dead"
+
+
+def test_sense_uses_watch_stability_for_stuck_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import check, sense
+    from lib import registry, state
+
+    registry.upsert_agent({"name": "busyseat", "fleet": "unitfleet", "runtime": "command", "registered": True})
+    watch_dir = state.seat_dir("busyseat") / "watch"
+    watch_dir.mkdir(parents=True)
+    (watch_dir / "latest.json").write_text(json.dumps({
+        "stable_count": 3,
+        "silence_seconds": 15.0,
+        "output_changed": False,
+    }))
+
+    monkeypatch.setattr(check, "run", lambda args: {
+        "ok": True,
+        "name": "busyseat",
+        "fleet": "unitfleet",
+        "runtime": "command",
+        "status": "alive",
+        "terminal": "alive",
+        "terminal_ref": "tmux:unitfleet:busyseat",
+        "output": ["BUSY busyseat"],
+    })
+
+    record = sense.run(argparse.Namespace(name="busyseat", lines=40, question=None, features=None))
+
+    assert record["state"] == "stuck"
+    assert record["next_action"] == "inspect"
+    assert record["source"]["watch"]["stable_count"] == 3
+    assert any("stable for 3" in item for item in record["evidence"])
 
 
 def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
