@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from commands import check, sense
+from commands import check, list as list_cmd, sense
 from lib import seat_schema, state
 
 
@@ -125,8 +125,43 @@ def sample(args) -> dict:
     return record
 
 
+def sample_fleet(args) -> dict:
+    """Take one watch sample for every listed seat in a fleet."""
+    fleet = getattr(args, "fleet", None)
+    rows = list_cmd.run(argparse.Namespace(fleet=fleet, status=None, mode=None))
+    samples = []
+    for row in rows:
+        seat = row.get("seat") or row.get("name")
+        if not seat:
+            continue
+        sample_args = argparse.Namespace(
+            name=seat,
+            lines=getattr(args, "lines", 80),
+            question=getattr(args, "question", None),
+            features=getattr(args, "features", None),
+            no_sense=getattr(args, "no_sense", False),
+        )
+        samples.append(sample(sample_args))
+    now = _now()
+    return {
+        "ok": True,
+        "schema": "aura.watch_fleet.v1",
+        "type": "watch_fleet",
+        "fleet": fleet,
+        "at": now,
+        "count": len(samples),
+        "samples": samples,
+    }
+
+
 def run(args):
     """Watch a seat once or continuously until interrupted."""
+    if getattr(args, "fleet", None):
+        if not getattr(args, "once", False):
+            return {"ok": False, "error": "watch --fleet currently requires --once", "fleet": args.fleet}
+        return sample_fleet(args)
+    if not getattr(args, "name", None):
+        return {"ok": False, "error": "watch requires a seat name or --fleet"}
     if getattr(args, "once", False):
         return sample(args)
 

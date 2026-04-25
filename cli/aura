@@ -126,7 +126,9 @@ def main():
 
     # watch
     p_watch = subparsers.add_parser("watch", help="Watch a seat through capture/check/sense")
-    p_watch.add_argument("name", help="Seat/agent name")
+    p_watch.add_argument("name", nargs="?", help="Seat/agent name")
+    p_watch.add_argument("--fleet", "-f", metavar="NAME",
+                         help="Watch all seats in a fleet; currently requires --once")
     p_watch.add_argument("--lines", type=int, default=80,
                          help="Number of captured output lines to inspect (default: 80)")
     p_watch.add_argument("--interval", type=float, default=5.0,

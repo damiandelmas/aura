@@ -273,6 +273,13 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         assert '"output_changed": false' in second_watch_result.stdout
         assert '"stable_count": 1' in second_watch_result.stdout
 
+        fleet_watch_result = run_aura("watch", "--fleet", fleet, "--once", "--lines", "40", "--interval", "0")
+        assert fleet_watch_result.returncode == 0, fleet_watch_result.stderr + fleet_watch_result.stdout
+        assert '"schema": "aura.watch_fleet.v1"' in fleet_watch_result.stdout
+        assert '"fleet": "' + fleet + '"' in fleet_watch_result.stdout
+        assert '"seat": "fake1"' in fleet_watch_result.stdout
+        assert '"samples"' in fleet_watch_result.stdout
+
         stop_result = run_aura("stop", "fake1", "--force")
         assert stop_result.returncode == 0, stop_result.stderr + stop_result.stdout
         assert '"stop": true' in stop_result.stdout
