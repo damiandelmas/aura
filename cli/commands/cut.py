@@ -9,6 +9,9 @@ def run(args):
 
     force = getattr(args, 'force', False)
     graceful_attempted = False
+    reg_agent = registry.get_agent(args.name)
+    if (reg_agent or {}).get("fleet") and hasattr(terminal, "configure_session"):
+        terminal.configure_session(reg_agent.get("fleet"))
 
     if terminal.window_exists(args.name) and not force:
         graceful_attempted = True

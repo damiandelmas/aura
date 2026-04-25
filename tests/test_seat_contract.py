@@ -176,3 +176,55 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         assert '"stop": true' in stop_result.stdout
     finally:
         subprocess.run(["tmux", "kill-session", "-t", fleet], capture_output=True, text=True)
+
+
+def test_spawn_fleet_flag_controls_physical_tmux_session(tmp_path):
+    if shutil.which("tmux") is None:
+        import pytest
+        pytest.skip("tmux not installed")
+
+    fleet = f"aura-flag-{os.getpid()}"
+    name = "fleetflag"
+    fake_runtime = ROOT / "tests" / "fixtures" / "fake_runtime.py"
+    env = {
+        **os.environ,
+        "AURA_STATE_DIR": str(tmp_path),
+        "AURA_REGISTRY_PATH": str(tmp_path / "agents.json"),
+        "AURA_DELIVERY_LOG": str(tmp_path / "deliveries.jsonl"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    env.pop("AURA_FLEET", None)
+    env.pop("AURA_PROJECT", None)
+    env.pop("AURA_TMUX_SESSION", None)
+
+    try:
+        spawn_result = subprocess.run(
+            [
+                sys.executable, str(CLI), "--json",
+                "spawn", name,
+                "--fleet", fleet,
+                "--command", f"{sys.executable} -u {fake_runtime} --name {name} --mode echo",
+                "--as-pane",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=20,
+        )
+        assert spawn_result.returncode == 0, spawn_result.stderr + spawn_result.stdout
+        assert f'"fleet": "{fleet}"' in spawn_result.stdout
+        assert f'"terminal_ref": "{fleet}:{name}"' in spawn_result.stdout
+
+        windows = subprocess.run(
+            ["tmux", "list-windows", "-t", fleet, "-F", "#{window_name}"],
+            text=True,
+            capture_output=True,
+            timeout=5,
+        )
+        assert windows.returncode == 0, windows.stderr
+        assert name in windows.stdout.splitlines()
+    finally:
+        subprocess.run(["tmux", "kill-session", "-t", fleet], capture_output=True, text=True)
+        # Regression guard cleanup: the old bug placed --fleet windows in aura.
+        subprocess.run(["tmux", "kill-window", "-t", f"aura:{name}"], capture_output=True, text=True)

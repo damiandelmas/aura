@@ -10,6 +10,8 @@ def run(args):
     mesh_agent = next((a for a in agents if a.get("name") == args.name), None)
     reg_agent = registry.get_agent(args.name)
     agent = {**(reg_agent or {}), **(mesh_agent or {})} if (reg_agent or mesh_agent) else None
+    if (agent or {}).get("fleet") and hasattr(terminal, "configure_session"):
+        terminal.configure_session(agent.get("fleet"))
     window_alive = terminal.window_exists(args.name)
 
     if not agent and not window_alive:

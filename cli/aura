@@ -158,6 +158,8 @@ def main():
 
     # list
     p_list = subparsers.add_parser("list", help="List all agents")
+    p_list.add_argument("--fleet", "-f", metavar="NAME",
+                        help="Filter by fleet")
     p_list.add_argument("--status", choices=["idle", "busy", "waiting"],
                         help="Filter by status")
     p_list.add_argument("--mode", choices=["immediate", "queue", "notify"],

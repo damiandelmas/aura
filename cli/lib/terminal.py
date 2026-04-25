@@ -26,3 +26,14 @@ list_windows = backend.list_windows
 BACKEND_NAME = "tmux"
 SESSION_NAME = backend.TMUX_SESSION
 FLEET_NAME = SESSION_NAME  # Alias: fleet = tmux session grouping agents
+
+
+def configure_session(session_name: str | None) -> str:
+    """Retarget terminal operations to a fleet session."""
+    global SESSION_NAME, FLEET_NAME
+    if hasattr(backend, "configure_session"):
+        SESSION_NAME = backend.configure_session(session_name)
+    else:
+        SESSION_NAME = getattr(backend, "TMUX_SESSION", SESSION_NAME)
+    FLEET_NAME = SESSION_NAME
+    return SESSION_NAME

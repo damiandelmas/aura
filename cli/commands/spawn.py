@@ -74,6 +74,8 @@ def run(args):
         os.environ["AURA_PROJECT"] = fleet
 
     from lib import mesh, terminal
+    if fleet and hasattr(terminal, "configure_session"):
+        terminal.configure_session(fleet)
 
     def _result(base: dict) -> dict:
         """Add fleet/attach info to every spawn result."""
@@ -267,7 +269,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
 
     from lib import registry
 
-    fleet = registry.current_fleet(default=getattr(terminal, "SESSION_NAME", "aura"))
+    fleet = getattr(terminal, "SESSION_NAME", None) or registry.current_fleet(default="aura")
     registered = registry.upsert_agent({
         "name": args.name,
         "fleet": fleet,

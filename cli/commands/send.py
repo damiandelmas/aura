@@ -5,9 +5,12 @@ import threading
 
 def run(args):
     """Send message to agent."""
-    from lib import delivery, mesh, terminal
+    from lib import delivery, mesh, registry, terminal
 
     nudge = getattr(args, 'nudge', False)
+    reg_agent = registry.get_agent(args.target)
+    if (reg_agent or {}).get("fleet") and hasattr(terminal, "configure_session"):
+        terminal.configure_session(reg_agent.get("fleet"))
 
     # --nudge: just send Enter via tmux as a delivery kick
     if nudge:

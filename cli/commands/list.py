@@ -9,8 +9,10 @@ def run(args):
     mesh_agents = result.get("agents", []) if result.get("ok") else []
     by_name = {a.get("name"): dict(a) for a in mesh_agents if a.get("name")}
 
-    fleet = registry.current_fleet(default=getattr(terminal, "SESSION_NAME", "aura"))
-    for agent in registry.list_agents(fleet):
+    current_fleet = registry.current_fleet(default=getattr(terminal, "SESSION_NAME", "aura"))
+    fleet_filter = getattr(args, "fleet", None)
+    registry_agents = registry.list_agents(fleet_filter) if fleet_filter else registry.list_agents()
+    for agent in registry_agents:
         name = agent.get("name")
         if not name:
             continue
@@ -19,6 +21,9 @@ def run(args):
         merged.setdefault("registered", True)
         by_name[name] = merged
 
+    fleet = fleet_filter or current_fleet
+    if hasattr(terminal, "configure_session"):
+        terminal.configure_session(fleet)
     for window in terminal.list_windows():
         by_name.setdefault(window, {
             "name": window,
@@ -39,11 +44,14 @@ def run(args):
     rows = []
     for a in sorted(agents, key=lambda x: x.get("name", "")):
         name = a.get("name")
+        agent_fleet = a.get("fleet") or fleet
+        if agent_fleet and hasattr(terminal, "configure_session"):
+            terminal.configure_session(agent_fleet)
         window_alive = terminal.window_exists(name)
         status = registry.infer_status(name, terminal, a.get("status", "unknown")) if window_alive else a.get("status", "unknown")
         rows.append({
             "name": name,
-            "fleet": a.get("fleet", fleet),
+            "fleet": agent_fleet,
             "runtime": a.get("runtime"),
             "status": status,
             "mode": a.get("delivery_mode", "immediate"),

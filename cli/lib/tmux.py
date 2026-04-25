@@ -26,6 +26,21 @@ TMUX_SESSION = (os.environ.get("AURA_FLEET")
 _server: libtmux.Server | None = None
 
 
+def configure_session(session_name: str | None) -> str:
+    """Retarget this process' tmux backend to a fleet session.
+
+    The CLI imports several command modules at startup. Some of those modules
+    import terminal/tmux before `spawn --fleet` has a chance to set AURA_FLEET,
+    so the module-level TMUX_SESSION can otherwise freeze to the default
+    "aura". Keep this mutable so command handlers can explicitly retarget the
+    backend after argument parsing.
+    """
+    global TMUX_SESSION
+    if session_name:
+        TMUX_SESSION = session_name
+    return TMUX_SESSION
+
+
 def _srv() -> libtmux.Server:
     global _server
     if _server is None:
