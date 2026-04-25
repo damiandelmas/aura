@@ -13,7 +13,9 @@ def run(args):
         lines=getattr(args, "lines", 20),
     )
     result = check.run(check_args)
+    from lib import seat_schema
     if result.get("ok"):
         result["capture"] = True
         result["seat"] = result.get("name")
+        result = seat_schema.enrich(result)
     return result

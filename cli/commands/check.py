@@ -38,4 +38,5 @@ def run(args):
     if args.output and window_alive:
         response["output"] = terminal.capture_output(args.name, args.lines)
 
-    return {k: v for k, v in response.items() if v is not None}
+    from lib import seat_schema
+    return seat_schema.enrich({k: v for k, v in response.items() if v is not None})

@@ -41,6 +41,7 @@ def run(args):
     if args.mode:
         agents = [a for a in agents if a.get("delivery_mode") == args.mode]
 
+    from lib import seat_schema
     rows = []
     for a in sorted(agents, key=lambda x: x.get("name", "")):
         name = a.get("name")
@@ -49,7 +50,7 @@ def run(args):
             terminal.configure_session(agent_fleet)
         window_alive = terminal.window_exists(name)
         status = registry.infer_status(name, terminal, a.get("status", "unknown")) if window_alive else a.get("status", "unknown")
-        rows.append({
+        row = {
             "name": name,
             "fleet": agent_fleet,
             "runtime": a.get("runtime"),
@@ -60,5 +61,6 @@ def run(args):
             "terminal_ref": f"tmux:{terminal.SESSION_NAME}:{name}" if window_alive else a.get("terminal_ref", ""),
             "trace_cell": a.get("trace_cell"),
             "last_seen": (a.get("last_seen", "") or "")[:19]
-        })
+        }
+        rows.append(seat_schema.enrich(row))
     return rows

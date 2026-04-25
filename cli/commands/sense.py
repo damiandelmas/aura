@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from commands import check
-from lib import state
+from lib import seat_schema, state
 
 
 READY_MARKERS = ("READY", "ACK", "idle", "waiting for input")
@@ -113,6 +113,7 @@ def run(args):
     if not check_result.get("ok"):
         record["ok"] = False
         record["error"] = check_result.get("error")
+    record = seat_schema.enrich(record)
     _write_sense_record(args.name, record)
     return record
 

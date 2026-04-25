@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from commands import check, sense
-from lib import state
+from lib import seat_schema, state
 
 
 def _now() -> str:
@@ -120,6 +120,7 @@ def sample(args) -> dict:
     if not check_result.get("ok"):
         record["error"] = check_result.get("error")
 
+    record = seat_schema.enrich(record)
     _write_watch_record(seat, record)
     return record
 

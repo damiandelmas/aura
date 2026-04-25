@@ -145,6 +145,16 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         assert capture_result.returncode == 0, capture_result.stderr + capture_result.stdout
         assert "READY fake1" in capture_result.stdout
         assert "ACK fake1 hello from e2e" in capture_result.stdout
+        assert '"seat": "fake1"' in capture_result.stdout
+        assert '"backend": "tmux"' in capture_result.stdout
+        assert f'"backend_ref": "{fleet}:fake1"' in capture_result.stdout
+        assert f'"seat_ref": "{fleet}:fake1"' in capture_result.stdout
+
+        list_result = run_aura("list", "--fleet", fleet)
+        assert list_result.returncode == 0, list_result.stderr + list_result.stdout
+        assert '"seat": "fake1"' in list_result.stdout
+        assert '"backend": "tmux"' in list_result.stdout
+        assert f'"backend_ref": "{fleet}:fake1"' in list_result.stdout
 
         sense_result = run_aura("sense", "fake1", "--lines", "40")
         assert sense_result.returncode == 0, sense_result.stderr + sense_result.stdout
