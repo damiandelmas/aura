@@ -135,15 +135,22 @@ def send_text(name: str, text: str, submit: bool = True, submit_key: str = "Ente
 
         submitted = False
         if submit:
-            time.sleep(0.2)
-            key = "Enter" if submit_key in ("Enter", "") else submit_key
-            submit_result = subprocess.run(
-                ["tmux", "send-keys", "-t", _target(name), key],
-                capture_output=True,
-                text=True,
-            )
-            if submit_result.returncode != 0:
-                return {"ok": False, "error": submit_result.stderr.strip() or "tmux submit failed", "name": name}
+            time.sleep(0.3)
+            win = _window(name)
+            if win is None:
+                return {"ok": False, "error": f"window not found after paste: {name}", "name": name}
+            if submit_key in ("Enter", ""):
+                # Codex/Claude TUIs are more reliable with libtmux pane.enter()
+                # than a raw `tmux send-keys Enter` after paste-buffer.
+                win.active_pane.enter()
+            else:
+                submit_result = subprocess.run(
+                    ["tmux", "send-keys", "-t", _target(name), submit_key],
+                    capture_output=True,
+                    text=True,
+                )
+                if submit_result.returncode != 0:
+                    return {"ok": False, "error": submit_result.stderr.strip() or "tmux submit failed", "name": name}
             submitted = True
 
         return {
