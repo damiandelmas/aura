@@ -58,7 +58,7 @@ def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, 
     assert "trace_cell" not in result or result["trace_cell"] is None
 
 
-def test_capture_stop_and_sense_commands_are_public_contract_names():
+def test_capture_stop_sense_and_watch_commands_are_public_contract_names():
     help_result = subprocess.run(
         [sys.executable, str(CLI), "--help"],
         cwd=ROOT,
@@ -70,6 +70,7 @@ def test_capture_stop_and_sense_commands_are_public_contract_names():
     assert "capture" in help_result.stdout
     assert "stop" in help_result.stdout
     assert "sense" in help_result.stdout
+    assert "watch" in help_result.stdout
 
 
 def test_spawn_runtime_choices_include_openclaw_and_shell():
@@ -153,6 +154,22 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         assert '"next_action": "send"' in sense_result.stdout
         assert (tmp_path / "seats" / "fake1" / "sense" / "events.jsonl").exists()
         assert (tmp_path / "seats" / "fake1" / "sense" / "latest.json").exists()
+
+        watch_result = run_aura("watch", "fake1", "--once", "--lines", "40", "--interval", "0")
+        assert watch_result.returncode == 0, watch_result.stderr + watch_result.stdout
+        assert '"schema": "aura.watch.v1"' in watch_result.stdout
+        assert '"type": "watch"' in watch_result.stdout
+        assert '"seat": "fake1"' in watch_result.stdout
+        assert '"output_changed": true' in watch_result.stdout
+        assert '"stable_count": 0' in watch_result.stdout
+        assert '"sense"' in watch_result.stdout
+        assert (tmp_path / "seats" / "fake1" / "watch" / "events.jsonl").exists()
+        assert (tmp_path / "seats" / "fake1" / "watch" / "latest.json").exists()
+
+        second_watch_result = run_aura("watch", "fake1", "--once", "--lines", "40", "--interval", "0")
+        assert second_watch_result.returncode == 0, second_watch_result.stderr + second_watch_result.stdout
+        assert '"output_changed": false' in second_watch_result.stdout
+        assert '"stable_count": 1' in second_watch_result.stdout
 
         stop_result = run_aura("stop", "fake1", "--force")
         assert stop_result.returncode == 0, stop_result.stderr + stop_result.stdout

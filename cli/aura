@@ -21,7 +21,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense
+from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch
 from lib.output import output
 
 
@@ -124,6 +124,20 @@ def main():
     p_sense.add_argument("--question", help="Optional question for semantic state inference")
     p_sense.add_argument("--features", help="Optional comma-separated desired output features")
 
+    # watch
+    p_watch = subparsers.add_parser("watch", help="Watch a seat through capture/check/sense")
+    p_watch.add_argument("name", help="Seat/agent name")
+    p_watch.add_argument("--lines", type=int, default=80,
+                         help="Number of captured output lines to inspect (default: 80)")
+    p_watch.add_argument("--interval", type=float, default=5.0,
+                         help="Seconds between samples in continuous mode (default: 5)")
+    p_watch.add_argument("--once", action="store_true",
+                         help="Take one sample and exit")
+    p_watch.add_argument("--no-sense", action="store_true",
+                         help="Only capture/check watch state; do not run sense")
+    p_watch.add_argument("--question", help="Optional question passed through to sense")
+    p_watch.add_argument("--features", help="Optional comma-separated desired sense features")
+
     # set
     p_set = subparsers.add_parser("set", help="Set agent properties")
     p_set.add_argument("name", help="Agent name")
@@ -187,6 +201,8 @@ def main():
             result = capture.run(args)
         elif args.command == "sense":
             result = sense.run(args)
+        elif args.command == "watch":
+            result = watch.run(args)
         elif args.command == "set":
             result = set_cmd.run(args)
         elif args.command == "cut":
