@@ -74,6 +74,7 @@ def test_capture_stop_sense_and_watch_commands_are_public_contract_names():
     assert "sense" in help_result.stdout
     assert "watch" in help_result.stdout
     assert "write" in help_result.stdout
+    assert "route" in help_result.stdout
 
 
 def test_spawn_runtime_choices_include_openclaw_and_shell():
@@ -188,6 +189,24 @@ def test_sense_uses_watch_stability_for_stuck_state(monkeypatch, tmp_path):
     assert record["next_action"] == "inspect"
     assert record["source"]["watch"]["stable_count"] == 3
     assert any("stable for 3" in item for item in record["evidence"])
+
+
+def test_perception_does_not_treat_done_inside_names_as_completion():
+    from lib import terminal_perception
+
+    record = terminal_perception.classify_terminal_state(
+        "READY smoke-done\nACK smoke-ready Review output from smoke-done.",
+        mechanical_status="alive",
+        terminal="alive",
+    )
+    assert record["state"] == "ready"
+
+    record = terminal_perception.classify_terminal_state(
+        "done: stage complete",
+        mechanical_status="alive",
+        terminal="alive",
+    )
+    assert record["state"] == "done"
 
 
 def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
@@ -339,7 +358,64 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         assert '"seat": "fake1"' in fleet_watch_result.stdout
         assert '"samples"' in fleet_watch_result.stdout
 
+        bounded_fleet_watch_result = run_aura(
+            "watch",
+            "--fleet",
+            fleet,
+            "--iterations",
+            "2",
+            "--interval",
+            "0",
+            "--lines",
+            "40",
+            "--no-sense",
+        )
+        assert bounded_fleet_watch_result.returncode == 0, bounded_fleet_watch_result.stderr + bounded_fleet_watch_result.stdout
+        assert '"schema": "aura.watch_fleet.v1"' in bounded_fleet_watch_result.stdout
+        assert '"iterations": 2' in bounded_fleet_watch_result.stdout
+        assert '"history"' in bounded_fleet_watch_result.stdout
+
+        spawn_result = run_aura(
+            "spawn",
+            "fake2",
+            "--command",
+            f"{sys.executable} -u {fake_runtime} --name fake2 --mode echo",
+            "--as-pane",
+        )
+        assert spawn_result.returncode == 0, spawn_result.stderr + spawn_result.stdout
+        time.sleep(0.8)
+
+        done_result = run_aura("write", "fake1", "DONE ready for review", "--enter", "--as", "tester")
+        assert done_result.returncode == 0, done_result.stderr + done_result.stdout
+        time.sleep(0.8)
+
+        route_dry_result = run_aura("route", "--fleet", fleet, "--dry-run", "--max-actions", "3", "--lines", "60")
+        assert route_dry_result.returncode == 0, route_dry_result.stderr + route_dry_result.stdout
+        assert '"schema": "aura.route.v1"' in route_dry_result.stdout
+        assert '"dry_run": true' in route_dry_result.stdout
+        assert '"source_seat": "fake1"' in route_dry_result.stdout
+        assert '"target_seat": "fake2"' in route_dry_result.stdout
+        assert '"status": "proposed"' in route_dry_result.stdout
+
+        route_send_without_limit = run_aura("route", "--fleet", fleet, "--send", "--lines", "60")
+        assert route_send_without_limit.returncode != 0
+        assert "requires explicit --max-actions" in route_send_without_limit.stdout
+
+        route_live_result = run_aura("route", "--fleet", fleet, "--send", "--max-actions", "1", "--lines", "60")
+        assert route_live_result.returncode == 0, route_live_result.stderr + route_live_result.stdout
+        assert '"dry_run": false' in route_live_result.stdout
+        assert '"status": "sent"' in route_live_result.stdout
+
+        route_duplicate_result = run_aura("route", "--fleet", fleet, "--send", "--max-actions", "1", "--lines", "60")
+        assert route_duplicate_result.returncode == 0, route_duplicate_result.stderr + route_duplicate_result.stdout
+        assert '"status": "skipped_duplicate"' in route_duplicate_result.stdout
+        assert (tmp_path / "fleets" / fleet / "route" / "events.jsonl").exists()
+
         stop_result = run_aura("stop", "fake1", "--force")
+        assert stop_result.returncode == 0, stop_result.stderr + stop_result.stdout
+        assert '"stop": true' in stop_result.stdout
+
+        stop_result = run_aura("stop", "fake2", "--force")
         assert stop_result.returncode == 0, stop_result.stderr + stop_result.stdout
         assert '"stop": true' in stop_result.stdout
     finally:

@@ -36,3 +36,11 @@ def seats_root() -> Path:
 
 def seat_dir(seat: str) -> Path:
     return seats_root() / seat
+
+
+def fleets_root() -> Path:
+    return state_root() / "fleets"
+
+
+def fleet_dir(fleet: str) -> Path:
+    return fleets_root() / fleet

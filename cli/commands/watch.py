@@ -55,6 +55,14 @@ def _write_watch_record(seat: str, record: dict) -> None:
     (base / "latest.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _write_fleet_watch_record(fleet: str, record: dict) -> None:
+    base = state.fleet_dir(fleet) / "watch"
+    base.mkdir(parents=True, exist_ok=True)
+    with (base / "events.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, sort_keys=True) + "\n")
+    (base / "latest.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def _seconds_since(iso_timestamp: str | None, now_iso: str) -> float | None:
     if not iso_timestamp:
         return None
@@ -145,23 +153,74 @@ def sample_fleet(args) -> dict:
         )
         samples.append(sample(sample_args))
     now = _now()
-    return {
+    summary = _summarize_samples(samples)
+    record = {
         "ok": True,
         "schema": "aura.watch_fleet.v1",
         "type": "watch_fleet",
+        "watch_id": f"watch_fleet_{now.replace(':', '').replace('-', '').replace('.', '')}_{fleet}",
         "fleet": fleet,
         "at": now,
         "count": len(samples),
+        "summary": summary,
         "samples": samples,
     }
+    if fleet:
+        _write_fleet_watch_record(fleet, record)
+    return record
+
+
+def _sample_state(sample_record: dict) -> str:
+    if not sample_record.get("ok"):
+        return "error"
+    sense_record = sample_record.get("sense") or {}
+    return sense_record.get("state") or sample_record.get("source", {}).get("mechanical_status") or "unknown"
+
+
+def _summarize_samples(samples: list[dict]) -> dict:
+    summary: dict[str, int] = {}
+    for sample_record in samples:
+        key = _sample_state(sample_record)
+        summary[key] = summary.get(key, 0) + 1
+    return summary
+
+
+def sample_fleet_bounded(args) -> dict:
+    """Take a finite number of fleet samples and return the latest plus history."""
+    iterations = int(getattr(args, "iterations", 0) or 0)
+    if iterations <= 0:
+        return {"ok": False, "error": "watch --fleet --iterations requires a positive integer", "fleet": args.fleet}
+
+    interval = max(float(getattr(args, "interval", 5)), 0.0)
+    history = []
+    latest = None
+    for index in range(iterations):
+        latest = sample_fleet(args)
+        history.append({
+            "iteration": index + 1,
+            "at": latest.get("at"),
+            "count": latest.get("count", 0),
+            "summary": latest.get("summary", {}),
+        })
+        if index < iterations - 1:
+            time.sleep(interval)
+
+    latest = dict(latest or {})
+    latest["iterations"] = iterations
+    latest["history"] = history
+    if args.fleet:
+        _write_fleet_watch_record(args.fleet, latest)
+    return latest
 
 
 def run(args):
     """Watch a seat once or continuously until interrupted."""
     if getattr(args, "fleet", None):
-        if not getattr(args, "once", False):
-            return {"ok": False, "error": "watch --fleet currently requires --once", "fleet": args.fleet}
-        return sample_fleet(args)
+        if getattr(args, "once", False):
+            return sample_fleet(args)
+        if getattr(args, "iterations", None):
+            return sample_fleet_bounded(args)
+        return {"ok": False, "error": "watch --fleet requires --once or --iterations N", "fleet": args.fleet}
     if not getattr(args, "name", None):
         return {"ok": False, "error": "watch requires a seat name or --fleet"}
     if getattr(args, "once", False):

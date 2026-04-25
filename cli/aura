@@ -21,7 +21,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd
+from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route
 from lib.output import output
 
 
@@ -157,10 +157,28 @@ def main():
                          help="Seconds between samples in continuous mode (default: 5)")
     p_watch.add_argument("--once", action="store_true",
                          help="Take one sample and exit")
+    p_watch.add_argument("--iterations", type=int,
+                         help="For --fleet, take N bounded samples and exit")
     p_watch.add_argument("--no-sense", action="store_true",
                          help="Only capture/check watch state; do not run sense")
     p_watch.add_argument("--question", help="Optional question passed through to sense")
     p_watch.add_argument("--features", help="Optional comma-separated desired sense features")
+
+    # route
+    p_route = subparsers.add_parser("route", help="Evaluate or execute bounded seat-to-seat routing")
+    p_route.add_argument("--fleet", "-f", metavar="NAME", required=True,
+                         help="Fleet name to observe and route within")
+    mode_group = p_route.add_mutually_exclusive_group()
+    mode_group.add_argument("--dry-run", action="store_true",
+                            help="Evaluate proposed actions without sending (default)")
+    mode_group.add_argument("--send", action="store_true",
+                            help="Execute eligible send actions")
+    p_route.add_argument("--max-actions", type=int,
+                         help="Maximum actions to return or send; required >0 with --send; dry-run defaults to 10")
+    p_route.add_argument("--policy", metavar="PATH",
+                         help="Optional JSON routing policy")
+    p_route.add_argument("--lines", type=int, default=80,
+                         help="Capture line count for route observation (default: 80)")
 
     # set
     p_set = subparsers.add_parser("set", help="Set agent properties")
@@ -231,6 +249,8 @@ def main():
             result = sense.run(args)
         elif args.command == "watch":
             result = watch.run(args)
+        elif args.command == "route":
+            result = route.run(args)
         elif args.command == "set":
             result = set_cmd.run(args)
         elif args.command == "cut":

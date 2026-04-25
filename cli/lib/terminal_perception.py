@@ -7,13 +7,14 @@ It returns structured semantic state without reading or writing terminals.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 READY_MARKERS = ("READY", "ACK", "idle", "waiting for input")
 BUSY_MARKERS = ("BUSY", "running", "processing", "working", "pytest", "Installing", "Building")
 ERROR_MARKERS = ("ERROR", "Traceback", "Exception", "FAILED", "failed")
 NEEDS_HUMAN_MARKERS = ("needs human", "permission", "approve", "confirm", "trust this", "Proceed?", "[y/N]")
-DONE_MARKERS = ("DONE", "COMPLETE", "completed", "succeeded", "8 passed", "passed in")
+DONE_MARKERS = ("DONE", "COMPLETE", "done:", "completed", "succeeded", "8 passed", "passed in")
 
 SUPPORTED_FEATURES = {
     "state",
@@ -67,12 +68,18 @@ def _tail_lines(output: str, n: int = 20) -> list[str]:
 def _hit(tail: list[str], markers: tuple[str, ...]) -> str | None:
     joined = "\n".join(tail).lower()
     for marker in markers:
-        if marker.lower() not in joined:
+        if not any(_line_has_marker(line, marker) for line in tail):
             continue
         for line in reversed(tail):
-            if marker.lower() in line.lower():
+            if _line_has_marker(line, marker):
                 return line
     return None
+
+
+def _line_has_marker(line: str, marker: str) -> bool:
+    if marker.isalpha() and marker.isupper():
+        return re.search(rf"(?<![A-Za-z0-9_]){re.escape(marker)}(?![A-Za-z0-9_])", line) is not None
+    return marker.lower() in line.lower()
 
 
 def classify_terminal_state(
