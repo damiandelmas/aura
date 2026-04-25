@@ -21,6 +21,7 @@ def test_openclaw_and_shell_runtime_specs_exist():
     assert openclaw_spec["command"] == "openclaw"
     assert shell_runtime == "shell"
     assert "command" in shell_spec
+    assert runtimes.graceful_exit("future-runtime") == "/exit"
 
 
 def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, tmp_path):
@@ -140,6 +141,16 @@ def test_stop_uses_runtime_specific_graceful_exit(monkeypatch, tmp_path):
     assert sent[0][1] == "exit"
     assert sessions == ["unitfleet"]
     assert registry.get_agent("shellseat", fleet="unitfleet")["status"] == "dead"
+
+    registry.upsert_agent({"name": "futureseat", "fleet": "unitfleet", "runtime": "future-runtime", "registered": True})
+    result = cut.run(argparse.Namespace(name="futureseat", force=True))
+
+    assert result["ok"] is True
+    assert result["force"] is True
+    assert result["graceful_attempted"] is False
+    assert result["graceful_exit"] is None
+    assert sent == [("shellseat", "exit", True, "Enter")]
+    assert registry.get_agent("futureseat", fleet="unitfleet")["status"] == "dead"
 
 
 def test_sense_uses_watch_stability_for_stuck_state(monkeypatch, tmp_path):
@@ -277,6 +288,7 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         assert fleet_watch_result.returncode == 0, fleet_watch_result.stderr + fleet_watch_result.stdout
         assert '"schema": "aura.watch_fleet.v1"' in fleet_watch_result.stdout
         assert '"fleet": "' + fleet + '"' in fleet_watch_result.stdout
+        assert '"count": 1' in fleet_watch_result.stdout
         assert '"seat": "fake1"' in fleet_watch_result.stdout
         assert '"samples"' in fleet_watch_result.stdout
 

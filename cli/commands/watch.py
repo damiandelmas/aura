@@ -131,6 +131,8 @@ def sample_fleet(args) -> dict:
     rows = list_cmd.run(argparse.Namespace(fleet=fleet, status=None, mode=None))
     samples = []
     for row in rows:
+        if not row.get("registered"):
+            continue
         seat = row.get("seat") or row.get("name")
         if not seat:
             continue

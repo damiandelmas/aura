@@ -75,6 +75,10 @@ def build_command(runtime: str, spec: dict, *, name: str, profile: str | None = 
     return command
 
 
-def graceful_exit(runtime: str | None) -> str:
-    _, spec = resolve_runtime(runtime)
+def graceful_exit(runtime: str | None, default: str = "/exit") -> str:
+    """Return a graceful-exit command, falling back for unknown runtimes."""
+    try:
+        _, spec = resolve_runtime(runtime)
+    except ValueError:
+        return default
     return spec.get("graceful_exit", "/exit")
