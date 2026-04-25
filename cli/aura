@@ -21,7 +21,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch
+from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd
 from lib.output import output
 
 
@@ -84,6 +84,28 @@ def main():
                         help="Skip send if this key was already delivered to the target")
     p_send.add_argument("--force", action="store_true",
                         help="Send even if dedupe-key was already delivered")
+
+
+    # write
+    p_write = subparsers.add_parser("write", help="Write raw text or keys to a terminal seat")
+    p_write.add_argument("target", help="Seat name or explicit backend ref like tmux:FLEET:WINDOW")
+    p_write.add_argument("message", nargs="?", default="", help="Raw text to write")
+    p_write.add_argument("--as", dest="sender", default="cli",
+                         help="Sender label for audit records (default: cli)")
+    enter_group = p_write.add_mutually_exclusive_group()
+    enter_group.add_argument("--enter", dest="enter", action="store_true",
+                             help="Submit after writing text")
+    enter_group.add_argument("--no-enter", dest="enter", action="store_false",
+                             help="Write text without submitting")
+    p_write.set_defaults(enter=False)
+    p_write.add_argument("--keys", metavar="KEYS",
+                         help="Send a key/control sequence instead of message text")
+    p_write.add_argument("--capture-before", action="store_true",
+                         help="Include terminal capture before the write")
+    p_write.add_argument("--capture-after", action="store_true",
+                         help="Include terminal capture after the write")
+    p_write.add_argument("--lines", type=int, default=20,
+                         help="Capture line count for --capture-before/after (default: 20)")
 
     # broadcast
     p_broadcast = subparsers.add_parser("broadcast", help="Broadcast message to a fleet")
@@ -199,6 +221,8 @@ def main():
             result = send.run(args)
         elif args.command == "broadcast":
             result = broadcast.run(args)
+        elif args.command == "write":
+            result = write_cmd.run(args)
         elif args.command == "check":
             result = check.run(args)
         elif args.command == "capture":

@@ -1,0 +1,135 @@
+"""Write raw text or keys to a terminal-backed seat."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_target(target: str, registry, terminal) -> tuple[str, str | None, str | None, dict | None]:
+    """Return (window_name, fleet, backend_ref, registry_record)."""
+    if target.startswith("tmux:"):
+        parts = target.split(":", 2)
+        if len(parts) != 3 or not parts[1] or not parts[2]:
+            raise ValueError("tmux target must be tmux:FLEET:WINDOW")
+        fleet, name = parts[1], parts[2]
+        if hasattr(terminal, "configure_session"):
+            terminal.configure_session(fleet)
+        return name, fleet, f"tmux:{fleet}:{name}", None
+
+    reg_agent = registry.get_agent(target)
+    fleet = (reg_agent or {}).get("fleet")
+    if fleet and hasattr(terminal, "configure_session"):
+        terminal.configure_session(fleet)
+    backend_ref = None
+    if fleet:
+        backend_ref = f"tmux:{fleet}:{target}"
+    return target, fleet, backend_ref, reg_agent
+
+
+def _preview(text: str, limit: int = 120) -> str:
+    text = text.replace("\n", "\\n").strip()
+    return text[:limit]
+
+
+def run(args):
+    """Write directly to the terminal body behind a seat or backend ref."""
+    from lib import delivery, registry, seat_schema, terminal
+
+    sender = getattr(args, "sender", None) or "cli"
+    target = args.target
+    message = getattr(args, "message", None) or ""
+    key_sequence = getattr(args, "keys", None)
+    submit = bool(getattr(args, "enter", False))
+    lines = int(getattr(args, "lines", 20) or 20)
+
+    if key_sequence and message:
+        return {"ok": False, "error": "provide either message text or --keys, not both"}
+    if not key_sequence and message == "":
+        return {"ok": False, "error": "message text or --keys is required"}
+
+    try:
+        name, fleet, backend_ref, reg_agent = _parse_target(target, registry, terminal)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc), "target": target}
+
+    if not terminal.window_exists(name):
+        return {"ok": False, "error": f"window not found: {target}", "target": target, "backend_ref": backend_ref}
+
+    before = None
+    if getattr(args, "capture_before", False):
+        before = terminal.capture_output(name, lines)
+
+    message_id = delivery.new_message_id()
+    created_at = _now_iso()
+    body_for_hash = key_sequence if key_sequence is not None else message
+    pending = delivery.append_record({
+        "schema": "aura.delivery.v1",
+        "type": "terminal_write",
+        "message_id": message_id,
+        "target": target,
+        "seat": name,
+        "sender": sender,
+        "transport": "tmux",
+        "backend": "tmux",
+        "backend_ref": backend_ref or f"tmux:{getattr(terminal, 'SESSION_NAME', fleet or 'aura')}:{name}",
+        "delivery_type": "terminal_key" if key_sequence else "terminal_write",
+        "state": "pending",
+        "created_at": created_at,
+        "body_hash": delivery.body_hash(body_for_hash),
+        "bytes": len(body_for_hash.encode("utf-8")),
+        "enter": submit,
+        "keys": key_sequence,
+        "preview": _preview(body_for_hash),
+    })
+
+    if key_sequence:
+        result = terminal.send_keys(name, key_sequence, enter=False) or {"ok": False, "error": "terminal send_keys failed"}
+    else:
+        result = terminal.send_text(name, message, submit=submit)
+
+    after = None
+    if getattr(args, "capture_after", False):
+        after = terminal.capture_output(name, lines)
+
+    state = "delivered" if result.get("ok") else "failed"
+    record = delivery.append_record({
+        **pending,
+        "state": state,
+        "updated_at": _now_iso(),
+        "terminal_ref": result.get("target") or pending.get("backend_ref"),
+        "error": result.get("error"),
+        "submitted": result.get("submitted", False),
+        "capture_before_lines": len(before or []),
+        "capture_after_lines": len(after or []),
+    })
+
+    response = {
+        "ok": bool(result.get("ok")),
+        "schema": "aura.write.v1",
+        "type": "write",
+        "message_id": message_id,
+        "target": target,
+        "name": name,
+        "fleet": fleet or (reg_agent or {}).get("fleet"),
+        "sender": sender,
+        "transport": "tmux",
+        "terminal_ref": result.get("target") or pending.get("backend_ref"),
+        "backend_ref": pending.get("backend_ref"),
+        "state": state,
+        "submitted": result.get("submitted", False),
+        "enter": submit,
+        "keys": key_sequence,
+        "bytes": pending.get("bytes"),
+        "record": record,
+    }
+    if before is not None:
+        response["capture_before"] = before
+    if after is not None:
+        response["capture_after"] = after
+    if not result.get("ok"):
+        response["error"] = result.get("error", "terminal write failed")
+    return seat_schema.enrich(response)

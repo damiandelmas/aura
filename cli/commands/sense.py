@@ -8,53 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from commands import check
-from lib import seat_schema, state
-
-
-READY_MARKERS = ("READY", "ACK", "idle", "waiting for input")
-BUSY_MARKERS = ("BUSY", "running", "processing", "working", "pytest", "Installing", "Building")
-ERROR_MARKERS = ("ERROR", "Traceback", "Exception", "FAILED", "failed")
-NEEDS_HUMAN_MARKERS = ("needs human", "permission", "approve", "confirm", "trust this", "Proceed?", "[y/N]")
-DONE_MARKERS = ("DONE", "COMPLETE", "completed", "succeeded", "8 passed", "passed in")
+from lib import seat_schema, state, terminal_perception
 
 
 def _state_from_output(output: str, mechanical_status: str, terminal: str) -> tuple[str, float, list[str], str]:
-    evidence: list[str] = []
-    if terminal == "missing" or mechanical_status in {"dead", "stopped"}:
-        return "unknown", 0.55, ["terminal is missing or stopped"], "inspect"
-
-    lines = [line.strip() for line in output.splitlines() if line.strip()]
-    tail = lines[-20:]
-    joined = "\n".join(tail)
-
-    def hit(markers: tuple[str, ...]) -> str | None:
-        lowered = joined.lower()
-        for marker in markers:
-            if marker.lower() in lowered:
-                for line in reversed(tail):
-                    if marker.lower() in line.lower():
-                        return line
-        return None
-
-    if line := hit(ERROR_MARKERS):
-        evidence.append(line)
-        return "error", 0.82, evidence, "escalate"
-    if line := hit(NEEDS_HUMAN_MARKERS):
-        evidence.append(line)
-        return "needs_human", 0.78, evidence, "escalate"
-    if line := hit(BUSY_MARKERS):
-        evidence.append(line)
-        return "busy", 0.70, evidence, "wait"
-    if line := hit(DONE_MARKERS):
-        evidence.append(line)
-        return "done", 0.70, evidence, "capture"
-    if line := hit(READY_MARKERS):
-        evidence.append(line)
-        return "ready", 0.72, evidence, "send"
-    if tail:
-        evidence.append(tail[-1])
-        return "unknown", 0.45, evidence, "inspect"
-    return "unknown", 0.35, ["no captured output"], "inspect"
+    """Compatibility wrapper around terminal_perception classification."""
+    result = terminal_perception.classify_terminal_state(output, mechanical_status, terminal)
+    return result["state"], result["confidence"], result["evidence"], result["next_action"]
 
 
 def _root_dir() -> Path:
@@ -85,32 +45,27 @@ def run(args):
     """Return a compact semantic sense record for a seat."""
     lines = getattr(args, "lines", 80)
     question = getattr(args, "question", None) or "What is this seat doing and what should Aura do next?"
+    requested_features = terminal_perception.normalize_feature_names(getattr(args, "features", None))
     check_args = argparse.Namespace(name=args.name, output=True, lines=lines)
     check_result = check.run(check_args)
 
-    output = check_result.get("output", "") if check_result.get("ok") else ""
-    if isinstance(output, list):
-        output = "\n".join(str(line) for line in output)
-    elif not isinstance(output, str):
-        output = str(output)
+    output = terminal_perception.normalize_output(check_result.get("output", "") if check_result.get("ok") else "")
     mechanical_status = check_result.get("status", "unknown")
     terminal = check_result.get("terminal", "missing")
-    state, confidence, evidence, next_action = _state_from_output(output, mechanical_status, terminal)
     watch_latest = _read_watch_latest(args.name)
     watch_source = None
     if watch_latest:
-        stable_count = int(watch_latest.get("stable_count", 0) or 0)
-        silence_seconds = watch_latest.get("silence_seconds")
         watch_source = {
-            "stable_count": stable_count,
-            "silence_seconds": silence_seconds,
+            "stable_count": int(watch_latest.get("stable_count", 0) or 0),
+            "silence_seconds": watch_latest.get("silence_seconds"),
             "output_changed": watch_latest.get("output_changed"),
         }
-        if terminal == "alive" and stable_count >= 3 and state in {"busy", "unknown"}:
-            state = "stuck"
-            confidence = max(confidence, 0.76)
-            evidence.append(f"watch output stable for {stable_count} samples")
-            next_action = "inspect"
+
+    perception = terminal_perception.perceive_terminal(
+        {"output": output, "mechanical_status": mechanical_status, "terminal": terminal},
+        {"question": question, "features": requested_features},
+        watch=watch_source,
+    )
 
     now = datetime.now(timezone.utc).isoformat()
     record = {
@@ -131,12 +86,14 @@ def run(args):
             "watch": watch_source,
         },
         "question": question,
-        "state": state,
-        "confidence": confidence,
-        "summary": _summary_for_state(args.name, state),
-        "evidence": evidence,
-        "next_action": next_action,
+        "state": perception.get("state"),
+        "confidence": perception.get("confidence"),
+        "summary": _summary_for_state(args.name, perception.get("state", "unknown")),
+        "evidence": perception.get("evidence", []),
+        "next_action": perception.get("next_action"),
     }
+    if requested_features:
+        record["features"] = perception.get("features", {})
     if not check_result.get("ok"):
         record["ok"] = False
         record["error"] = check_result.get("error")

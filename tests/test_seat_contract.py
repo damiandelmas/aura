@@ -73,6 +73,7 @@ def test_capture_stop_sense_and_watch_commands_are_public_contract_names():
     assert "stop" in help_result.stdout
     assert "sense" in help_result.stdout
     assert "watch" in help_result.stdout
+    assert "write" in help_result.stdout
 
 
 def test_spawn_runtime_choices_include_openclaw_and_shell():
@@ -244,10 +245,38 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         import time
         time.sleep(0.8)
 
-        capture_result = run_aura("capture", "fake1", "--lines", "40")
+        write_result = run_aura(
+            "write",
+            "fake1",
+            "raw write hello",
+            "--enter",
+            "--as",
+            "tester",
+        )
+        assert write_result.returncode == 0, write_result.stderr + write_result.stdout
+        assert '"schema": "aura.write.v1"' in write_result.stdout
+        assert '"state": "delivered"' in write_result.stdout
+
+        explicit_write_result = run_aura(
+            "write",
+            f"tmux:{fleet}:fake1",
+            "explicit write hello",
+            "--enter",
+            "--as",
+            "tester",
+        )
+        assert explicit_write_result.returncode == 0, explicit_write_result.stderr + explicit_write_result.stdout
+        assert f'"backend_ref": "tmux:{fleet}:fake1"' in explicit_write_result.stdout
+
+        import time
+        time.sleep(0.8)
+
+        capture_result = run_aura("capture", "fake1", "--lines", "60")
         assert capture_result.returncode == 0, capture_result.stderr + capture_result.stdout
         assert "READY fake1" in capture_result.stdout
         assert "ACK fake1 hello from e2e" in capture_result.stdout
+        assert "ACK fake1 raw write hello" in capture_result.stdout
+        assert "ACK fake1 explicit write hello" in capture_result.stdout
         assert '"seat": "fake1"' in capture_result.stdout
         assert '"backend": "tmux"' in capture_result.stdout
         assert f'"backend_ref": "{fleet}:fake1"' in capture_result.stdout
@@ -259,7 +288,7 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         assert '"backend": "tmux"' in list_result.stdout
         assert f'"backend_ref": "{fleet}:fake1"' in list_result.stdout
 
-        sense_result = run_aura("sense", "fake1", "--lines", "40")
+        sense_result = run_aura("sense", "fake1", "--lines", "60")
         assert sense_result.returncode == 0, sense_result.stderr + sense_result.stdout
         assert '"schema": "aura.sense.v1"' in sense_result.stdout
         assert '"type": "sense"' in sense_result.stdout
@@ -267,6 +296,24 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         assert '"next_action": "send"' in sense_result.stdout
         assert (tmp_path / "seats" / "fake1" / "sense" / "events.jsonl").exists()
         assert (tmp_path / "seats" / "fake1" / "sense" / "latest.json").exists()
+
+        sense_features_result = run_aura(
+            "sense",
+            "fake1",
+            "--lines",
+            "60",
+            "--question",
+            "Did it receive the raw write?",
+            "--features",
+            "state,last_visible_line,received_text,next_action,confidence,unsupported_demo",
+        )
+        assert sense_features_result.returncode == 0, sense_features_result.stderr + sense_features_result.stdout
+        assert '"features"' in sense_features_result.stdout
+        assert '"received_text": "ACK fake1 explicit write hello"' in sense_features_result.stdout
+        assert '"unsupported_demo": {' in sense_features_result.stdout
+
+        delivery_records = (tmp_path / "deliveries.jsonl").read_text(encoding="utf-8")
+        assert '"type": "terminal_write"' in delivery_records
 
         watch_result = run_aura("watch", "fake1", "--once", "--lines", "40", "--interval", "0")
         assert watch_result.returncode == 0, watch_result.stderr + watch_result.stdout
