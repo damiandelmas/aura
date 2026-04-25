@@ -86,6 +86,61 @@ def test_spawn_runtime_choices_include_openclaw_and_shell():
     assert "shell" in help_result.stdout
 
 
+def test_stop_uses_runtime_specific_graceful_exit(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import cut
+    from lib import registry
+
+    sent = []
+    killed = []
+    sessions = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+        BACKEND_NAME = "tmux"
+
+        @staticmethod
+        def configure_session(name):
+            sessions.append(name)
+            FakeTerminal.SESSION_NAME = name
+
+        @staticmethod
+        def window_exists(name):
+            return name not in killed
+
+        @staticmethod
+        def send_text(name, text, submit=True, submit_key="Enter"):
+            sent.append((name, text, submit, submit_key))
+            return {"ok": True}
+
+        @staticmethod
+        def kill_window(name):
+            killed.append(name)
+            return {"ok": True}
+
+    import lib.terminal as terminal_module
+    import lib.mesh as mesh_module
+
+    monkeypatch.setattr(terminal_module, "configure_session", FakeTerminal.configure_session)
+    monkeypatch.setattr(terminal_module, "window_exists", FakeTerminal.window_exists)
+    monkeypatch.setattr(terminal_module, "send_text", FakeTerminal.send_text)
+    monkeypatch.setattr(terminal_module, "kill_window", FakeTerminal.kill_window)
+    monkeypatch.setattr(mesh_module, "unregister", lambda name: {"ok": True})
+
+    registry.upsert_agent({"name": "shellseat", "fleet": "unitfleet", "runtime": "shell", "registered": True})
+    result = cut.run(argparse.Namespace(name="shellseat", force=False))
+
+    assert result["ok"] is True
+    assert result["graceful_attempted"] is True
+    assert result["graceful_exit"] == "exit"
+    assert sent[0][1] == "exit"
+    assert sessions == ["unitfleet"]
+    assert registry.get_agent("shellseat", fleet="unitfleet")["status"] == "dead"
+
+
 def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
     if shutil.which("tmux") is None:
         import pytest
