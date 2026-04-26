@@ -13,7 +13,7 @@ from typing import Any
 
 
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
-DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:7b"
+DEFAULT_OLLAMA_MODEL = "qwen2.5:0.5b"
 
 
 def ollama_chat(
@@ -23,7 +23,8 @@ def ollama_chat(
     host: str = DEFAULT_OLLAMA_HOST,
     timeout: float = 8.0,
     temperature: float = 0.0,
-    num_predict: int = 700,
+    num_predict: int = 300,
+    response_format: str | dict | None = "json",
 ) -> str:
     """Send a non-streaming Ollama chat request and return message content."""
     base = host.rstrip("/")
@@ -33,9 +34,12 @@ def ollama_chat(
         "stream": False,
         "options": {
             "temperature": temperature,
+            "num_ctx": 4096,
             "num_predict": num_predict,
         },
     }
+    if response_format is not None:
+        payload["format"] = response_format
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         f"{base}/api/chat",

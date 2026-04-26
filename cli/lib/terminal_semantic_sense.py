@@ -11,6 +11,15 @@ from lib import local_llm, sense_contracts, terminal_perception
 
 ALLOWED_STATES = {"ready", "busy", "stuck", "done", "needs_human", "error", "unknown"}
 ALLOWED_ACTIONS = {"send", "wait", "capture", "inspect", "escalate"}
+ACTION_BY_STATE = {
+    "ready": "send",
+    "busy": "wait",
+    "stuck": "inspect",
+    "done": "capture",
+    "needs_human": "escalate",
+    "error": "escalate",
+    "unknown": "inspect",
+}
 MAX_TERMINAL_CHARS = 12000
 
 
@@ -133,6 +142,8 @@ def _coerce_result(value: dict[str, Any], requested_features: Any, contract: dic
     next_action = str(value.get("next_action") or _default_action(state)).strip().lower()
     if next_action not in ALLOWED_ACTIONS:
         next_action = _default_action(state)
+    elif not _action_matches_state(state, next_action):
+        next_action = _default_action(state)
 
     try:
         confidence = float(value.get("confidence", 0.5))
@@ -194,12 +205,10 @@ def _nullable_string(value: Any) -> str | None:
 
 
 def _default_action(state: str) -> str:
-    return {
-        "ready": "send",
-        "busy": "wait",
-        "stuck": "inspect",
-        "done": "capture",
-        "needs_human": "escalate",
-        "error": "escalate",
-        "unknown": "inspect",
-    }.get(state, "inspect")
+    return ACTION_BY_STATE.get(state, "inspect")
+
+
+def _action_matches_state(state: str, action: str) -> bool:
+    if state == "unknown":
+        return action in {"inspect", "wait"}
+    return action == _default_action(state)

@@ -158,7 +158,7 @@ def main():
                          default=os.environ.get("AURA_SENSE_MODE", "auto"),
                          help="Sense backend: local LLM with fallback, LLM-only, or deterministic heuristic (default: auto)")
     p_sense.add_argument("--model", default=os.environ.get("AURA_SENSE_MODEL"),
-                         help="Local Ollama model for LLM sense (default: qwen2.5-coder:7b)")
+                         help="Local Ollama model for LLM sense (default: qwen2.5:0.5b)")
     p_sense.add_argument("--ollama-host", default=os.environ.get("AURA_OLLAMA_HOST"),
                          help="Ollama host for LLM sense (default: http://localhost:11434)")
     p_sense.add_argument("--llm-timeout", type=float,
@@ -177,9 +177,11 @@ def main():
     p_watch.add_argument("--once", action="store_true",
                          help="Take one sample and exit")
     p_watch.add_argument("--iterations", type=int,
-                         help="For --fleet, take N bounded samples and exit")
+                         help="Take N bounded samples and exit")
     p_watch.add_argument("--no-sense", action="store_true",
                          help="Only capture/check watch state; do not run sense")
+    p_watch.add_argument("--fresh-sense", action="store_true",
+                         help="Re-run sense even when terminal output is unchanged")
     p_watch.add_argument("--question", help="Optional question passed through to sense")
     p_watch.add_argument("--features", help="Optional comma-separated desired sense features")
     p_watch.add_argument("--contract",

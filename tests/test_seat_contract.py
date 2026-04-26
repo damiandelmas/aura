@@ -244,6 +244,20 @@ def test_sense_llm_mode_uses_structured_local_llm(monkeypatch, tmp_path):
     assert record["blockers"] == ["operator approval"]
 
 
+def test_llm_sense_clamps_inconsistent_action_for_state():
+    from lib import terminal_semantic_sense
+
+    record = terminal_semantic_sense._coerce_result({
+        "state": "ready",
+        "confidence": 0.8,
+        "next_action": "wait",
+        "summary": "ready",
+    }, None)
+
+    assert record["state"] == "ready"
+    assert record["next_action"] == "send"
+
+
 def test_sense_llm_mode_supports_inline_contract(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
@@ -347,6 +361,135 @@ def test_sense_auto_mode_falls_back_when_llm_unavailable(monkeypatch, tmp_path):
     assert record["source"]["sense_backend"] == "heuristic"
     assert record["source"]["fallback_used"] is True
     assert "offline" in record["source"]["llm_error"]
+
+
+def test_watch_reuses_previous_sense_when_output_unchanged(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import check, sense, watch
+    from lib import registry
+
+    registry.upsert_agent({"name": "steadyseat", "fleet": "unitfleet", "runtime": "command", "registered": True})
+    monkeypatch.setattr(check, "run", lambda args: {
+        "ok": True,
+        "name": "steadyseat",
+        "fleet": "unitfleet",
+        "runtime": "command",
+        "status": "alive",
+        "terminal": "alive",
+        "terminal_ref": "tmux:unitfleet:steadyseat",
+        "output": ["READY steadyseat"],
+    })
+
+    calls = []
+
+    def fake_sense_run(args):
+        calls.append(args.name)
+        return {
+            "ok": True,
+            "schema": "aura.sense.v1",
+            "type": "sense",
+            "sense_id": f"sense-{len(calls)}",
+            "seat": args.name,
+            "name": args.name,
+            "state": "ready",
+            "confidence": 0.9,
+            "next_action": "send",
+            "summary": "ready",
+            "evidence": ["READY steadyseat"],
+        }
+
+    monkeypatch.setattr(sense, "run", fake_sense_run)
+    args = argparse.Namespace(
+        name="steadyseat",
+        lines=40,
+        question=None,
+        features=None,
+        no_sense=False,
+        fresh_sense=False,
+        sense_mode="llm",
+        model="local-test",
+        llm_timeout=1,
+        ollama_host="http://ollama.test",
+        contract=None,
+    )
+
+    first = watch.sample(args)
+    second = watch.sample(args)
+
+    assert len(calls) == 1
+    assert first["sense_reused"] is False
+    assert second["output_changed"] is False
+    assert second["stable_count"] == 1
+    assert second["sense_reused"] is True
+    assert second["sense"]["sense_id"] == "sense-1"
+    assert second["sense"]["unchanged"] is True
+    assert second["sense"]["reused_from_watch_id"] == first["watch_id"]
+
+    args.fresh_sense = True
+    third = watch.sample(args)
+    assert len(calls) == 2
+    assert third["sense_reused"] is False
+
+
+def test_single_seat_watch_iterations_are_bounded(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import check, sense, watch
+    from lib import registry
+
+    registry.upsert_agent({"name": "loopseat", "fleet": "unitfleet", "runtime": "command", "registered": True})
+    monkeypatch.setattr(check, "run", lambda args: {
+        "ok": True,
+        "name": "loopseat",
+        "fleet": "unitfleet",
+        "runtime": "command",
+        "status": "alive",
+        "terminal": "alive",
+        "terminal_ref": "tmux:unitfleet:loopseat",
+        "output": ["READY loopseat"],
+    })
+    monkeypatch.setattr(sense, "run", lambda args: {
+        "ok": True,
+        "schema": "aura.sense.v1",
+        "type": "sense",
+        "seat": args.name,
+        "name": args.name,
+        "state": "ready",
+        "confidence": 0.9,
+        "next_action": "send",
+        "summary": "ready",
+        "evidence": ["READY loopseat"],
+    })
+
+    result = watch.run(argparse.Namespace(
+        name="loopseat",
+        fleet=None,
+        once=False,
+        iterations=3,
+        interval=0,
+        lines=40,
+        question=None,
+        features=None,
+        no_sense=False,
+        fresh_sense=False,
+        sense_mode="llm",
+        model="local-test",
+        llm_timeout=1,
+        ollama_host="http://ollama.test",
+        contract=None,
+    ))
+
+    assert result["ok"] is True
+    assert result["iterations"] == 3
+    assert len(result["history"]) == 3
+    assert result["history"][0]["output_changed"] is True
+    assert result["history"][1]["sense_reused"] is True
+    assert result["history"][2]["sense_reused"] is True
 
 
 def test_perception_does_not_treat_done_inside_names_as_completion():

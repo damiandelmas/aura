@@ -93,19 +93,33 @@ def sample(args) -> dict:
     silence_seconds = _seconds_since(last_change_at, now)
 
     sense_record = None
+    sense_reused = False
     if not getattr(args, "no_sense", False):
-        sense_args = argparse.Namespace(
-            name=seat,
-            lines=lines,
-            question=getattr(args, "question", None),
-            features=getattr(args, "features", None),
-            sense_mode=getattr(args, "sense_mode", None),
-            model=getattr(args, "model", None),
-            llm_timeout=getattr(args, "llm_timeout", None),
-            ollama_host=getattr(args, "ollama_host", None),
-            contract=getattr(args, "contract", None),
-        )
-        sense_record = sense.run(sense_args)
+        previous_sense = previous.get("sense") if previous else None
+        if (
+            not output_changed
+            and previous_sense
+            and not getattr(args, "fresh_sense", False)
+        ):
+            sense_record = dict(previous_sense)
+            sense_record["unchanged"] = True
+            sense_record["reused"] = True
+            sense_record["reused_at"] = now
+            sense_record["reused_from_watch_id"] = previous.get("watch_id")
+            sense_reused = True
+        else:
+            sense_args = argparse.Namespace(
+                name=seat,
+                lines=lines,
+                question=getattr(args, "question", None),
+                features=getattr(args, "features", None),
+                sense_mode=getattr(args, "sense_mode", None),
+                model=getattr(args, "model", None),
+                llm_timeout=getattr(args, "llm_timeout", None),
+                ollama_host=getattr(args, "ollama_host", None),
+                contract=getattr(args, "contract", None),
+            )
+            sense_record = sense.run(sense_args)
 
     record = {
         "ok": bool(check_result.get("ok")),
@@ -129,6 +143,7 @@ def sample(args) -> dict:
         "last_change_at": last_change_at,
         "silence_seconds": silence_seconds,
         "sense": sense_record,
+        "sense_reused": sense_reused,
     }
     if not check_result.get("ok"):
         record["error"] = check_result.get("error")
@@ -155,6 +170,7 @@ def sample_fleet(args) -> dict:
             question=getattr(args, "question", None),
             features=getattr(args, "features", None),
             no_sense=getattr(args, "no_sense", False),
+            fresh_sense=getattr(args, "fresh_sense", False),
             sense_mode=getattr(args, "sense_mode", None),
             model=getattr(args, "model", None),
             llm_timeout=getattr(args, "llm_timeout", None),
@@ -223,6 +239,35 @@ def sample_fleet_bounded(args) -> dict:
     return latest
 
 
+def sample_bounded(args) -> dict:
+    """Take a finite number of samples for one seat and return the latest plus history."""
+    iterations = int(getattr(args, "iterations", 0) or 0)
+    if iterations <= 0:
+        return {"ok": False, "error": "watch --iterations requires a positive integer", "seat": args.name}
+
+    interval = max(float(getattr(args, "interval", 5)), 0.0)
+    history = []
+    latest = None
+    for index in range(iterations):
+        latest = sample(args)
+        history.append({
+            "iteration": index + 1,
+            "at": latest.get("at"),
+            "state": _sample_state(latest),
+            "output_changed": latest.get("output_changed"),
+            "stable_count": latest.get("stable_count"),
+            "sense_reused": latest.get("sense_reused"),
+        })
+        if index < iterations - 1:
+            time.sleep(interval)
+
+    latest = dict(latest or {})
+    latest["iterations"] = iterations
+    latest["history"] = history
+    _write_watch_record(args.name, latest)
+    return latest
+
+
 def run(args):
     """Watch a seat once or continuously until interrupted."""
     if getattr(args, "fleet", None):
@@ -233,6 +278,8 @@ def run(args):
         return {"ok": False, "error": "watch --fleet requires --once or --iterations N", "fleet": args.fleet}
     if not getattr(args, "name", None):
         return {"ok": False, "error": "watch requires a seat name or --fleet"}
+    if getattr(args, "iterations", None):
+        return sample_bounded(args)
     if getattr(args, "once", False):
         return sample(args)
 
