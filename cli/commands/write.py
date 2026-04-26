@@ -68,6 +68,16 @@ def _needs_submit_retry(capture: list[str]) -> bool:
     return last_pasted_prompt > last_working
 
 
+def _retry_submit(name: str, terminal) -> dict:
+    """Retry submit using the same key path as `aura write --keys Enter`.
+
+    libtmux `pane.enter()` is not equivalent to sending a literal Enter key in
+    every full-screen TUI state. Codex queued prompts have proven more reliable
+    with the literal key path.
+    """
+    return terminal.send_keys(name, "Enter", enter=False) or {}
+
+
 def run(args):
     """Write directly to the terminal body behind a seat or backend ref."""
     from lib import delivery, registry, seat_schema, terminal
@@ -140,7 +150,7 @@ def run(args):
         verify_capture = terminal.capture_output(name, max(lines, 80))
         submit_verified = not _needs_submit_retry(verify_capture)
         if not submit_verified:
-            retry = terminal.send_keys(name, "", enter=True) or {}
+            retry = _retry_submit(name, terminal)
             submit_retry = bool(retry.get("ok"))
             time.sleep(1.0)
             verify_capture = terminal.capture_output(name, max(lines, 80))

@@ -28,13 +28,24 @@ def test_openclaw_and_shell_runtime_specs_exist():
 
 
 def test_write_submit_retry_detection_is_narrow():
-    from commands.write import _needs_submit_retry
+    from commands.write import _needs_submit_retry, _retry_submit
 
     assert _needs_submit_retry(["Messages to be submitted after next tool call"]) is True
     assert _needs_submit_retry(["Press Enter to submit"]) is True
     assert _needs_submit_retry(["› [Pasted Content 1024 chars]", "", "gpt-5.5 high"]) is True
     assert _needs_submit_retry(["› [Pasted Content 1024 chars]", "• Working (1s)"]) is False
     assert _needs_submit_retry(["Working (2s)", "Running tool call"]) is False
+
+    class FakeTerminal:
+        calls = []
+
+        @classmethod
+        def send_keys(cls, name, text, enter=True):
+            cls.calls.append((name, text, enter))
+            return {"ok": True}
+
+    assert _retry_submit("seat1", FakeTerminal)["ok"] is True
+    assert FakeTerminal.calls == [("seat1", "Enter", False)]
 
 
 def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, tmp_path):
