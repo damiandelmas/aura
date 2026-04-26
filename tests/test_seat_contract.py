@@ -159,6 +159,7 @@ def test_sense_uses_watch_stability_for_stuck_state(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SENSE_MODE", "heuristic")
 
     from commands import check, sense
     from lib import registry, state
@@ -189,6 +190,97 @@ def test_sense_uses_watch_stability_for_stuck_state(monkeypatch, tmp_path):
     assert record["next_action"] == "inspect"
     assert record["source"]["watch"]["stable_count"] == 3
     assert any("stable for 3" in item for item in record["evidence"])
+
+
+def test_sense_llm_mode_uses_structured_local_llm(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import check, sense
+    from lib import registry, terminal_semantic_sense
+
+    registry.upsert_agent({"name": "approvalseat", "fleet": "unitfleet", "runtime": "command", "registered": True})
+    monkeypatch.setattr(check, "run", lambda args: {
+        "ok": True,
+        "name": "approvalseat",
+        "fleet": "unitfleet",
+        "runtime": "command",
+        "status": "alive",
+        "terminal": "alive",
+        "terminal_ref": "tmux:unitfleet:approvalseat",
+        "output": ["Do you want to proceed? [y/N]"],
+    })
+    monkeypatch.setattr(terminal_semantic_sense.local_llm, "ollama_chat", lambda *args, **kwargs: json.dumps({
+        "state": "needs_human",
+        "confidence": 0.91,
+        "summary": "The seat is waiting for operator approval.",
+        "next_action": "escalate",
+        "evidence": ["Do you want to proceed? [y/N]"],
+        "role": "worker",
+        "current_task": "waiting for approval",
+        "last_meaningful_event": "requested confirmation",
+        "blockers": ["operator approval"],
+        "features": {"awaiting_approval": True},
+    }))
+
+    record = sense.run(argparse.Namespace(
+        name="approvalseat",
+        lines=40,
+        question=None,
+        features="awaiting_approval",
+        sense_mode="llm",
+        model="local-test",
+        llm_timeout=1,
+        ollama_host="http://ollama.test",
+    ))
+
+    assert record["ok"] is True
+    assert record["state"] == "needs_human"
+    assert record["next_action"] == "escalate"
+    assert record["source"]["sense_backend"] == "llm"
+    assert record["source"]["llm"]["model"] == "local-test"
+    assert record["features"]["awaiting_approval"] is True
+    assert record["blockers"] == ["operator approval"]
+
+
+def test_sense_auto_mode_falls_back_when_llm_unavailable(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import check, sense
+    from lib import registry, terminal_semantic_sense
+
+    registry.upsert_agent({"name": "readyseat", "fleet": "unitfleet", "runtime": "command", "registered": True})
+    monkeypatch.setattr(check, "run", lambda args: {
+        "ok": True,
+        "name": "readyseat",
+        "fleet": "unitfleet",
+        "runtime": "command",
+        "status": "alive",
+        "terminal": "alive",
+        "terminal_ref": "tmux:unitfleet:readyseat",
+        "output": ["READY readyseat"],
+    })
+    monkeypatch.setattr(terminal_semantic_sense.local_llm, "ollama_chat", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+
+    record = sense.run(argparse.Namespace(
+        name="readyseat",
+        lines=40,
+        question=None,
+        features=None,
+        sense_mode="auto",
+        model="local-test",
+        llm_timeout=1,
+        ollama_host="http://ollama.test",
+    ))
+
+    assert record["ok"] is True
+    assert record["state"] == "ready"
+    assert record["source"]["sense_backend"] == "heuristic"
+    assert record["source"]["fallback_used"] is True
+    assert "offline" in record["source"]["llm_error"]
 
 
 def test_perception_does_not_treat_done_inside_names_as_completion():
@@ -222,6 +314,7 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         "AURA_STATE_DIR": str(tmp_path),
         "AURA_REGISTRY_PATH": str(tmp_path / "agents.json"),
         "AURA_DELIVERY_LOG": str(tmp_path / "deliveries.jsonl"),
+        "AURA_SENSE_MODE": "heuristic",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
 

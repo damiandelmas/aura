@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 from commands import check
-from lib import seat_schema, state, terminal_perception
+from lib import local_llm, seat_schema, state, terminal_perception, terminal_semantic_sense
 
 
 def _state_from_output(output: str, mechanical_status: str, terminal: str) -> tuple[str, float, list[str], str]:
@@ -41,6 +42,73 @@ def _read_watch_latest(seat: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _sense_mode(args) -> str:
+    mode = getattr(args, "sense_mode", None) or os.environ.get("AURA_SENSE_MODE", "auto")
+    mode = str(mode).strip().lower()
+    if mode not in {"auto", "llm", "heuristic"}:
+        return "auto"
+    return mode
+
+
+def _model(args) -> str:
+    return (
+        getattr(args, "model", None)
+        or os.environ.get("AURA_SENSE_MODEL")
+        or local_llm.DEFAULT_OLLAMA_MODEL
+    )
+
+
+def _ollama_host(args) -> str:
+    return (
+        getattr(args, "ollama_host", None)
+        or os.environ.get("AURA_OLLAMA_HOST")
+        or local_llm.DEFAULT_OLLAMA_HOST
+    )
+
+
+def _llm_timeout(args) -> float:
+    value = getattr(args, "llm_timeout", None) or os.environ.get("AURA_SENSE_TIMEOUT") or 8.0
+    try:
+        return max(0.1, float(value))
+    except (TypeError, ValueError):
+        return 8.0
+
+
+def _perceive(capture: dict, request: dict, watch: dict | None, args) -> tuple[dict, dict]:
+    heuristic = terminal_perception.perceive_terminal(capture, request, watch=watch)
+    mode = _sense_mode(args)
+    metadata = {
+        "backend": "heuristic",
+        "mode": mode,
+        "fallback_used": False,
+        "llm": None,
+    }
+    if mode == "heuristic":
+        return heuristic, metadata
+
+    model = _model(args)
+    host = _ollama_host(args)
+    timeout = _llm_timeout(args)
+    metadata["llm"] = {"provider": "ollama", "model": model, "host": host, "timeout": timeout}
+    try:
+        perception = terminal_semantic_sense.perceive_terminal(
+            capture,
+            request,
+            watch=watch,
+            model=model,
+            host=host,
+            timeout=timeout,
+        )
+        metadata["backend"] = "llm"
+        return perception, metadata
+    except Exception as exc:
+        metadata["llm_error"] = str(exc)
+        if mode == "llm":
+            raise
+        metadata["fallback_used"] = True
+        return heuristic, metadata
+
+
 def run(args):
     """Return a compact semantic sense record for a seat."""
     lines = getattr(args, "lines", 80)
@@ -61,11 +129,31 @@ def run(args):
             "output_changed": watch_latest.get("output_changed"),
         }
 
-    perception = terminal_perception.perceive_terminal(
-        {"output": output, "mechanical_status": mechanical_status, "terminal": terminal},
-        {"question": question, "features": requested_features},
-        watch=watch_source,
-    )
+    capture = {"output": output, "mechanical_status": mechanical_status, "terminal": terminal}
+    request = {"question": question, "features": requested_features}
+    try:
+        perception, sense_metadata = _perceive(capture, request, watch_source, args)
+    except Exception as exc:
+        perception = {
+            "state": "error",
+            "confidence": 0.0,
+            "summary": "LLM sense failed.",
+            "evidence": [str(exc)],
+            "next_action": "escalate",
+            "features": {},
+        }
+        sense_metadata = {
+            "backend": "llm",
+            "mode": _sense_mode(args),
+            "fallback_used": False,
+            "llm": {
+                "provider": "ollama",
+                "model": _model(args),
+                "host": _ollama_host(args),
+                "timeout": _llm_timeout(args),
+            },
+            "llm_error": str(exc),
+        }
 
     now = datetime.now(timezone.utc).isoformat()
     record = {
@@ -82,18 +170,30 @@ def run(args):
             "capture_lines": lines,
             "mechanical_status": mechanical_status,
             "terminal": terminal,
-            "provider": None,
+            "provider": sense_metadata.get("backend"),
+            "sense_backend": sense_metadata.get("backend"),
+            "sense_mode": sense_metadata.get("mode"),
+            "fallback_used": sense_metadata.get("fallback_used"),
+            "llm": sense_metadata.get("llm"),
             "watch": watch_source,
         },
         "question": question,
         "state": perception.get("state"),
         "confidence": perception.get("confidence"),
-        "summary": _summary_for_state(args.name, perception.get("state", "unknown")),
+        "summary": perception.get("summary") or _summary_for_state(args.name, perception.get("state", "unknown")),
         "evidence": perception.get("evidence", []),
         "next_action": perception.get("next_action"),
     }
+    if sense_metadata.get("llm_error"):
+        record["source"]["llm_error"] = sense_metadata["llm_error"]
+        if sense_metadata.get("mode") == "llm":
+            record["ok"] = False
+            record["error"] = sense_metadata["llm_error"]
     if requested_features:
         record["features"] = perception.get("features", {})
+    for key in ("role", "current_task", "last_meaningful_event", "blockers"):
+        if key in perception:
+            record[key] = perception.get(key)
     if not check_result.get("ok"):
         record["ok"] = False
         record["error"] = check_result.get("error")

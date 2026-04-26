@@ -25,6 +25,13 @@ from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, 
 from lib.output import output
 
 
+def env_float(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="aura",
@@ -61,7 +68,7 @@ def main():
                          help="Silent keeper: skip AGENT_STARTED/AGENT_STOPPED lifecycle hooks. For ledger clones and similar background agents.")
     p_spawn.add_argument("--clone", dest="clone", action="store_true",
                          help="Force a real fork of --memory session (new UUID, isolated JSONL). Without --clone, --memory resumes in-place (parent and child share JSONL). Equivalent to --at L<tail> unless --at is also set.")
-    p_spawn.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "opencode", "openclaw", "shell"],
+    p_spawn.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "opencode", "openclaw", "shell", "command"],
                          help="Run a generic terminal-backed runtime instead of the Claude wrapper path")
     p_spawn.add_argument("--profile", metavar="NAME",
                          help="Runtime profile name (defaults to agent name; used by Hermes)")
@@ -145,6 +152,16 @@ def main():
                          help="Number of captured output lines to inspect (default: 80)")
     p_sense.add_argument("--question", help="Optional question for semantic state inference")
     p_sense.add_argument("--features", help="Optional comma-separated desired output features")
+    p_sense.add_argument("--sense-mode", choices=["auto", "llm", "heuristic"],
+                         default=os.environ.get("AURA_SENSE_MODE", "auto"),
+                         help="Sense backend: local LLM with fallback, LLM-only, or deterministic heuristic (default: auto)")
+    p_sense.add_argument("--model", default=os.environ.get("AURA_SENSE_MODEL"),
+                         help="Local Ollama model for LLM sense (default: qwen2.5-coder:7b)")
+    p_sense.add_argument("--ollama-host", default=os.environ.get("AURA_OLLAMA_HOST"),
+                         help="Ollama host for LLM sense (default: http://localhost:11434)")
+    p_sense.add_argument("--llm-timeout", type=float,
+                         default=env_float("AURA_SENSE_TIMEOUT", 8.0),
+                         help="Seconds to wait for local LLM sense before fallback/error (default: 8)")
 
     # watch
     p_watch = subparsers.add_parser("watch", help="Watch a seat through capture/check/sense")
@@ -163,6 +180,16 @@ def main():
                          help="Only capture/check watch state; do not run sense")
     p_watch.add_argument("--question", help="Optional question passed through to sense")
     p_watch.add_argument("--features", help="Optional comma-separated desired sense features")
+    p_watch.add_argument("--sense-mode", choices=["auto", "llm", "heuristic"],
+                         default=os.environ.get("AURA_SENSE_MODE", "auto"),
+                         help="Sense backend passed through to watch samples (default: auto)")
+    p_watch.add_argument("--model", default=os.environ.get("AURA_SENSE_MODEL"),
+                         help="Local Ollama model for LLM sense")
+    p_watch.add_argument("--ollama-host", default=os.environ.get("AURA_OLLAMA_HOST"),
+                         help="Ollama host for LLM sense")
+    p_watch.add_argument("--llm-timeout", type=float,
+                         default=env_float("AURA_SENSE_TIMEOUT", 8.0),
+                         help="Seconds to wait for local LLM sense before fallback/error")
 
     # route
     p_route = subparsers.add_parser("route", help="Evaluate or execute bounded seat-to-seat routing")

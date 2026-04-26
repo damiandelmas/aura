@@ -99,6 +99,10 @@ def sample(args) -> dict:
             lines=lines,
             question=getattr(args, "question", None),
             features=getattr(args, "features", None),
+            sense_mode=getattr(args, "sense_mode", None),
+            model=getattr(args, "model", None),
+            llm_timeout=getattr(args, "llm_timeout", None),
+            ollama_host=getattr(args, "ollama_host", None),
         )
         sense_record = sense.run(sense_args)
 
@@ -150,6 +154,10 @@ def sample_fleet(args) -> dict:
             question=getattr(args, "question", None),
             features=getattr(args, "features", None),
             no_sense=getattr(args, "no_sense", False),
+            sense_mode=getattr(args, "sense_mode", None),
+            model=getattr(args, "model", None),
+            llm_timeout=getattr(args, "llm_timeout", None),
+            ollama_host=getattr(args, "ollama_host", None),
         )
         samples.append(sample(sample_args))
     now = _now()
