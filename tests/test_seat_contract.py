@@ -27,6 +27,14 @@ def test_openclaw_and_shell_runtime_specs_exist():
     assert runtimes.graceful_exit("future-runtime") == "/exit"
 
 
+def test_write_submit_retry_detection_is_narrow():
+    from commands.write import _needs_submit_retry
+
+    assert _needs_submit_retry(["Messages to be submitted after next tool call"]) is True
+    assert _needs_submit_retry(["Press Enter to submit"]) is True
+    assert _needs_submit_retry(["Working (2s)", "Running tool call"]) is False
+
+
 def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")

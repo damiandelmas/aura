@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import time
 
 
 def _now_iso() -> str:
@@ -33,6 +34,23 @@ def _parse_target(target: str, registry, terminal) -> tuple[str, str | None, str
 def _preview(text: str, limit: int = 120) -> str:
     text = text.replace("\n", "\\n").strip()
     return text[:limit]
+
+
+def _needs_submit_retry(capture: list[str]) -> bool:
+    """Detect terminal states where a pasted Codex/agent prompt is queued.
+
+    Codex can occasionally show a message as "to be submitted after next tool
+    call" even though Aura sent Enter. In that state a bare Enter submits the
+    already-pasted text. Keep this intentionally narrow to avoid double-sending
+    legitimate, already-running turns.
+    """
+    joined = "\n".join(capture or []).lower()
+    queued_markers = (
+        "messages to be submitted after next tool call",
+        "press enter to submit",
+        "enter to submit",
+    )
+    return any(marker in joined for marker in queued_markers)
 
 
 def run(args):
@@ -92,8 +110,28 @@ def run(args):
         result = terminal.send_text(name, message, submit=submit)
 
     after = None
+    submit_verified = None
+    submit_retry = False
     if getattr(args, "capture_after", False):
         after = terminal.capture_output(name, lines)
+
+    if (
+        getattr(args, "ensure_submit", False)
+        and submit
+        and not key_sequence
+        and result.get("ok")
+    ):
+        time.sleep(1.0)
+        verify_capture = terminal.capture_output(name, max(lines, 80))
+        submit_verified = not _needs_submit_retry(verify_capture)
+        if not submit_verified:
+            retry = terminal.send_keys(name, "", enter=True) or {}
+            submit_retry = bool(retry.get("ok"))
+            time.sleep(1.0)
+            verify_capture = terminal.capture_output(name, max(lines, 80))
+            submit_verified = not _needs_submit_retry(verify_capture)
+            if after is not None:
+                after = verify_capture[-lines:]
 
     state = "delivered" if result.get("ok") else "failed"
     record = delivery.append_record({
@@ -103,6 +141,8 @@ def run(args):
         "terminal_ref": result.get("target") or pending.get("backend_ref"),
         "error": result.get("error"),
         "submitted": result.get("submitted", False),
+        "submitted_verified": submit_verified,
+        "submit_retry": submit_retry,
         "capture_before_lines": len(before or []),
         "capture_after_lines": len(after or []),
     })
@@ -121,6 +161,8 @@ def run(args):
         "backend_ref": pending.get("backend_ref"),
         "state": state,
         "submitted": result.get("submitted", False),
+        "submitted_verified": submit_verified,
+        "submit_retry": submit_retry,
         "enter": submit,
         "keys": key_sequence,
         "bytes": pending.get("bytes"),
