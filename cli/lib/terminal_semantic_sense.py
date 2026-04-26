@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from lib import local_llm, terminal_perception
+from lib import local_llm, sense_contracts, terminal_perception
 
 
 ALLOWED_STATES = {"ready", "busy", "stuck", "done", "needs_human", "error", "unknown"}
@@ -44,8 +44,12 @@ Schema:
   "current_task": null,
   "last_meaningful_event": null,
   "blockers": [],
-  "features": {}
+  "features": {},
+  "contract_result": {}
 }
+
+If a custom contract is provided, fill `contract_result` exactly with the
+requested contract fields. Do not invent fields outside the contract.
 """
 
 
@@ -69,7 +73,7 @@ def perceive_terminal(
     ]
     text = local_llm.ollama_chat(messages, model=model, host=host, timeout=timeout)
     parsed = _extract_json_object(text)
-    return _coerce_result(parsed, request.get("features"))
+    return _coerce_result(parsed, request.get("features"), request.get("contract"))
 
 
 def _tail_text(text: str, max_chars: int) -> str:
@@ -87,6 +91,7 @@ def _user_prompt(
     context = {
         "question": request.get("question") or "What is this seat doing and what should Aura do next?",
         "requested_features": request.get("features") or [],
+        "custom_contract": request.get("contract_prompt") or sense_contracts.prompt_contract(request.get("contract")),
         "mechanical_status": capture.get("mechanical_status") or capture.get("status") or "unknown",
         "terminal": capture.get("terminal") or "missing",
         "watch": watch or None,
@@ -120,7 +125,7 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     return value
 
 
-def _coerce_result(value: dict[str, Any], requested_features: Any) -> dict[str, Any]:
+def _coerce_result(value: dict[str, Any], requested_features: Any, contract: dict[str, Any] | None = None) -> dict[str, Any]:
     state = str(value.get("state") or "unknown").strip().lower()
     if state not in ALLOWED_STATES:
         state = "unknown"
@@ -155,7 +160,16 @@ def _coerce_result(value: dict[str, Any], requested_features: Any) -> dict[str, 
     for key in requested:
         features.setdefault(key, None)
 
-    return {
+    contract_payload = value.get("contract_result")
+    if contract_payload is None:
+        contract_payload = {
+            key: value.get(key)
+            for key in (contract or {}).get("fields", {})
+            if key in value
+        }
+    contract_result = sense_contracts.coerce_contract_result(contract, contract_payload)
+
+    result = {
         "state": state,
         "confidence": confidence,
         "summary": str(value.get("summary") or "").strip()[:500],
@@ -167,6 +181,9 @@ def _coerce_result(value: dict[str, Any], requested_features: Any) -> dict[str, 
         "last_meaningful_event": _nullable_string(value.get("last_meaningful_event")),
         "blockers": [str(item)[:200] for item in blockers[:8] if item is not None],
     }
+    if contract_result is not None:
+        result["contract_result"] = contract_result
+    return result
 
 
 def _nullable_string(value: Any) -> str | None:

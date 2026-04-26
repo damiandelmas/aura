@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from commands import check
-from lib import local_llm, seat_schema, state, terminal_perception, terminal_semantic_sense
+from lib import local_llm, seat_schema, sense_contracts, state, terminal_perception, terminal_semantic_sense
 
 
 def _state_from_output(output: str, mechanical_status: str, terminal: str) -> tuple[str, float, list[str], str]:
@@ -114,6 +114,10 @@ def run(args):
     lines = getattr(args, "lines", 80)
     question = getattr(args, "question", None) or "What is this seat doing and what should Aura do next?"
     requested_features = terminal_perception.normalize_feature_names(getattr(args, "features", None))
+    try:
+        contract = sense_contracts.load_contract(getattr(args, "contract", None))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc), "seat": args.name, "name": args.name}
     check_args = argparse.Namespace(name=args.name, output=True, lines=lines)
     check_result = check.run(check_args)
 
@@ -130,7 +134,12 @@ def run(args):
         }
 
     capture = {"output": output, "mechanical_status": mechanical_status, "terminal": terminal}
-    request = {"question": question, "features": requested_features}
+    request = {
+        "question": question,
+        "features": requested_features,
+        "contract": contract,
+        "contract_prompt": sense_contracts.prompt_contract(contract),
+    }
     try:
         perception, sense_metadata = _perceive(capture, request, watch_source, args)
     except Exception as exc:
@@ -176,6 +185,7 @@ def run(args):
             "fallback_used": sense_metadata.get("fallback_used"),
             "llm": sense_metadata.get("llm"),
             "watch": watch_source,
+            "contract": _contract_source(contract),
         },
         "question": question,
         "state": perception.get("state"),
@@ -191,6 +201,14 @@ def run(args):
             record["error"] = sense_metadata["llm_error"]
     if requested_features:
         record["features"] = perception.get("features", {})
+    if contract:
+        record["contract"] = {
+            "name": contract.get("name"),
+            "source": contract.get("source"),
+            "required": contract.get("required", []),
+            "fields": contract.get("fields", {}),
+        }
+        record["contract_result"] = perception.get("contract_result") or sense_contracts.coerce_contract_result(contract, {})
     for key in ("role", "current_task", "last_meaningful_event", "blockers"):
         if key in perception:
             record[key] = perception.get(key)
@@ -200,6 +218,16 @@ def run(args):
     record = seat_schema.enrich(record)
     _write_sense_record(args.name, record)
     return record
+
+
+def _contract_source(contract: dict | None) -> dict | None:
+    if not contract:
+        return None
+    return {
+        "name": contract.get("name"),
+        "source": contract.get("source"),
+        "field_count": len(contract.get("fields", {})),
+    }
 
 
 def _summary_for_state(seat: str, state: str) -> str:

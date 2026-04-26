@@ -244,6 +244,72 @@ def test_sense_llm_mode_uses_structured_local_llm(monkeypatch, tmp_path):
     assert record["blockers"] == ["operator approval"]
 
 
+def test_sense_llm_mode_supports_inline_contract(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import check, sense
+    from lib import registry, terminal_semantic_sense
+
+    registry.upsert_agent({"name": "workerseat", "fleet": "unitfleet", "runtime": "command", "registered": True})
+    monkeypatch.setattr(check, "run", lambda args: {
+        "ok": True,
+        "name": "workerseat",
+        "fleet": "unitfleet",
+        "runtime": "command",
+        "status": "alive",
+        "terminal": "alive",
+        "terminal_ref": "tmux:unitfleet:workerseat",
+        "output": ["DONE wrote report.md", "READY workerseat"],
+    })
+    monkeypatch.setattr(terminal_semantic_sense.local_llm, "ollama_chat", lambda *args, **kwargs: json.dumps({
+        "state": "done",
+        "confidence": 0.88,
+        "summary": "The worker completed the report.",
+        "next_action": "capture",
+        "evidence": ["DONE wrote report.md"],
+        "contract_result": {
+            "handoff_ready": "yes",
+            "blocked_by": None,
+            "next_step": "review report.md",
+            "files_changed": "report.md",
+        },
+    }))
+
+    contract = json.dumps({
+        "name": "handoff",
+        "fields": {
+            "handoff_ready": "boolean",
+            "blocked_by": "string|null",
+            "next_step": {"type": "string", "required": True},
+            "files_changed": "array",
+        },
+    })
+    record = sense.run(argparse.Namespace(
+        name="workerseat",
+        lines=40,
+        question=None,
+        features=None,
+        contract=contract,
+        sense_mode="llm",
+        model="local-test",
+        llm_timeout=1,
+        ollama_host="http://ollama.test",
+    ))
+
+    assert record["ok"] is True
+    assert record["state"] == "done"
+    assert record["contract"]["name"] == "handoff"
+    assert record["contract"]["required"] == ["next_step"]
+    assert record["contract_result"] == {
+        "handoff_ready": True,
+        "blocked_by": None,
+        "next_step": "review report.md",
+        "files_changed": ["report.md"],
+    }
+
+
 def test_sense_auto_mode_falls_back_when_llm_unavailable(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))

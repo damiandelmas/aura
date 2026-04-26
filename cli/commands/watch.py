@@ -103,6 +103,7 @@ def sample(args) -> dict:
             model=getattr(args, "model", None),
             llm_timeout=getattr(args, "llm_timeout", None),
             ollama_host=getattr(args, "ollama_host", None),
+            contract=getattr(args, "contract", None),
         )
         sense_record = sense.run(sense_args)
 
@@ -158,6 +159,7 @@ def sample_fleet(args) -> dict:
             model=getattr(args, "model", None),
             llm_timeout=getattr(args, "llm_timeout", None),
             ollama_host=getattr(args, "ollama_host", None),
+            contract=getattr(args, "contract", None),
         )
         samples.append(sample(sample_args))
     now = _now()

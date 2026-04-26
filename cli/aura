@@ -152,6 +152,8 @@ def main():
                          help="Number of captured output lines to inspect (default: 80)")
     p_sense.add_argument("--question", help="Optional question for semantic state inference")
     p_sense.add_argument("--features", help="Optional comma-separated desired output features")
+    p_sense.add_argument("--contract",
+                         help="Custom sense contract as inline JSON, @file, path, or name under ~/.aura/contracts/sense/")
     p_sense.add_argument("--sense-mode", choices=["auto", "llm", "heuristic"],
                          default=os.environ.get("AURA_SENSE_MODE", "auto"),
                          help="Sense backend: local LLM with fallback, LLM-only, or deterministic heuristic (default: auto)")
@@ -180,6 +182,8 @@ def main():
                          help="Only capture/check watch state; do not run sense")
     p_watch.add_argument("--question", help="Optional question passed through to sense")
     p_watch.add_argument("--features", help="Optional comma-separated desired sense features")
+    p_watch.add_argument("--contract",
+                         help="Custom sense contract passed through to watch samples")
     p_watch.add_argument("--sense-mode", choices=["auto", "llm", "heuristic"],
                          default=os.environ.get("AURA_SENSE_MODE", "auto"),
                          help="Sense backend passed through to watch samples (default: auto)")
