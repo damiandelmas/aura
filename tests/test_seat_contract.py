@@ -32,6 +32,8 @@ def test_write_submit_retry_detection_is_narrow():
 
     assert _needs_submit_retry(["Messages to be submitted after next tool call"]) is True
     assert _needs_submit_retry(["Press Enter to submit"]) is True
+    assert _needs_submit_retry(["› [Pasted Content 1024 chars]", "", "gpt-5.5 high"]) is True
+    assert _needs_submit_retry(["› [Pasted Content 1024 chars]", "• Working (1s)"]) is False
     assert _needs_submit_retry(["Working (2s)", "Running tool call"]) is False
 
 

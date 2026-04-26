@@ -44,13 +44,28 @@ def _needs_submit_retry(capture: list[str]) -> bool:
     already-pasted text. Keep this intentionally narrow to avoid double-sending
     legitimate, already-running turns.
     """
-    joined = "\n".join(capture or []).lower()
+    lines = [str(line).lower() for line in (capture or [])]
+    joined = "\n".join(lines)
     queued_markers = (
         "messages to be submitted after next tool call",
         "press enter to submit",
         "enter to submit",
     )
-    return any(marker in joined for marker in queued_markers)
+    if any(marker in joined for marker in queued_markers):
+        return True
+
+    # Codex can leave large pasted prompts rendered as a prompt line:
+    #   › [Pasted Content 1024 chars]
+    # If no later "Working" line appears, a bare Enter is still required.
+    last_pasted_prompt = -1
+    last_working = -1
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith(("› [pasted content", "> [pasted content")):
+            last_pasted_prompt = idx
+        if "working (" in stripped or "thinking" in stripped:
+            last_working = idx
+    return last_pasted_prompt > last_working
 
 
 def run(args):
