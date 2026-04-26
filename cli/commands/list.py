@@ -5,12 +5,14 @@ def run(args):
     """List all agents."""
     from lib import mesh, registry, terminal
 
-    result = mesh.discover()
-    mesh_agents = result.get("agents", []) if result.get("ok") else []
-    by_name = {a.get("name"): dict(a) for a in mesh_agents if a.get("name")}
-
     current_fleet = registry.current_fleet(default=getattr(terminal, "SESSION_NAME", "aura"))
     fleet_filter = getattr(args, "fleet", None)
+    result = mesh.discover()
+    mesh_agents = result.get("agents", []) if result.get("ok") else []
+    if fleet_filter:
+        mesh_agents = [a for a in mesh_agents if a.get("fleet") == fleet_filter]
+    by_name = {a.get("name"): dict(a) for a in mesh_agents if a.get("name")}
+
     registry_agents = registry.list_agents(fleet_filter) if fleet_filter else registry.list_agents()
     for agent in registry_agents:
         name = agent.get("name")
