@@ -16,11 +16,14 @@ def test_openclaw_and_shell_runtime_specs_exist():
 
     openclaw_runtime, openclaw_spec = runtimes.resolve_runtime("openclaw")
     shell_runtime, shell_spec = runtimes.resolve_runtime("shell")
+    omx_runtime, omx_spec = runtimes.resolve_runtime("omx")
 
     assert openclaw_runtime == "openclaw"
     assert openclaw_spec["command"] == "openclaw"
     assert shell_runtime == "shell"
     assert "command" in shell_spec
+    assert omx_runtime == "omx"
+    assert omx_spec["native_state"] == ".omx"
     assert runtimes.graceful_exit("future-runtime") == "/exit"
 
 
@@ -50,6 +53,9 @@ def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, 
         model=None,
         as_pane=True,
         prompt=None,
+        work=None,
+        cwd=str(tmp_path),
+        context=None,
     )
 
     result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
@@ -57,7 +63,69 @@ def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, 
     assert result["ok"] is True
     assert result["runtime"] == "command"
     assert result["command"] == "python3 -q"
+    assert result["cwd"] == str(tmp_path)
     assert "trace_cell" not in result or result["trace_cell"] is None
+
+
+def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+    context_file = unit / "AGENTS.md"
+    work_file = unit / "WORK.md"
+    context_file.write_text("You are the unit agent.\n", encoding="utf-8")
+    work_file.write_text("Do the unit work.\n", encoding="utf-8")
+
+    sent = []
+    created = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+        BACKEND_NAME = "tmux"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False):
+            created.append((name, workdir, detached))
+            return {"ok": True}
+
+        @staticmethod
+        def send_text(name, text, submit=True, submit_key="Enter"):
+            sent.append((name, text, submit, submit_key))
+            return {"ok": True, "target": f"unitfleet:{name}", "text": text}
+
+    args = argparse.Namespace(
+        name="codex-seat",
+        runtime="codex",
+        launch_command="printf ready",
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work="WORK.md",
+        cwd=str(unit),
+        context="AGENTS.md",
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert created == [("codex-seat", str(unit), True)]
+    assert sent[0][1] == "printf ready"
+    assert sent[1][1] == "Do the unit work.\n"
+    assert result["prompt_sent"] is True
+    assert result["context_file"] == str(context_file)
+    assert result["work_file"] == str(work_file)
+
+    log_path = unit / ".aura" / "state" / "sessions.jsonl"
+    rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["seat"] == "codex-seat"
+    assert rows[-1]["runtime"] == "codex"
+    assert rows[-1]["cwd"] == str(unit)
+    assert rows[-1]["work_file"] == str(work_file)
 
 
 def test_capture_stop_sense_and_watch_commands_are_public_contract_names():
@@ -88,6 +156,10 @@ def test_spawn_runtime_choices_include_openclaw_and_shell():
     assert help_result.returncode == 0
     assert "openclaw" in help_result.stdout
     assert "shell" in help_result.stdout
+    assert "omx" in help_result.stdout
+    assert "--cwd" in help_result.stdout
+    assert "--work" in help_result.stdout
+    assert "--context" in help_result.stdout
 
 
 def test_stop_uses_runtime_specific_graceful_exit(monkeypatch, tmp_path):
@@ -517,6 +589,8 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
 
     fleet = f"aura-e2e-{os.getpid()}"
     fake_runtime = ROOT / "tests" / "fixtures" / "fake_runtime.py"
+    unit = tmp_path / "workspace"
+    unit.mkdir()
     env = {
         **os.environ,
         "AURA_FLEET": fleet,
@@ -543,6 +617,8 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
             "fake1",
             "--command",
             f"{sys.executable} -u {fake_runtime} --name fake1 --mode echo",
+            "--cwd",
+            str(unit),
             "--as-pane",
         )
         assert spawn_result.returncode == 0, spawn_result.stderr + spawn_result.stdout
@@ -682,6 +758,8 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
             "fake2",
             "--command",
             f"{sys.executable} -u {fake_runtime} --name fake2 --mode echo",
+            "--cwd",
+            str(unit),
             "--as-pane",
         )
         assert spawn_result.returncode == 0, spawn_result.stderr + spawn_result.stdout
@@ -732,6 +810,8 @@ def test_spawn_fleet_flag_controls_physical_tmux_session(tmp_path):
     fleet = f"aura-flag-{os.getpid()}"
     name = "fleetflag"
     fake_runtime = ROOT / "tests" / "fixtures" / "fake_runtime.py"
+    unit = tmp_path / "workspace"
+    unit.mkdir()
     env = {
         **os.environ,
         "AURA_STATE_DIR": str(tmp_path),
@@ -750,6 +830,7 @@ def test_spawn_fleet_flag_controls_physical_tmux_session(tmp_path):
                 "spawn", name,
                 "--fleet", fleet,
                 "--command", f"{sys.executable} -u {fake_runtime} --name {name} --mode echo",
+                "--cwd", str(unit),
                 "--as-pane",
             ],
             cwd=ROOT,

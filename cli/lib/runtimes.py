@@ -24,6 +24,7 @@ RUNTIMES: dict[str, dict] = {
         "command": "claude",
         "graceful_exit": "/exit",
         "submit_key": "Enter",
+        "context_candidates": ["CLAUDE.md", "AGENTS.md"],
     },
     "claude": {
         "alias_for": "claude-code",
@@ -32,11 +33,21 @@ RUNTIMES: dict[str, dict] = {
         "command": "hermes -p {profile}",
         "graceful_exit": "/exit",
         "submit_key": "Enter",
+        "native_state": ".hermes",
+        "context_candidates": [".hermes.md", "HERMES.md", "AGENTS.md"],
     },
     "codex": {
         "command": "codex",
         "graceful_exit": "/exit",
         "submit_key": "Enter",
+        "context_candidates": ["AGENTS.md"],
+    },
+    "omx": {
+        "command": "omx",
+        "graceful_exit": "/exit",
+        "submit_key": "Enter",
+        "native_state": ".omx",
+        "context_candidates": ["AGENTS.md"],
     },
     "opencode": {
         "command": "opencode",

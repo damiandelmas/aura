@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 # Add lib to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'lib'))
@@ -66,6 +67,9 @@ def _infer_fleet_from_caller():
 
 def run(args):
     """Spawn a new agent."""
+    if getattr(args, 'prompt', None) and getattr(args, 'work', None):
+        return {"ok": False, "error": "use either --prompt or --work, not both"}
+
     # Determine fleet name BEFORE importing terminal (it reads env at import time)
     # Priority: --fleet flag > caller-derived default.
     fleet = getattr(args, 'fleet', None) or _infer_fleet_from_caller()
@@ -101,11 +105,13 @@ def run(args):
     mesh.ensure_running()
 
     # Determine working directory
-    workdir = os.getcwd()
+    from lib import runtimes, workspace_state
+
+    workdir = str(workspace_state.resolve_workdir(getattr(args, 'cwd', None)))
     full_session_id = None
 
     # If resuming a session, find it and extract workdir
-    if args.memory:
+    if args.memory and not getattr(args, 'cwd', None):
         try:
             from jsonl import find_jsonl, extract_workdir, slice_at
 
@@ -144,6 +150,20 @@ def run(args):
         except ImportError:
             # jsonl lib not available, use partial ID
             full_session_id = args.memory
+
+    _, legacy_spec = runtimes.resolve_runtime("claude-code")
+    workdir_path = Path(workdir).resolve()
+    context_path = workspace_state.infer_context_file(
+        workdir_path,
+        legacy_spec,
+        getattr(args, 'context', None),
+    )
+    work_path = workspace_state.resolve_existing_file(
+        getattr(args, 'work', None),
+        workdir=workdir_path,
+        label="work",
+    )
+    prompt_text = workspace_state.read_work_prompt(work_path) or getattr(args, 'prompt', None)
 
     # Inject Claude Code lifecycle hooks into <workdir>/.claude/settings.json
     # so the new agent auto-reports AGENT_STARTED / AGENT_STOPPED via aura mesh.
@@ -196,7 +216,7 @@ def run(args):
     terminal.send_keys(args.name, cmd, enter=True)
 
     # If --wait or --prompt, poll for registration
-    if args.wait or args.prompt:
+    if args.wait or prompt_text:
         timeout = args.timeout
         start = time.time()
         registered = False
@@ -218,33 +238,67 @@ def run(args):
                 return _result({"ok": False, "error": "timeout waiting for registration", "name": args.name})
 
         # Send prompt if specified
-        if args.prompt:
+        if prompt_text:
             # Brief wait — wrapper gates message injection on Claude readiness
             time.sleep(1)
 
             if mesh_available:
-                result = mesh.send_message(args.name, args.prompt)
+                result = mesh.send_message(args.name, prompt_text)
                 if not result.get("error"):
-                    return _result({"ok": True, "name": args.name, "registered": True, "prompt_sent": True})
+                    base = {
+                        "ok": True,
+                        "name": args.name,
+                        "registered": True,
+                        "prompt_sent": True,
+                        "workdir": workdir,
+                        "context_file": str(context_path) if context_path else None,
+                        "work_file": str(work_path) if work_path else None,
+                    }
+                    out = _result({k: v for k, v in base.items() if v is not None})
+                    _record_workspace_spawn(workdir_path, out, runtime="claude-code")
+                    return out
 
             # Mesh unavailable or send failed - fall back to direct terminal with delay scaling
             # Delay formula from aura.py: handles long prompts (up to 5KB+)
-            prompt_bytes = len(args.prompt.encode('utf-8'))
+            prompt_bytes = len(prompt_text.encode('utf-8'))
             delay = min(2.0, max(0.3, prompt_bytes / 2500))
-            terminal.send_keys(args.name, args.prompt)
+            terminal.send_keys(args.name, prompt_text)
             time.sleep(delay)
             terminal.send_keys(args.name, "", enter=True)
-            return _result({"ok": True, "name": args.name, "prompt_sent": True, "fallback": terminal.BACKEND_NAME})
+            base = {
+                "ok": True,
+                "name": args.name,
+                "prompt_sent": True,
+                "fallback": terminal.BACKEND_NAME,
+                "workdir": workdir,
+                "context_file": str(context_path) if context_path else None,
+                "work_file": str(work_path) if work_path else None,
+            }
+            out = _result({k: v for k, v in base.items() if v is not None})
+            _record_workspace_spawn(workdir_path, out, runtime="claude-code")
+            return out
 
-    result = {"ok": True, "name": args.name, "spawned": True}
+    result = {
+        "ok": True,
+        "name": args.name,
+        "spawned": True,
+        "workdir": workdir,
+        "context_file": str(context_path) if context_path else None,
+        "work_file": str(work_path) if work_path else None,
+    }
     if hook_result:
         result["hooks"] = hook_result
-    return _result(result)
+    out = _result({k: v for k, v in result.items() if v is not None})
+    _record_workspace_spawn(workdir_path, out, runtime="claude-code")
+    return out
 
 
 def _spawn_terminal_runtime(args, terminal, result_fn):
     """Spawn a generic terminal-backed runtime without Claude wrapper coupling."""
-    from lib import runtimes
+    from lib import registry, runtimes, workspace_state
+
+    if getattr(args, 'prompt', None) and getattr(args, 'work', None):
+        return result_fn({"ok": False, "error": "use either --prompt or --work, not both", "name": args.name})
 
     requested_runtime = getattr(args, 'runtime', None)
     if not requested_runtime and getattr(args, 'launch_command', None):
@@ -259,15 +313,26 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         model=getattr(args, 'model', None),
         command_override=getattr(args, 'launch_command', None),
     )
-    workdir = os.getcwd()
+    workdir_path = workspace_state.resolve_workdir(getattr(args, 'cwd', None))
+    workdir = str(workdir_path)
+    context_path = workspace_state.infer_context_file(
+        workdir_path,
+        spec,
+        getattr(args, 'context', None),
+    )
+    work_path = workspace_state.resolve_existing_file(
+        getattr(args, 'work', None),
+        workdir=workdir_path,
+        label="work",
+    )
+    prompt_text = workspace_state.read_work_prompt(work_path) or getattr(args, 'prompt', None)
+    native_state_ref = workspace_state.infer_native_state_ref(workdir_path, spec)
 
     terminal.create_window(args.name, workdir, detached=getattr(args, 'as_pane', False))
     time.sleep(0.3)
     launch = terminal.send_text(args.name, command, submit=True)
     if not launch.get("ok"):
         return result_fn({"ok": False, "error": launch.get("error", "launch failed"), "name": args.name})
-
-    from lib import registry
 
     fleet = getattr(terminal, "SESSION_NAME", None) or registry.current_fleet(default="aura")
     registered = registry.upsert_agent({
@@ -277,6 +342,11 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "profile": profile if runtime == "hermes" else None,
         "command": command,
         "workdir": workdir,
+        "cwd": workdir,
+        "context_file": str(context_path) if context_path else None,
+        "work_file": str(work_path) if work_path else None,
+        "runtime_home": _runtime_home(runtime, profile),
+        "native_state_ref": native_state_ref,
         "terminal_ref": launch.get("target"),
         "transport": "tmux",
         "status": "starting",
@@ -291,6 +361,11 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "profile": profile if runtime == "hermes" else None,
         "command": command,
         "workdir": workdir,
+        "cwd": workdir,
+        "context_file": str(context_path) if context_path else None,
+        "work_file": str(work_path) if work_path else None,
+        "runtime_home": _runtime_home(runtime, profile),
+        "native_state_ref": native_state_ref,
         "terminal_ref": launch.get("target"),
         "status": "starting",
         "registered": True,
@@ -298,14 +373,47 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "trace_cell": registered.get("trace_cell"),
     }
 
-    if getattr(args, 'prompt', None):
+    if prompt_text:
         time.sleep(1)
-        prompt_result = terminal.send_text(args.name, args.prompt, submit=True)
+        prompt_result = terminal.send_text(args.name, prompt_text, submit=True)
         result["prompt_sent"] = bool(prompt_result.get("ok"))
         if not prompt_result.get("ok"):
             result["prompt_error"] = prompt_result.get("error")
 
+    _record_workspace_spawn(workdir_path, result, runtime=runtime)
     return result_fn({k: v for k, v in result.items() if v is not None})
+
+
+def _runtime_home(runtime: str, profile: str | None) -> str | None:
+    if runtime == "hermes" and profile:
+        return str(Path.home() / ".hermes" / "profiles" / profile)
+    return None
+
+
+def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> None:
+    try:
+        from lib import workspace_state
+
+        record = workspace_state.append_session_record(workdir, {
+            "event": "spawn",
+            "seat": result.get("name"),
+            "name": result.get("name"),
+            "fleet": result.get("fleet"),
+            "runtime": runtime,
+            "cwd": result.get("cwd") or result.get("workdir"),
+            "workdir": result.get("workdir"),
+            "context_file": result.get("context_file"),
+            "work_file": result.get("work_file"),
+            "profile": result.get("profile"),
+            "runtime_home": result.get("runtime_home"),
+            "native_state_ref": result.get("native_state_ref"),
+            "command": result.get("command"),
+            "terminal_ref": result.get("terminal_ref"),
+            "prompt_sent": result.get("prompt_sent", False),
+        })
+        workspace_state.write_latest_session(workdir, record)
+    except Exception as exc:
+        result["workspace_state_error"] = str(exc)
 
 
 def _ensure_session_accessible(jsonl_path, target_workdir):

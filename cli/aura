@@ -56,6 +56,12 @@ def main():
                          help="[DEPRECATED] Use --at instead. Legacy message number.")
     p_spawn.add_argument("--prompt", "-p", metavar="TEXT",
                          help="Initial prompt (implies --wait)")
+    p_spawn.add_argument("--work", metavar="PATH",
+                         help="Read initial prompt from WORK.md-style file relative to --cwd")
+    p_spawn.add_argument("--cwd", metavar="PATH",
+                         help="Working directory/unit folder for the spawned seat (default: current dir)")
+    p_spawn.add_argument("--context", metavar="PATH",
+                         help="Runtime-native context file to record, e.g. AGENTS.md or CLAUDE.md")
     p_spawn.add_argument("--wait", "-w", action="store_true",
                          help="Wait for mesh registration")
     p_spawn.add_argument("--timeout", type=int, default=30,
@@ -68,7 +74,7 @@ def main():
                          help="Silent keeper: skip AGENT_STARTED/AGENT_STOPPED lifecycle hooks. For ledger clones and similar background agents.")
     p_spawn.add_argument("--clone", dest="clone", action="store_true",
                          help="Force a real fork of --memory session (new UUID, isolated JSONL). Without --clone, --memory resumes in-place (parent and child share JSONL). Equivalent to --at L<tail> unless --at is also set.")
-    p_spawn.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "opencode", "openclaw", "shell", "command"],
+    p_spawn.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "omx", "opencode", "openclaw", "shell", "command"],
                          help="Run a generic terminal-backed runtime instead of the Claude wrapper path")
     p_spawn.add_argument("--profile", metavar="NAME",
                          help="Runtime profile name (defaults to agent name; used by Hermes)")
