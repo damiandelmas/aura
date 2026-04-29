@@ -140,10 +140,12 @@ def remove_agent(name: str, fleet: str | None = None) -> bool:
     return removed
 
 
-def infer_status(name: str, terminal, current: str | None = None, lines: int = 20) -> str:
-    if not terminal.window_exists(name):
+def infer_status(name: str, terminal, current: str | None = None, lines: int = 20, target: str | None = None) -> str:
+    target_ref = target or name
+    exists = terminal.target_exists(target_ref) if hasattr(terminal, "target_exists") else terminal.window_exists(target_ref)
+    if not exists:
         return "dead"
-    text = "\n".join(terminal.capture_output(name, lines) or [])
+    text = "\n".join(terminal.capture_output(target_ref, lines) or [])
     lower = text.lower()
     if "do you trust" in lower or "press enter to continue" in lower or "permission" in lower:
         return "waiting"

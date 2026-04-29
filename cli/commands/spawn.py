@@ -327,14 +327,36 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     )
     prompt_text = workspace_state.read_work_prompt(work_path) or getattr(args, 'prompt', None)
     native_state_ref = workspace_state.infer_native_state_ref(workdir_path, spec)
+    fleet = getattr(terminal, "SESSION_NAME", None) or registry.current_fleet(default="aura")
 
-    terminal.create_window(args.name, workdir, detached=getattr(args, 'as_pane', False))
-    time.sleep(0.3)
-    launch = terminal.send_text(args.name, command, submit=True)
+    launch_env = {
+        "AURA_AGENT_NAME": args.name,
+        "AURA_SEAT": args.name,
+        "AURA_FLEET": fleet,
+        "AURA_RUNTIME": runtime,
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        "FORCE_COLOR": "1",
+        "CLICOLOR_FORCE": "1",
+    }
+    try:
+        launch = terminal.create_window(
+            args.name,
+            workdir,
+            detached=getattr(args, 'as_pane', False),
+            command=command,
+            env=launch_env,
+            unset_env=["NO_COLOR"],
+        )
+    except TypeError:
+        # Compatibility for tests or alternate terminal backends that have not
+        # grown direct command launch yet.
+        terminal.create_window(args.name, workdir, detached=getattr(args, 'as_pane', False))
+        time.sleep(0.3)
+        launch = terminal.send_text(args.name, command, submit=True)
     if not launch.get("ok"):
         return result_fn({"ok": False, "error": launch.get("error", "launch failed"), "name": args.name})
 
-    fleet = getattr(terminal, "SESSION_NAME", None) or registry.current_fleet(default="aura")
     registered = registry.upsert_agent({
         "name": args.name,
         "fleet": fleet,
@@ -348,6 +370,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "runtime_home": _runtime_home(runtime, profile),
         "native_state_ref": native_state_ref,
         "terminal_ref": launch.get("target"),
+        "pane_ref": f"tmux:{fleet}:{launch.get('pane_id')}" if launch.get("pane_id") else None,
         "transport": "tmux",
         "status": "starting",
         "registered": True,
@@ -367,6 +390,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "runtime_home": _runtime_home(runtime, profile),
         "native_state_ref": native_state_ref,
         "terminal_ref": launch.get("target"),
+        "pane_ref": f"tmux:{fleet}:{launch.get('pane_id')}" if launch.get("pane_id") else None,
         "status": "starting",
         "registered": True,
         "fleet": fleet,
@@ -407,8 +431,11 @@ def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> Non
             "profile": result.get("profile"),
             "runtime_home": result.get("runtime_home"),
             "native_state_ref": result.get("native_state_ref"),
+            "runtime_session_id": result.get("runtime_session_id"),
+            "runtime_session_env": result.get("runtime_session_env"),
             "command": result.get("command"),
             "terminal_ref": result.get("terminal_ref"),
+            "pane_ref": result.get("pane_ref"),
             "prompt_sent": result.get("prompt_sent", False),
         })
         workspace_state.write_latest_session(workdir, record)

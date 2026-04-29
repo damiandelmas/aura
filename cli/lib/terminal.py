@@ -21,6 +21,11 @@ capture_output = backend.capture_output
 kill_window = backend.kill_window
 window_exists = backend.window_exists
 list_windows = backend.list_windows
+target_exists = backend.target_exists
+pane_id = backend.pane_id
+pane_pid = backend.pane_pid
+target_window = backend.target_window
+set_pane_title = backend.set_pane_title
 
 # For introspection
 BACKEND_NAME = "tmux"
