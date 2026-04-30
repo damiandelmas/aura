@@ -21,7 +21,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd
+from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd
 from lib.output import output
 
 
@@ -397,6 +397,15 @@ def main():
     p_report.add_argument("--limit", "-n", type=int, default=20,
                           help="Number of reports for list (default: 20)")
 
+    # view — bounded mesh worldview
+    p_view = subparsers.add_parser("view", help="Show current bounded mesh view")
+    p_view.add_argument("--scope",
+                        help="Override inferred scope: fleet:NAME, product:NAME, unit:PRODUCT:UNIT, or NAME")
+    p_view.add_argument("--limit", "-n", type=int, default=10,
+                        help="Number of colleagues/reports/deferred records to include (default: 10)")
+    p_view.add_argument("--include-hidden", action="store_true",
+                        help="Include hidden/internal seats")
+
     # clawhip — sidecar adapter boundary
     p_clawhip = subparsers.add_parser("clawhip", help="Inspect Aura/Clawhip sidecar adapter")
     clawhip_sub = p_clawhip.add_subparsers(dest="clawhip_action", required=True)
@@ -522,6 +531,8 @@ def main():
             result = deferred_cmd.run(args)
         elif args.command == "report":
             result = report_cmd.run(args)
+        elif args.command == "view":
+            result = view_cmd.run(args)
         elif args.command == "clawhip":
             result = clawhip_cmd.run(args)
         elif args.command == "discord":
