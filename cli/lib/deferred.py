@@ -213,14 +213,19 @@ def run_once(deferred_id: str) -> dict[str, Any]:
         "result": parsed,
     }
     record.setdefault("attempts", []).append(attempt)
-    if parsed.get("ok"):
+    parsed_delivered = (
+        parsed.get("ok")
+        and parsed.get("state") != "failed"
+        and parsed.get("submitted_verified") is not False
+    )
+    if parsed_delivered:
         record["status"] = "delivered"
         record["delivered_at"] = now_iso()
         record["delivery_result"] = parsed
         save(record)
         return {"ok": True, "ran": True, "state": "delivered", "record": record}
     recovery = None
-    if parsed.get("blocked") and parsed.get("reason") in {"target-busy", "target-input-queued"}:
+    if parsed.get("blocked") and parsed.get("reason") in {"target-busy", "target-input-queued", "target-input-active", "submit-unverified"}:
         if parsed.get("reason") == "target-input-queued":
             recovery = _maybe_nudge_queued_input(record)
         record["status"] = "retrying"

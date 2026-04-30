@@ -487,6 +487,35 @@ def test_event_tick_skips_busy_target_without_consuming_tick(monkeypatch, tmp_pa
     assert saved["consecutive_errors"] == 0
 
 
+def test_event_target_blocker_detects_active_composer(monkeypatch):
+    from commands import event
+
+    def fake_run(cmd, text=True, capture_output=True, env=None):
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps({
+                "ok": True,
+                "status": "idle",
+                "terminal": "alive",
+                "output": [
+                    "› human draft in progress",
+                    "",
+                    "  gpt-5.5 medium · ~/project",
+                ],
+            }),
+            stderr="",
+        )
+
+    monkeypatch.setattr(event.subprocess, "run", fake_run)
+
+    result = event._target_is_busy("manager")
+
+    assert result["ok"] is True
+    assert result["busy"] is False
+    assert result["blocker"] == "target-input-active"
+
+
 def test_spawn_runtime_choices_include_openclaw_and_shell():
     help_result = subprocess.run(
         [sys.executable, str(CLI), "spawn", "--help"],

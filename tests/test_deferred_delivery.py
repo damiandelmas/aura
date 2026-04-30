@@ -48,6 +48,99 @@ def test_send_defer_if_busy_creates_outbox_without_daemon(monkeypatch, tmp_path)
     assert deferred_record["blocked_reason"] == "target-busy"
 
 
+def test_send_defer_if_composer_active_creates_outbox_without_paste(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / ".aura" / "registry" / "deliveries.jsonl"))
+
+    from commands import send
+    from lib import delivery
+
+    class FakeTerminal:
+        sent = False
+
+        @staticmethod
+        def capture_output(name, lines=80):
+            return ["› human draft in progress", "", "gpt-5.5 high"]
+
+        @classmethod
+        def send_text(cls, name, text, submit=True):
+            cls.sent = True
+            return {"ok": True}
+
+    args = argparse.Namespace(
+        target="worker",
+        message="important result",
+        sender="tester",
+        dedupe_key="defer-active-input",
+        force=False,
+        defer_if_busy=True,
+        defer_ttl="30s",
+        defer_retry_every="5s",
+        no_deferred_daemon=True,
+    )
+
+    result = send._send_tmux(args, FakeTerminal, delivery, terminal_target="tmux:fleet:%1")
+
+    assert result["ok"] is True
+    assert result["blocked"] is True
+    assert result["deferred"] is True
+    assert result["reason"] == "target-input-active"
+    assert FakeTerminal.sent is False
+    assert result["deferred_record"]["blocked_reason"] == "target-input-active"
+
+
+def test_send_defer_if_submit_unverified_creates_outbox(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / ".aura" / "registry" / "deliveries.jsonl"))
+
+    from commands import send
+    from lib import delivery
+
+    class FakeTerminal:
+        captures = [
+            ["› Explain this codebase", "", "gpt-5.5 high"],
+            ["› Explain this codebase", "", "gpt-5.5 high"],
+        ]
+        keys = []
+
+        @staticmethod
+        def send_text(name, text, submit=True):
+            return {"ok": True, "target": "tmux:fleet:%1", "bytes": len(text), "submitted": submit}
+
+        @classmethod
+        def capture_output(cls, name, lines=80):
+            if cls.captures:
+                return cls.captures.pop(0)
+            return ["› Explain this codebase", "", "gpt-5.5 high"]
+
+        @classmethod
+        def send_keys(cls, name, text, enter=True):
+            cls.keys.append((name, text, enter))
+            return {"ok": True, "target": "tmux:fleet:%1"}
+
+    args = argparse.Namespace(
+        target="worker",
+        message="important result",
+        sender="tester",
+        dedupe_key="defer-unverified",
+        force=False,
+        defer_if_busy=True,
+        defer_ttl="30s",
+        defer_retry_every="5s",
+        no_deferred_daemon=True,
+    )
+
+    result = send._send_tmux(args, FakeTerminal, delivery, terminal_target="tmux:fleet:%1")
+
+    assert result["ok"] is True
+    assert result["blocked"] is True
+    assert result["deferred"] is True
+    assert result["reason"] == "submit-unverified"
+    assert result["submitted_verified"] is False
+    assert result["deferred_record"]["blocked_reason"] == "submit-unverified:missing-positive-submit-evidence"
+    assert FakeTerminal.keys
+
+
 def test_deferred_run_once_marks_delivered(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
 
@@ -111,6 +204,81 @@ def test_deferred_run_once_keeps_retrying_on_busy(monkeypatch, tmp_path):
     saved = deferred.load(record["deferred_id"])
     assert saved["status"] == "retrying"
     assert saved["attempts"][0]["result"]["reason"] == "target-busy"
+
+
+def test_deferred_run_once_keeps_retrying_on_active_input_without_nudge(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from lib import deferred
+
+    record = deferred.create(
+        target="worker",
+        message="hello",
+        sender="tester",
+        dedupe_key="defer-key",
+        retry_every_seconds=1,
+        ttl_seconds=30,
+    )
+
+    calls = []
+
+    def fake_run(cmd, text=True, capture_output=True, env=None):
+        calls.append(cmd)
+        return type("Result", (), {
+            "returncode": 1,
+            "stdout": json.dumps({"ok": False, "blocked": True, "reason": "target-input-active"}),
+            "stderr": "",
+        })()
+
+    monkeypatch.setattr(deferred.subprocess, "run", fake_run)
+
+    result = deferred.run_once(record["deferred_id"])
+
+    assert result["ok"] is True
+    assert result["state"] == "blocked"
+    assert result["recovery"] is None
+    assert not any("--nudge" in cmd for cmd in calls)
+    saved = deferred.load(record["deferred_id"])
+    assert saved["status"] == "retrying"
+    assert saved["attempts"][0]["result"]["reason"] == "target-input-active"
+
+
+def test_deferred_run_once_does_not_mark_unverified_ok_as_delivered(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from lib import deferred
+
+    record = deferred.create(
+        target="worker",
+        message="hello",
+        sender="tester",
+        dedupe_key="defer-key",
+        retry_every_seconds=1,
+        ttl_seconds=30,
+    )
+
+    def fake_run(cmd, text=True, capture_output=True, env=None):
+        return type("Result", (), {
+            "returncode": 0,
+            "stdout": json.dumps({
+                "ok": True,
+                "state": "failed",
+                "message_id": "aura-msg-unverified",
+                "submitted_verified": False,
+                "submit_verify_reason": "missing-positive-submit-evidence",
+            }),
+            "stderr": "",
+        })()
+
+    monkeypatch.setattr(deferred.subprocess, "run", fake_run)
+
+    result = deferred.run_once(record["deferred_id"])
+
+    assert result["ok"] is False
+    assert result["state"] == "failed"
+    saved = deferred.load(record["deferred_id"])
+    assert saved["status"] == "failed"
+    assert saved["failure_result"]["submitted_verified"] is False
 
 
 def test_deferred_run_once_nudges_once_on_queued_input(monkeypatch, tmp_path):

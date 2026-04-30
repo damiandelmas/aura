@@ -94,17 +94,14 @@ def _target_is_busy(target: str) -> dict:
     if result.returncode != 0 or not isinstance(parsed, dict):
         return {"ok": False, "busy": False, "error": result.stderr[-1000:] or result.stdout[-1000:]}
 
-    output = "\n".join(str(line) for line in parsed.get("output") or [])
-    lowered = output.lower()
-    busy_markers = (
-        "working (",
-        "esc to interrupt",
-        "running tool",
-        "thinking",
-    )
+    output_lines = [str(line) for line in parsed.get("output") or []]
+    from lib import terminal_submit
+
+    blocker = terminal_submit.delivery_blocker(output_lines)
     return {
         "ok": True,
-        "busy": any(marker in lowered for marker in busy_markers),
+        "busy": blocker == "target-busy",
+        "blocker": blocker,
         "status": parsed.get("status"),
         "terminal": parsed.get("terminal"),
     }
@@ -128,11 +125,12 @@ def _stop_daemon(job: dict) -> dict | None:
 
 def _deliver(job: dict, tick: int) -> dict:
     busy = _target_is_busy(job["target"])
-    if busy.get("busy"):
+    blocker = busy.get("blocker") or ("target-busy" if busy.get("busy") else None)
+    if blocker:
         return {
             "ok": True,
             "skipped": True,
-            "reason": "target-busy",
+            "reason": blocker,
             "message_id": None,
             "started_at": events.now_iso(),
             "ended_at": events.now_iso(),

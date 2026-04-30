@@ -120,24 +120,15 @@ def _send_tmux(args, terminal, delivery, terminal_target=None):
         })
         record = delivery.append_record(record)
         deferred_record = None
-        if getattr(args, "defer_if_busy", False) and blocker in {"target-busy", "target-input-queued"}:
-            from lib import deferred
-
-            ttl_seconds = deferred.parse_duration(getattr(args, "defer_ttl", None), default=900)
-            retry_seconds = deferred.parse_duration(getattr(args, "defer_retry_every", None), default=15)
-            deferred_record = deferred.create(
-                target=args.target,
-                message=body,
+        if getattr(args, "defer_if_busy", False) and blocker in {"target-busy", "target-input-queued", "target-input-active"}:
+            deferred_record = _create_deferred_delivery(
+                args,
+                body=body,
                 sender=sender,
                 dedupe_key=dedupe_key,
-                transport="tmux",
-                retry_every_seconds=retry_seconds,
-                ttl_seconds=ttl_seconds,
                 blocked_reason=blocker,
                 blocked_message_id=record.get("message_id"),
             )
-            if not getattr(args, "no_deferred_daemon", False):
-                deferred_record["daemon"] = deferred.spawn_daemon(deferred_record["deferred_id"])
         return {
             "ok": bool(deferred_record),
             "blocked": True,
@@ -205,6 +196,35 @@ def _send_tmux(args, terminal, delivery, terminal_target=None):
     if not result.get("ok"):
         return {"ok": False, "error": result.get("error", "tmux send failed"), "message_id": message_id, "record": record}
 
+    deferred_record = None
+    if submit_verified is False and getattr(args, "defer_if_busy", False):
+        deferred_record = _create_deferred_delivery(
+            args,
+            body=body,
+            sender=sender,
+            dedupe_key=dedupe_key,
+            blocked_reason=f"submit-unverified:{verify_reason or 'unknown'}",
+            blocked_message_id=message_id,
+        )
+        return {
+            "ok": True,
+            "blocked": True,
+            "deferred": True,
+            "reason": "submit-unverified",
+            "error": f"submit could not be verified: {verify_reason or 'unknown'}",
+            "transport": "tmux",
+            "message_id": message_id,
+            "target": args.target,
+            "terminal_ref": result.get("target"),
+            "state": state,
+            "submitted": result.get("submitted", False),
+            "submitted_verified": submit_verified,
+            "submit_verify_reason": verify_reason,
+            "submit_retry": submit_retry,
+            "record": record,
+            "deferred_record": deferred_record,
+        }
+
     return {
         "ok": True,
         "transport": "tmux",
@@ -218,6 +238,27 @@ def _send_tmux(args, terminal, delivery, terminal_target=None):
         "submit_retry": submit_retry,
         "record": record,
     }
+
+
+def _create_deferred_delivery(args, *, body, sender, dedupe_key, blocked_reason, blocked_message_id=None):
+    from lib import deferred
+
+    ttl_seconds = deferred.parse_duration(getattr(args, "defer_ttl", None), default=900)
+    retry_seconds = deferred.parse_duration(getattr(args, "defer_retry_every", None), default=15)
+    deferred_record = deferred.create(
+        target=args.target,
+        message=body,
+        sender=sender,
+        dedupe_key=dedupe_key,
+        transport="tmux",
+        retry_every_seconds=retry_seconds,
+        ttl_seconds=ttl_seconds,
+        blocked_reason=blocked_reason,
+        blocked_message_id=blocked_message_id,
+    )
+    if not getattr(args, "no_deferred_daemon", False):
+        deferred_record["daemon"] = deferred.spawn_daemon(deferred_record["deferred_id"])
+    return deferred_record
 
 
 def _confirm_delivery_async(target, message, sender):
