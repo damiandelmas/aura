@@ -62,6 +62,98 @@ def test_get_agent_prefers_current_fleet_and_accepts_fleet_qualified_name(tmp_pa
     assert registry.get_agent("flex-leaders-2:engineer")["fleet"] == "flex-leaders-2"
 
 
+def test_rehome_preserves_physical_refs_and_adds_alias(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "old-seat",
+        "fleet": "old-fleet",
+        "runtime": "codex",
+        "session_id": "session-1",
+        "runtime_session_id": "session-1",
+        "terminal_ref": "old-fleet:old-seat",
+        "backend_ref": "old-fleet:old-seat",
+        "pane_ref": "tmux:old-fleet:%12",
+        "cwd": "/tmp/repo",
+    })
+
+    result = registry.rehome_agent(
+        "old-fleet:old-seat",
+        new_name="leader-engine",
+        new_fleet="flex-leaders",
+        metadata={"desks_role_id": "leader-engine", "desks_product": "flex"},
+    )
+
+    assert result["ok"] is True
+    assert result["source"] == "old-fleet:old-seat"
+    assert result["target"] == "flex-leaders:leader-engine"
+    assert registry.get_agent("old-fleet:old-seat")["name"] == "leader-engine"
+    assert registry.get_agent("old-fleet:old-seat")["resolved_from"] == "old-fleet:old-seat"
+    moved = registry.get_agent("flex-leaders:leader-engine")
+    assert moved["fleet"] == "flex-leaders"
+    assert moved["seat_ref"] == "flex-leaders:leader-engine"
+    assert moved["pane_ref"] == "tmux:old-fleet:%12"
+    assert moved["backend_ref"] == "old-fleet:old-seat"
+    assert moved["session_id"] == "session-1"
+    assert moved["desks_role_id"] == "leader-engine"
+    assert moved["desks_product"] == "flex"
+    assert registry.read_aliases()["old-fleet:old-seat"]["target"] == "flex-leaders:leader-engine"
+
+
+def test_seat_rehome_command_loads_role_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import seat
+    from lib import registry
+
+    role_home = tmp_path / "roles" / "leader-engine"
+    role_home.mkdir(parents=True)
+    for name in ("SOUL.md", "AGENTS.md", "MEMORY.md", "BOOTSTRAP.md", "COMPRESSION.md"):
+        (role_home / name).write_text(name, encoding="utf-8")
+    (role_home / "role.json").write_text(
+        '''{
+          "schema": "desks.role.v1",
+          "product": "flex",
+          "unit": "engine",
+          "role_id": "leader-engine",
+          "seat": "leader-engine",
+          "fleet": "flex-leaders",
+          "workspace_root": "/tmp",
+          "files": {
+            "soul": "SOUL.md",
+            "agents": "AGENTS.md",
+            "memory": "MEMORY.md",
+            "bootstrap": "BOOTSTRAP.md",
+            "compression": "COMPRESSION.md"
+          }
+        }''',
+        encoding="utf-8",
+    )
+    registry.upsert_agent({
+        "name": "old-seat",
+        "fleet": "old-fleet",
+        "runtime": "codex",
+        "pane_ref": "tmux:old-fleet:%12",
+    })
+
+    result = seat.run(argparse.Namespace(
+        seat_action="rehome",
+        source="old-fleet:old-seat",
+        name="leader-engine",
+        fleet="flex-leaders",
+        role_home=str(role_home),
+        manifest=None,
+        no_alias_old=False,
+    ))
+
+    assert result["ok"] is True
+    moved = registry.get_agent("flex-leaders:leader-engine")
+    assert moved["desks_role_home"] == str(role_home)
+    assert moved["desks_role_id"] == "leader-engine"
+    assert moved["desks_product"] == "flex"
+    assert moved["desks_unit"] == "engine"
+
+
 def test_send_blocks_hidden_targets_without_operator_override(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     from commands import send

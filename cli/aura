@@ -21,7 +21,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, send, queue as queue_cmd, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd
+from commands import spawn, send, queue as queue_cmd, seat as seat_cmd, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd
 from lib.output import output
 
 
@@ -126,6 +126,20 @@ def main():
                          help="List queued messages")
     p_queue.add_argument("--status", choices=["pending", "released", "release_failed"],
                          help="Filter --list by status")
+
+    # seat
+    p_seat = subparsers.add_parser("seat", help="Manage logical seat identity")
+    seat_sub = p_seat.add_subparsers(dest="seat_action", required=True)
+    p_seat_rehome = seat_sub.add_parser("rehome", help="Rename/rehome a seat without moving its terminal")
+    p_seat_rehome.add_argument("source", help="Existing seat ref, usually fleet:seat")
+    p_seat_rehome.add_argument("--name", help="New logical seat name")
+    p_seat_rehome.add_argument("--fleet", help="New logical fleet")
+    p_seat_rehome.add_argument("--role-home", help="Desks role home containing role.json")
+    p_seat_rehome.add_argument("--manifest", help="Desks role manifest path")
+    p_seat_rehome.add_argument("--no-alias-old", action="store_true", help="Do not keep old handle as alias")
+    p_seat_resolve = seat_sub.add_parser("resolve", help="Resolve a seat, following aliases")
+    p_seat_resolve.add_argument("target")
+    seat_sub.add_parser("aliases", help="List seat aliases")
 
 
     # write
@@ -512,6 +526,8 @@ def main():
             result = send.run(args)
         elif args.command == "queue":
             result = queue_cmd.run(args)
+        elif args.command == "seat":
+            result = seat_cmd.run(args)
         elif args.command == "broadcast":
             result = broadcast.run(args)
         elif args.command == "write":
