@@ -396,6 +396,8 @@ def main():
                           help="Current blocker; repeat for multiple blockers")
     p_report.add_argument("--limit", "-n", type=int, default=20,
                           help="Number of reports for list (default: 20)")
+    p_report.add_argument("--ack", action="store_true",
+                          help="Print a compact acknowledgement; report writes are quiet by default")
 
     # view — bounded mesh worldview
     p_view = subparsers.add_parser("view", help="Show current bounded mesh view")
@@ -547,7 +549,8 @@ def main():
         result = {"error": str(e)}
 
     # Output result
-    output(result)
+    if result is not None:
+        output(result)
 
     # Exit with error code if not ok
     if isinstance(result, dict) and result.get("error"):

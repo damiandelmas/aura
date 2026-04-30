@@ -38,6 +38,8 @@ def run(args):
         "blockers": getattr(args, "blocker", None) or [],
     }
     created = reports.append_report(record)
+    if not getattr(args, "ack", False):
+        return None
     return {
         "ok": True,
         "schema": "aura.report_ack.v1",

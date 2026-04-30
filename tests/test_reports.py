@@ -21,6 +21,17 @@ def run_aura(args, env, cwd=None):
     return json.loads(result.stdout)
 
 
+def run_aura_raw(args, env, cwd=None):
+    return subprocess.run(
+        [sys.executable, str(AURA), *args],
+        cwd=cwd or ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
 def test_report_appends_semantic_delta_with_inferred_context(tmp_path):
     env = {
         **os.environ,
@@ -36,7 +47,7 @@ def test_report_appends_semantic_delta_with_inferred_context(tmp_path):
         "PYTHONDONTWRITEBYTECODE": "1",
     }
 
-    result = run_aura(
+    result = run_aura_raw(
         [
             "report",
             "complete",
@@ -55,13 +66,7 @@ def test_report_appends_semantic_delta_with_inferred_context(tmp_path):
         cwd=tmp_path,
     )
 
-    assert result["ok"] is True
-    assert result["schema"] == "aura.report_ack.v1"
-    assert result["state"] == "complete"
-    assert result["work"] == "Simplified Aura report primitive"
-    assert result["seat"] == "engineer"
-    assert result["fleet"] == "unitfleet"
-    assert result["warnings"] == []
+    assert result.stdout == ""
 
     latest = run_aura(["report", "latest"], env)
     record = latest["record"]
@@ -83,7 +88,29 @@ def test_report_appends_semantic_delta_with_inferred_context(tmp_path):
     ledger = tmp_path / ".aura" / "reports" / "reports.jsonl"
     lines = ledger.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
-    assert json.loads(lines[0])["report_id"] == result["report_id"]
+    assert json.loads(lines[0])["report_id"] == record["report_id"]
+
+
+def test_report_ack_prints_compact_receipt(tmp_path):
+    env = {
+        **os.environ,
+        "AURA_STATE_DIR": str(tmp_path / ".aura"),
+        "AURA_FLEET": "unitfleet",
+        "AURA_SEAT": "engineer",
+        "AURA_RUNTIME": "codex",
+        "CODEX_THREAD_ID": "019ddf5f-b386-7ef0-9f43-8329ab2019c7",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+    result = run_aura(["report", "complete", "--work", "Ack mode", "--ack"], env)
+
+    assert result["ok"] is True
+    assert result["schema"] == "aura.report_ack.v1"
+    assert result["state"] == "complete"
+    assert result["work"] == "Ack mode"
+    assert result["seat"] == "engineer"
+    assert result["fleet"] == "unitfleet"
+    assert result["warnings"] == []
 
 
 def test_report_list_and_latest_read_global_ledger(tmp_path):
@@ -97,15 +124,16 @@ def test_report_list_and_latest_read_global_ledger(tmp_path):
         "PYTHONDONTWRITEBYTECODE": "1",
     }
 
-    run_aura(["report", "working", "--work", "First"], env)
-    second = run_aura(["report", "blocked", "--work", "Second", "--blocker", "needs decision"], env)
+    run_aura_raw(["report", "working", "--work", "First"], env)
+    run_aura_raw(["report", "blocked", "--work", "Second", "--blocker", "needs decision"], env)
 
     listed = run_aura(["report", "list", "--limit", "1"], env)
     assert listed["ok"] is True
     assert listed["count"] == 1
-    assert listed["rows"][0]["report_id"] == second["report_id"]
+    second_id = listed["rows"][0]["report_id"]
 
     latest = run_aura(["report", "latest"], env)
     assert latest["ok"] is True
+    assert latest["record"]["report_id"] == second_id
     assert latest["record"]["state"] == "blocked"
     assert latest["record"]["blockers"] == ["needs decision"]
