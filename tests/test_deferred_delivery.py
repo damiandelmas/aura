@@ -156,7 +156,7 @@ def test_deferred_run_once_marks_delivered(monkeypatch, tmp_path):
     )
 
     def fake_run(cmd, text=True, capture_output=True, env=None):
-        assert cmd[:3] == [deferred._aura_bin(), "--json", "send"]
+        assert cmd[:2] == [deferred._aura_bin(), "send"]
         return type("Result", (), {
             "returncode": 0,
             "stdout": json.dumps({"ok": True, "message_id": "aura-msg-delivered", "submitted_verified": True}),

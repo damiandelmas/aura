@@ -191,7 +191,6 @@ def run_once(deferred_id: str) -> dict[str, Any]:
 
     cmd = [
         _aura_bin(),
-        "--json",
         "send",
         record["target"],
         record["message"],
@@ -279,7 +278,6 @@ def _maybe_nudge_queued_input(record: dict[str, Any]) -> dict[str, Any] | None:
 
     cmd = [
         _aura_bin(),
-        "--json",
         "send",
         record["target"],
         "",

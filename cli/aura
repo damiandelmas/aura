@@ -3,7 +3,7 @@
 aura - AI-first agent orchestration.
 
 Single command for spawning, messaging, and managing Claude agents.
-All output is JSON by default (pretty table if TTY).
+All output is stable JSON by default.
 
 Usage:
     aura spawn worker --knowledge npta
@@ -37,7 +37,7 @@ def main():
         prog="aura",
         description="AI-first agent orchestration"
     )
-    parser.add_argument("--json", action="store_true", help="Force JSON output")
+    parser.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -516,7 +516,7 @@ def main():
         result = {"error": str(e)}
 
     # Output result
-    output(result, force_json=args.json)
+    output(result)
 
     # Exit with error code if not ok
     if isinstance(result, dict) and result.get("error"):

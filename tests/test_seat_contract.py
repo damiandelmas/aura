@@ -559,6 +559,17 @@ def test_capture_stop_sense_and_watch_commands_are_public_contract_names():
     assert "route" in help_result.stdout
     assert "dash" in help_result.stdout
     assert "event" in help_result.stdout
+    assert "--json" not in help_result.stdout
+
+
+def test_cli_output_is_json_even_when_stdout_is_tty(monkeypatch, capsys):
+    from lib.output import output
+
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    output([{"name": "worker", "status": "idle"}])
+
+    assert json.loads(capsys.readouterr().out) == [{"name": "worker", "status": "idle"}]
 
 
 def test_event_start_uses_uuid_job_dir_and_name_index(monkeypatch, tmp_path):
@@ -568,7 +579,6 @@ def test_event_start_uses_uuid_job_dir_and_name_index(monkeypatch, tmp_path):
         [
             sys.executable,
             str(CLI),
-            "--json",
             "event",
             "start",
             "--name",
@@ -602,7 +612,7 @@ def test_event_start_uses_uuid_job_dir_and_name_index(monkeypatch, tmp_path):
     assert not (tmp_path / "events" / "jobs" / "flexgraph-ops").exists()
 
     status = subprocess.run(
-        [sys.executable, str(CLI), "--json", "event", "status", "flexgraph-ops"],
+        [sys.executable, str(CLI), "event", "status", "flexgraph-ops"],
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -1186,7 +1196,7 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
 
     def run_aura(*args):
         return subprocess.run(
-            [sys.executable, str(CLI), "--json", *args],
+            [sys.executable, str(CLI), *args],
             cwd=ROOT,
             text=True,
             capture_output=True,
@@ -1451,7 +1461,7 @@ def test_spawn_fleet_flag_controls_physical_tmux_session(tmp_path):
     try:
         spawn_result = subprocess.run(
             [
-                sys.executable, str(CLI), "--json",
+                sys.executable, str(CLI),
                 "spawn", name,
                 "--fleet", fleet,
                 "--command", f"{sys.executable} -u {fake_runtime} --name {name} --mode echo",
