@@ -40,6 +40,12 @@ def run(args):
     created = reports.append_report(record)
     return {
         "ok": True,
-        "report": created,
+        "schema": "aura.report_ack.v1",
+        "report_id": created.get("report_id"),
+        "state": created.get("state"),
+        "work": created.get("work"),
+        "seat": created.get("seat"),
+        "fleet": created.get("fleet"),
+        "warnings": created.get("warnings") or [],
         "reports_path": str(reports.reports_path()),
     }

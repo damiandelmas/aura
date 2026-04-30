@@ -56,7 +56,15 @@ def test_report_appends_semantic_delta_with_inferred_context(tmp_path):
     )
 
     assert result["ok"] is True
-    record = result["report"]
+    assert result["schema"] == "aura.report_ack.v1"
+    assert result["state"] == "complete"
+    assert result["work"] == "Simplified Aura report primitive"
+    assert result["seat"] == "engineer"
+    assert result["fleet"] == "unitfleet"
+    assert result["warnings"] == []
+
+    latest = run_aura(["report", "latest"], env)
+    record = latest["record"]
     assert record["schema"] == "aura.report.v1"
     assert record["state"] == "complete"
     assert record["work"] == "Simplified Aura report primitive"
@@ -71,12 +79,11 @@ def test_report_appends_semantic_delta_with_inferred_context(tmp_path):
     assert record["role"]["desks_product"] == "flex"
     assert record["role"]["desks_unit"] == "engine"
     assert record["role"]["desks_role_home"] == "/tmp/roles/leader-engine"
-    assert record["warnings"] == []
 
     ledger = tmp_path / ".aura" / "reports" / "reports.jsonl"
     lines = ledger.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
-    assert json.loads(lines[0])["report_id"] == record["report_id"]
+    assert json.loads(lines[0])["report_id"] == result["report_id"]
 
 
 def test_report_list_and_latest_read_global_ledger(tmp_path):
@@ -96,7 +103,7 @@ def test_report_list_and_latest_read_global_ledger(tmp_path):
     listed = run_aura(["report", "list", "--limit", "1"], env)
     assert listed["ok"] is True
     assert listed["count"] == 1
-    assert listed["rows"][0]["report_id"] == second["report"]["report_id"]
+    assert listed["rows"][0]["report_id"] == second["report_id"]
 
     latest = run_aura(["report", "latest"], env)
     assert latest["ok"] is True
