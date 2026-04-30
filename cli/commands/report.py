@@ -38,6 +38,7 @@ def run(args):
         "blockers": getattr(args, "blocker", None) or [],
     }
     created = reports.append_report(record)
+    released = reports.release_queued_messages(created)
     if not getattr(args, "ack", False):
         return None
     return {
@@ -49,5 +50,6 @@ def run(args):
         "seat": created.get("seat"),
         "fleet": created.get("fleet"),
         "warnings": created.get("warnings") or [],
+        "released_queued": len(released),
         "reports_path": str(reports.reports_path()),
     }

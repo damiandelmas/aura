@@ -137,3 +137,52 @@ def test_report_list_and_latest_read_global_ledger(tmp_path):
     assert latest["record"]["report_id"] == second_id
     assert latest["record"]["state"] == "blocked"
     assert latest["record"]["blockers"] == ["needs decision"]
+
+
+def test_report_releases_queued_messages_for_reporting_seat(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+
+    from commands import send
+    from lib import queued_messages, reports
+
+    sent = []
+
+    def fake_send(args):
+        sent.append((args.target, args.message, args.sender, args.dedupe_key))
+        return {"ok": True, "message_id": "aura-msg-test"}
+
+    monkeypatch.setattr(send, "run", fake_send)
+
+    queued = queued_messages.create(
+        target="unitfleet:worker",
+        message="continue after report",
+        sender="tester",
+    )
+    report = reports.append_report({"state": "complete", "work": "done"})
+    released = reports.release_queued_messages(report)
+
+    assert sent == [("unitfleet:worker", "continue after report", "tester", f"queue:{queued['queue_id']}")]
+    assert released[0]["status"] == "released"
+    assert queued_messages.load(queued["queue_id"])["release_report_id"] == report["report_id"]
+
+
+def test_queue_command_records_pending_message(tmp_path):
+    env = {
+        **os.environ,
+        "AURA_STATE_DIR": str(tmp_path / ".aura"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+    result = run_aura(["queue", "unitfleet:worker", "after your next report", "--as", "tester"], env)
+
+    assert result["ok"] is True
+    assert result["schema"] == "aura.queue_ack.v1"
+    assert result["target"] == "unitfleet:worker"
+    assert result["after"] == "next-report"
+
+    listed = run_aura(["queue", "--list", "--status", "pending"], env)
+    assert listed["ok"] is True
+    assert listed["records"][0]["message"] == "after your next report"
+    assert listed["records"][0]["sender"] == "tester"

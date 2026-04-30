@@ -155,7 +155,7 @@ def _execute_action(action: dict) -> dict:
         dedupe_key=action["dedupe_key"],
         force=False,
         allow_hidden=False,
-        defer_if_busy=True,
+        defer_if_busy=False,
         defer_ttl="15m",
         defer_retry_every="15s",
         no_deferred_daemon=False,

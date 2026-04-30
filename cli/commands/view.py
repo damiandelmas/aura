@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lib import deferred, registry, reports
+from lib import deferred, queued_messages, registry, reports
 
 
 def _role_field(record: dict, name: str) -> str | None:
@@ -144,6 +144,11 @@ def run(args):
         for row in deferred.list_records(status="pending")
         if _target_in_scope(row, scope, seats, fleet_set)
     ][-limit:]
+    pending_queue = [
+        row
+        for row in queued_messages.list_records(status="pending")
+        if _target_in_scope(row, scope, seats, fleet_set)
+    ][-limit:]
 
     return {
         "ok": True,
@@ -155,10 +160,12 @@ def run(args):
             "colleagues": len(all_colleagues),
             "colleagues_returned": len(colleagues),
             "recent_reports": len(report_rows),
+            "pending_queue": len(pending_queue),
             "pending_deferred": len(pending_deferred),
         },
         "fleets": fleets,
         "colleagues": colleagues,
         "recent_reports": [_report_summary(row) | {"seat": row.get("seat"), "fleet": row.get("fleet")} for row in report_rows],
+        "pending_queue": pending_queue,
         "pending_deferred": pending_deferred,
     }

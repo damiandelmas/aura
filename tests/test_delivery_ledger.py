@@ -42,7 +42,7 @@ def test_delivery_v2_helpers_tolerate_mixed_records(monkeypatch, tmp_path):
     assert delivery.has_successful_dedupe("worker", "new-key") == recent[-1]["message_id"]
 
 
-def test_send_tmux_blocked_record_is_delivery_v2(monkeypatch, tmp_path):
+def test_standard_send_tmux_does_not_preflight_block_busy_target(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
 
     from commands import send
@@ -55,7 +55,7 @@ def test_send_tmux_blocked_record_is_delivery_v2(monkeypatch, tmp_path):
 
         @staticmethod
         def send_text(name, text, submit=True):
-            raise AssertionError("send_text should not run for blocked target")
+            return {"ok": True, "target": "tmux:fleet:%1", "bytes": len(text), "submitted": submit}
 
     args = argparse.Namespace(
         target="worker",
@@ -67,13 +67,11 @@ def test_send_tmux_blocked_record_is_delivery_v2(monkeypatch, tmp_path):
 
     result = send._send_tmux(args, FakeTerminal, delivery, terminal_target="tmux:fleet:%1")
 
-    assert result["ok"] is False
-    assert result["blocked"] is True
-    assert result["reason"] == "target-busy"
+    assert result["ok"] is True
     record = result["record"]
     assert record["schema"] == "aura.delivery.v2"
-    assert record["state"] == "blocked"
-    assert record["attempts"][0]["evidence"]["blocker"] == "target-busy"
+    assert record["state"] == "delivered"
+    assert record["attempts"][-1]["evidence"]["paste_ok"] is True
 
 
 def test_send_tmux_delivered_record_has_attempt_evidence(monkeypatch, tmp_path):
@@ -84,7 +82,6 @@ def test_send_tmux_delivered_record_has_attempt_evidence(monkeypatch, tmp_path):
 
     class FakeTerminal:
         captures = [
-            ["› Ready for input", "", "gpt-5.5 high"],
             ["• Working (1s)"],
         ]
 

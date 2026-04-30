@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "cli"))
 
 
-def test_route_execution_defers_busy_target(monkeypatch, tmp_path):
+def test_route_execution_uses_standard_send(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
 
     from commands import route
@@ -22,10 +22,7 @@ def test_route_execution_defers_busy_target(monkeypatch, tmp_path):
             captured.update(vars(args))
             return {
                 "ok": True,
-                "blocked": True,
-                "deferred": True,
-                "reason": "target-busy",
-                "deferred_record": {"deferred_id": "aura-defer-route"},
+                "message_id": "aura-msg-route",
             }
 
     monkeypatch.setattr(route, "send", FakeSend)
@@ -37,7 +34,7 @@ def test_route_execution_defers_busy_target(monkeypatch, tmp_path):
         "dedupe_key": "route-key",
     })
 
-    assert result["status"] == "deferred"
-    assert captured["defer_if_busy"] is True
+    assert result["status"] == "sent"
+    assert captured["defer_if_busy"] is False
     assert captured["defer_ttl"] == "15m"
     assert captured["defer_retry_every"] == "15s"

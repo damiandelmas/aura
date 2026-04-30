@@ -105,3 +105,22 @@ def test_view_limit_bounds_colleague_rows(monkeypatch, tmp_path):
     assert result["counts"]["colleagues"] == 3
     assert result["counts"]["colleagues_returned"] == 2
     assert len(result["colleagues"]) == 2
+
+
+def test_view_includes_pending_queue_for_scoped_targets(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "leader")
+    monkeypatch.setenv("AURA_RUNTIME", "codex")
+
+    from lib import queued_messages, registry
+    from commands import view
+
+    registry.upsert_agent({"name": "leader", "fleet": "unitfleet", "runtime": "codex"})
+    registry.upsert_agent({"name": "worker", "fleet": "unitfleet", "runtime": "codex"})
+    queued = queued_messages.create(target="unitfleet:worker", message="after report", sender="tester")
+
+    result = view.run(argparse.Namespace(scope="fleet:unitfleet", limit=10, include_hidden=False))
+
+    assert result["counts"]["pending_queue"] == 1
+    assert result["pending_queue"][0]["queue_id"] == queued["queue_id"]

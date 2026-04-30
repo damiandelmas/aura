@@ -187,7 +187,6 @@ def _send_to_aura(target: str, message: str, sender: str) -> dict[str, Any]:
         sender,
         "--transport",
         "tmux",
-        "--defer-if-busy",
     ]
     result = subprocess.run(
         cmd,

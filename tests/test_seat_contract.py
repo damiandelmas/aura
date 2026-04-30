@@ -58,7 +58,6 @@ def test_send_tmux_verifies_submit_and_retries(monkeypatch, tmp_path):
 
     class FakeTerminal:
         captures = [
-            ["› Ready for input", "", "gpt-5.5 high"],
             ["› [Pasted Content 1024 chars]", "", "gpt-5.5 high"],
             ["• Working (1s)"],
         ]
@@ -113,6 +112,7 @@ def test_send_tmux_blocks_when_target_already_has_queued_input(monkeypatch, tmp_
 
     class FakeTerminal:
         sent = False
+        keys = []
 
         @staticmethod
         def capture_output(name, lines=80):
@@ -121,6 +121,11 @@ def test_send_tmux_blocks_when_target_already_has_queued_input(monkeypatch, tmp_
         @classmethod
         def send_text(cls, name, text, submit=True):
             cls.sent = True
+            return {"ok": True}
+
+        @classmethod
+        def send_keys(cls, name, text, enter=True):
+            cls.keys.append((name, text, enter))
             return {"ok": True}
 
     args = argparse.Namespace(
@@ -138,10 +143,10 @@ def test_send_tmux_blocks_when_target_already_has_queued_input(monkeypatch, tmp_
         terminal_target="unitfleet:worker",
     )
 
-    assert result["ok"] is False
-    assert result["blocked"] is True
-    assert result["reason"] == "target-input-queued"
-    assert FakeTerminal.sent is False
+    assert result["ok"] is True
+    assert FakeTerminal.sent is True
+    assert result["submitted_verified"] is False
+    assert result["submit_retry"] is True
 
 
 def test_tmux_target_exists_uses_exact_window_names(monkeypatch):

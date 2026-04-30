@@ -99,8 +99,10 @@ def _send_tmux(args, terminal, delivery, terminal_target=None):
             record = delivery.append_record(record)
             return {"ok": True, "skipped": True, "reason": "duplicate", "previous_message_id": previous, "record": record}
 
-    preflight_capture = terminal.capture_output(terminal_target, 80)
-    blocker = terminal_submit.delivery_blocker(preflight_capture)
+    blocker = None
+    if getattr(args, "defer_if_busy", False):
+        preflight_capture = terminal.capture_output(terminal_target, 80)
+        blocker = terminal_submit.delivery_blocker(preflight_capture)
     if blocker:
         record = delivery.new_delivery_record(
             delivery_type="semantic_send",

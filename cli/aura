@@ -21,7 +21,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd
+from commands import spawn, send, queue as queue_cmd, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd
 from lib.output import output
 
 
@@ -94,7 +94,7 @@ def main():
     p_send.add_argument("--as", dest="sender", default="cli",
                         help="Send as (default: cli)")
     p_send.add_argument("--mode", choices=["immediate", "queue", "notify", "auto"],
-                        help="Force delivery mode. 'auto' → immediate if target idle, queue if busy.")
+                        help=argparse.SUPPRESS)
     p_send.add_argument("--nudge", action="store_true",
                         help="Send Enter keystroke to unstick delivery")
     p_send.add_argument("--transport", choices=["auto", "tmux", "mesh"], default="auto",
@@ -106,13 +106,26 @@ def main():
     p_send.add_argument("--allow-hidden", action="store_true",
                         help="Allow sending to hidden/internal seats such as Ether panels")
     p_send.add_argument("--defer-if-busy", action="store_true",
-                        help="Create a deferred delivery job if the target is busy, has queued input, or submit verification is inconclusive")
+                        help=argparse.SUPPRESS)
     p_send.add_argument("--defer-ttl", default="15m",
-                        help="TTL for --defer-if-busy, e.g. 30s, 15m, 1h (default: 15m)")
+                        help=argparse.SUPPRESS)
     p_send.add_argument("--defer-retry-every", default="15s",
-                        help="Retry interval for --defer-if-busy (default: 15s)")
+                        help=argparse.SUPPRESS)
     p_send.add_argument("--no-deferred-daemon", action="store_true",
-                        help="Create deferred record but do not start retry daemon")
+                        help=argparse.SUPPRESS)
+
+    # queue
+    p_queue = subparsers.add_parser("queue", help="Hold a message until a report boundary")
+    p_queue.add_argument("target", nargs="?", help="Target agent name")
+    p_queue.add_argument("message", nargs="?", help="Message content")
+    p_queue.add_argument("--as", dest="sender", default="cli",
+                         help="Sender label (default: cli)")
+    p_queue.add_argument("--after", default="next-report",
+                         help="Release condition: next-report or a report id (default: next-report)")
+    p_queue.add_argument("--list", action="store_true",
+                         help="List queued messages")
+    p_queue.add_argument("--status", choices=["pending", "released", "release_failed"],
+                         help="Filter --list by status")
 
 
     # write
@@ -497,6 +510,8 @@ def main():
             result = spawn.run(args)
         elif args.command == "send":
             result = send.run(args)
+        elif args.command == "queue":
+            result = queue_cmd.run(args)
         elif args.command == "broadcast":
             result = broadcast.run(args)
         elif args.command == "write":

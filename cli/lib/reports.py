@@ -111,6 +111,12 @@ def append_report(record: dict[str, Any]) -> dict[str, Any]:
     return enriched
 
 
+def release_queued_messages(report: dict[str, Any]) -> list[dict[str, Any]]:
+    from lib import queued_messages
+
+    return queued_messages.release_for_report(report)
+
+
 def iter_reports(limit: int | None = None) -> list[dict[str, Any]]:
     path = reports_path()
     if not path.exists():
