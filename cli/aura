@@ -106,7 +106,7 @@ def main():
     p_send.add_argument("--allow-hidden", action="store_true",
                         help="Allow sending to hidden/internal seats such as Ether panels")
     p_send.add_argument("--defer-if-busy", action="store_true",
-                        help="Create a deferred delivery job if the target is busy, has queued/active input, or submit verification is inconclusive")
+                        help="Create a deferred delivery job if the target is busy, has queued input, or submit verification is inconclusive")
     p_send.add_argument("--defer-ttl", default="15m",
                         help="TTL for --defer-if-busy, e.g. 30s, 15m, 1h (default: 15m)")
     p_send.add_argument("--defer-retry-every", default="15s",

@@ -48,7 +48,7 @@ def test_send_defer_if_busy_creates_outbox_without_daemon(monkeypatch, tmp_path)
     assert deferred_record["blocked_reason"] == "target-busy"
 
 
-def test_send_defer_if_composer_active_creates_outbox_without_paste(monkeypatch, tmp_path):
+def test_send_does_not_defer_on_prompt_text(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / ".aura" / "registry" / "deliveries.jsonl"))
 
@@ -56,16 +56,20 @@ def test_send_defer_if_composer_active_creates_outbox_without_paste(monkeypatch,
     from lib import delivery
 
     class FakeTerminal:
+        captures = [
+            ["› human draft in progress", "", "gpt-5.5 high"],
+            ["› human draft in progress", "", "gpt-5.5 high"],
+        ]
         sent = False
 
-        @staticmethod
-        def capture_output(name, lines=80):
-            return ["› human draft in progress", "", "gpt-5.5 high"]
+        @classmethod
+        def capture_output(cls, name, lines=80):
+            return cls.captures.pop(0) if cls.captures else ["› human draft in progress", "", "gpt-5.5 high"]
 
         @classmethod
         def send_text(cls, name, text, submit=True):
             cls.sent = True
-            return {"ok": True}
+            return {"ok": True, "target": "tmux:fleet:%1", "bytes": len(text), "submitted": submit}
 
     args = argparse.Namespace(
         target="worker",
@@ -82,14 +86,14 @@ def test_send_defer_if_composer_active_creates_outbox_without_paste(monkeypatch,
     result = send._send_tmux(args, FakeTerminal, delivery, terminal_target="tmux:fleet:%1")
 
     assert result["ok"] is True
-    assert result["blocked"] is True
-    assert result["deferred"] is True
-    assert result["reason"] == "target-input-active"
-    assert FakeTerminal.sent is False
-    assert result["deferred_record"]["blocked_reason"] == "target-input-active"
+    assert result.get("blocked") is not True
+    assert result.get("deferred") is not True
+    assert result["submitted_verified"] is False
+    assert result["submit_verify_reason"] == "missing-positive-submit-evidence"
+    assert FakeTerminal.sent is True
 
 
-def test_send_defer_if_submit_unverified_creates_outbox(monkeypatch, tmp_path):
+def test_send_defer_if_submit_unverified_records_metadata_without_outbox(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / ".aura" / "registry" / "deliveries.jsonl"))
 
@@ -133,12 +137,11 @@ def test_send_defer_if_submit_unverified_creates_outbox(monkeypatch, tmp_path):
     result = send._send_tmux(args, FakeTerminal, delivery, terminal_target="tmux:fleet:%1")
 
     assert result["ok"] is True
-    assert result["blocked"] is True
-    assert result["deferred"] is True
-    assert result["reason"] == "submit-unverified"
+    assert result.get("blocked") is not True
+    assert result.get("deferred") is not True
     assert result["submitted_verified"] is False
-    assert result["deferred_record"]["blocked_reason"] == "submit-unverified:missing-positive-submit-evidence"
-    assert FakeTerminal.keys
+    assert result["submit_verify_reason"] == "missing-positive-submit-evidence"
+    assert FakeTerminal.keys == []
 
 
 def test_deferred_run_once_marks_delivered(monkeypatch, tmp_path):
@@ -243,7 +246,7 @@ def test_deferred_run_once_keeps_retrying_on_active_input_without_nudge(monkeypa
     assert saved["attempts"][0]["result"]["reason"] == "target-input-active"
 
 
-def test_deferred_run_once_does_not_mark_unverified_ok_as_delivered(monkeypatch, tmp_path):
+def test_deferred_run_once_marks_unverified_ok_as_delivered(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
 
     from lib import deferred
@@ -262,7 +265,7 @@ def test_deferred_run_once_does_not_mark_unverified_ok_as_delivered(monkeypatch,
             "returncode": 0,
             "stdout": json.dumps({
                 "ok": True,
-                "state": "failed",
+                "state": "delivered",
                 "message_id": "aura-msg-unverified",
                 "submitted_verified": False,
                 "submit_verify_reason": "missing-positive-submit-evidence",
@@ -274,11 +277,11 @@ def test_deferred_run_once_does_not_mark_unverified_ok_as_delivered(monkeypatch,
 
     result = deferred.run_once(record["deferred_id"])
 
-    assert result["ok"] is False
-    assert result["state"] == "failed"
+    assert result["ok"] is True
+    assert result["state"] == "delivered"
     saved = deferred.load(record["deferred_id"])
-    assert saved["status"] == "failed"
-    assert saved["failure_result"]["submitted_verified"] is False
+    assert saved["status"] == "delivered"
+    assert saved["delivery_result"]["submitted_verified"] is False
 
 
 def test_deferred_run_once_nudges_once_on_queued_input(monkeypatch, tmp_path):

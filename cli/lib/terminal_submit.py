@@ -70,15 +70,13 @@ def needs_submit_retry(capture: list[str]) -> bool:
 
 
 def has_active_composer_input(capture: list[str]) -> bool:
-    """Detect a non-empty interactive prompt that Aura should not overwrite.
+    """Legacy compatibility hook.
 
-    Codex panes render the empty composer with placeholder text such as
-    "Explain this codebase". Real typed text also appears after the prompt
-    marker, so delivery must treat it as queued input instead of assuming the
-    seat is idle.
+    Codex panes often leave the last submitted prompt visible at the bottom of
+    the transcript. Treating arbitrary prompt text as live composer input causes
+    false delivery blocks, so Aura no longer blocks on this signal.
     """
-    indexes = _marker_indexes(capture)
-    return indexes["active_input"] > max(indexes["busy"], indexes["idle"], indexes["pasted"])
+    return False
 
 
 def is_busy(capture: list[str]) -> bool:
@@ -105,8 +103,6 @@ def submission_evidence(capture: list[str], message_id: str | None = None) -> tu
         return False, "queued-input"
     if has_message_marker(capture, message_id):
         return True, "message-id-visible"
-    if has_active_composer_input(capture):
-        return False, "target-input-active"
     if is_busy(capture):
         return True, "target-working"
     if message_id:
@@ -118,8 +114,6 @@ def delivery_blocker(capture: list[str]) -> str | None:
     """Return a reason delivery should not paste into this terminal now."""
     if needs_submit_retry(capture):
         return "target-input-queued"
-    if has_active_composer_input(capture):
-        return "target-input-active"
     if is_busy(capture):
         return "target-busy"
     return None
@@ -159,7 +153,7 @@ def verify_submit(
         submitted_verified, verify_reason = submission_evidence(verify_capture, message_id=message_id)
         if submitted_verified:
             break
-        if verify_reason not in {"queued-input", "missing-positive-submit-evidence"} or attempt >= max_retries:
+        if verify_reason != "queued-input" or attempt >= max_retries:
             break
         retry_result = retry_submit(target, terminal)
         retry_results.append(retry_result)

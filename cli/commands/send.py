@@ -120,7 +120,7 @@ def _send_tmux(args, terminal, delivery, terminal_target=None):
         })
         record = delivery.append_record(record)
         deferred_record = None
-        if getattr(args, "defer_if_busy", False) and blocker in {"target-busy", "target-input-queued", "target-input-active"}:
+        if getattr(args, "defer_if_busy", False) and blocker in {"target-busy", "target-input-queued"}:
             deferred_record = _create_deferred_delivery(
                 args,
                 body=body,
@@ -170,7 +170,7 @@ def _send_tmux(args, terminal, delivery, terminal_target=None):
         submit_retry = verify["submit_retry"]
         verify_reason = verify.get("verify_reason")
 
-    state = "delivered" if result.get("ok") and submit_verified is not False else "failed"
+    state = "delivered" if result.get("ok") else "failed"
     delivery.append_attempt(pending, state="attempted", evidence={
         "paste_ok": bool(result.get("ok")),
         "terminal_ref": result.get("target"),
@@ -197,7 +197,7 @@ def _send_tmux(args, terminal, delivery, terminal_target=None):
         return {"ok": False, "error": result.get("error", "tmux send failed"), "message_id": message_id, "record": record}
 
     deferred_record = None
-    if submit_verified is False and getattr(args, "defer_if_busy", False):
+    if submit_verified is False and getattr(args, "defer_if_busy", False) and verify_reason == "queued-input":
         deferred_record = _create_deferred_delivery(
             args,
             body=body,

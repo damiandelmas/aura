@@ -735,7 +735,7 @@ def test_event_target_blocker_detects_active_composer(monkeypatch):
 
     assert result["ok"] is True
     assert result["busy"] is False
-    assert result["blocker"] == "target-input-active"
+    assert result["blocker"] is None
 
 
 def test_spawn_runtime_choices_include_openclaw_and_shell():

@@ -46,7 +46,7 @@ def test_submit_retry_ignores_stale_pasted_prompt_before_idle():
     assert terminal_submit.needs_submit_retry(capture) is False
 
 
-def test_delivery_blocks_active_human_composer_text():
+def test_prompt_text_is_not_a_delivery_blocker():
     from lib import terminal_submit
 
     capture = [
@@ -56,11 +56,11 @@ def test_delivery_blocks_active_human_composer_text():
     ]
 
     assert terminal_submit.needs_submit_retry(capture) is False
-    assert terminal_submit.has_active_composer_input(capture) is True
-    assert terminal_submit.delivery_blocker(capture) == "target-input-active"
+    assert terminal_submit.has_active_composer_input(capture) is False
+    assert terminal_submit.delivery_blocker(capture) is None
     assert terminal_submit.submission_evidence(capture, message_id="aura-msg-unit") == (
         False,
-        "target-input-active",
+        "missing-positive-submit-evidence",
     )
 
 
@@ -141,7 +141,7 @@ def test_verify_submit_retries_queued_input_until_message_visible():
     assert FakeTerminal.keys == [("fleet:seat", "Enter", False)]
 
 
-def test_verify_submit_retries_missing_positive_evidence_once():
+def test_verify_submit_does_not_retry_missing_positive_evidence():
     from lib import terminal_submit
 
     class FakeTerminal:
@@ -167,13 +167,13 @@ def test_verify_submit_retries_missing_positive_evidence_once():
         sleep=lambda _: None,
     )
 
-    assert result["submitted_verified"] is True
-    assert result["verify_reason"] == "message-id-visible"
-    assert result["submit_retry"] is True
-    assert FakeTerminal.keys == [("fleet:seat", "Enter", False)]
+    assert result["submitted_verified"] is False
+    assert result["verify_reason"] == "missing-positive-submit-evidence"
+    assert result["submit_retry"] is False
+    assert FakeTerminal.keys == []
 
 
-def test_verify_submit_does_not_nudge_active_composer_text():
+def test_verify_submit_does_not_treat_prompt_text_as_active_composer():
     from lib import terminal_submit
 
     class FakeTerminal:
@@ -196,6 +196,6 @@ def test_verify_submit_does_not_nudge_active_composer_text():
     )
 
     assert result["submitted_verified"] is False
-    assert result["verify_reason"] == "target-input-active"
+    assert result["verify_reason"] == "missing-positive-submit-evidence"
     assert result["submit_retry"] is False
     assert FakeTerminal.keys == []
