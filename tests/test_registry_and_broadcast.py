@@ -154,6 +154,74 @@ def test_seat_rehome_command_loads_role_metadata(tmp_path, monkeypatch):
     assert moved["desks_unit"] == "engine"
 
 
+def test_seat_rehome_move_terminal_updates_physical_refs(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import seat
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "old-seat",
+        "fleet": "old-fleet",
+        "runtime": "codex",
+        "pane_ref": "tmux:old-fleet:%12",
+        "terminal_ref": "old-fleet:old-seat",
+        "backend_ref": "old-fleet:old-seat",
+    })
+
+    def fake_move_terminal(record, *, fleet, name, index):
+        assert record["pane_ref"] == "tmux:old-fleet:%12"
+        assert fleet == "new-fleet"
+        assert name == "new-seat"
+        assert index == "2"
+        return {
+            "ok": True,
+            "terminal_ref": "new-fleet:new-seat",
+            "backend_ref": "new-fleet:new-seat",
+            "pane_ref": "tmux:new-fleet:%12",
+            "physical_fleet": "new-fleet",
+        }
+
+    monkeypatch.setattr(seat, "_move_terminal", fake_move_terminal)
+    result = seat.run(argparse.Namespace(
+        seat_action="rehome",
+        source="old-fleet:old-seat",
+        name="new-seat",
+        fleet="new-fleet",
+        role_home=None,
+        manifest=None,
+        move_terminal=True,
+        index="2",
+        no_alias_old=False,
+    ))
+
+    assert result["ok"] is True
+    moved = registry.get_agent("new-fleet:new-seat")
+    assert moved["terminal_ref"] == "new-fleet:new-seat"
+    assert moved["backend_ref"] == "new-fleet:new-seat"
+    assert moved["pane_ref"] == "tmux:new-fleet:%12"
+    assert moved["physical_fleet"] == "new-fleet"
+
+
+def test_seat_rehome_index_requires_move_terminal(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import seat
+
+    result = seat.run(argparse.Namespace(
+        seat_action="rehome",
+        source="old-fleet:old-seat",
+        name="new-seat",
+        fleet="new-fleet",
+        role_home=None,
+        manifest=None,
+        move_terminal=False,
+        index="2",
+        no_alias_old=False,
+    ))
+
+    assert result["ok"] is False
+    assert "--index requires --move-terminal" in result["error"]
+
+
 def test_send_blocks_hidden_targets_without_operator_override(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     from commands import send

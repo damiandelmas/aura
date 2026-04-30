@@ -130,12 +130,16 @@ def main():
     # seat
     p_seat = subparsers.add_parser("seat", help="Manage logical seat identity")
     seat_sub = p_seat.add_subparsers(dest="seat_action", required=True)
-    p_seat_rehome = seat_sub.add_parser("rehome", help="Rename/rehome a seat without moving its terminal")
+    p_seat_rehome = seat_sub.add_parser("rehome", help="Rename/rehome a seat")
     p_seat_rehome.add_argument("source", help="Existing seat ref, usually fleet:seat")
     p_seat_rehome.add_argument("--name", help="New logical seat name")
     p_seat_rehome.add_argument("--fleet", help="New logical fleet")
     p_seat_rehome.add_argument("--role-home", help="Desks role home containing role.json")
     p_seat_rehome.add_argument("--manifest", help="Desks role manifest path")
+    p_seat_rehome.add_argument("--move-terminal", action="store_true",
+                               help="Move/rename the tmux window to match the new fleet/name")
+    p_seat_rehome.add_argument("--index",
+                               help="Target tmux window index when used with --move-terminal")
     p_seat_rehome.add_argument("--no-alias-old", action="store_true", help="Do not keep old handle as alias")
     p_seat_resolve = seat_sub.add_parser("resolve", help="Resolve a seat, following aliases")
     p_seat_resolve.add_argument("target")
