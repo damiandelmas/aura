@@ -21,7 +21,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd
+from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd
 from lib.output import output
 
 
@@ -379,6 +379,24 @@ def main():
     p_deferred_daemon = deferred_sub.add_parser("daemon", help=argparse.SUPPRESS)
     p_deferred_daemon.add_argument("deferred_id")
 
+    # report — worker self-report ledger
+    p_report = subparsers.add_parser("report", help="Record this worker's state")
+    p_report.add_argument("report_action",
+                          choices=["working", "blocked", "needs_decision", "handoff", "complete", "parked", "failed", "list", "latest"],
+                          help="Report state, or list/latest for inspection")
+    p_report.add_argument("--work",
+                          help="One-line description of the current work")
+    p_report.add_argument("--done", action="append", default=[],
+                          help="Completed item; repeat for multiple items")
+    p_report.add_argument("--receipt", action="append", default=[],
+                          help="Evidence or receipt; repeat for multiple receipts")
+    p_report.add_argument("--next", dest="next_action",
+                          help="Next intended action")
+    p_report.add_argument("--blocker", action="append", default=[],
+                          help="Current blocker; repeat for multiple blockers")
+    p_report.add_argument("--limit", "-n", type=int, default=20,
+                          help="Number of reports for list (default: 20)")
+
     # clawhip — sidecar adapter boundary
     p_clawhip = subparsers.add_parser("clawhip", help="Inspect Aura/Clawhip sidecar adapter")
     clawhip_sub = p_clawhip.add_subparsers(dest="clawhip_action", required=True)
@@ -502,6 +520,8 @@ def main():
             result = event.run(args)
         elif args.command == "deferred":
             result = deferred_cmd.run(args)
+        elif args.command == "report":
+            result = report_cmd.run(args)
         elif args.command == "clawhip":
             result = clawhip_cmd.run(args)
         elif args.command == "discord":

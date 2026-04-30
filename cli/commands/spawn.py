@@ -367,6 +367,11 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "AURA_DESKS_PRODUCT": role_meta.get("desks_product", ""),
             "AURA_DESKS_UNIT": role_meta.get("desks_unit", ""),
             "AURA_DESKS_MANIFEST": role_meta.get("desks_manifest", ""),
+            "DESKS_ROLE_HOME": role_meta.get("desks_role_home", ""),
+            "DESKS_ROLE_ID": role_meta.get("desks_role_id", ""),
+            "DESKS_PRODUCT": role_meta.get("desks_product", ""),
+            "DESKS_UNIT": role_meta.get("desks_unit", ""),
+            "DESKS_MANIFEST": role_meta.get("desks_manifest", ""),
         })
     try:
         launch = terminal.create_window(

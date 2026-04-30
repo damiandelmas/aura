@@ -473,6 +473,11 @@ def test_spawn_manifest_metadata_reaches_registry_and_workspace_record(monkeypat
     assert result["desks_bootstrap"] == str(role_home / "BOOTSTRAP.md")
     assert created[0][4]["AURA_DESKS_ROLE_HOME"] == str(role_home)
     assert created[0][4]["AURA_DESKS_ROLE_ID"] == "specialist-cell"
+    assert created[0][4]["DESKS_ROLE_HOME"] == str(role_home)
+    assert created[0][4]["DESKS_ROLE_ID"] == "specialist-cell"
+    assert created[0][4]["DESKS_PRODUCT"] == "flex"
+    assert created[0][4]["DESKS_UNIT"] == "engine"
+    assert created[0][4]["DESKS_MANIFEST"] == str(role_home / "role.json")
     assert sent[0][1].endswith(f"Read {role_home / 'BOOTSTRAP.md'} and follow it.\nUse {role_home} as your Desks role home.")
 
     agent = registry.get_agent("specialist-cell", fleet="flex-specialists")
