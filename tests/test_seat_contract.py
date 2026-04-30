@@ -275,6 +275,218 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
     assert rows[-1]["work_file"] == str(work_file)
 
 
+def _write_role_home(tmp_path):
+    role_home = tmp_path / "unit" / ".desks" / "roles" / "specialist-cell"
+    role_home.mkdir(parents=True)
+    workspace = tmp_path / "unit"
+    for name in ("SOUL.md", "AGENTS.md", "MEMORY.md", "BOOTSTRAP.md", "COMPRESSION.md"):
+        (role_home / name).write_text(f"# {name}\n", encoding="utf-8")
+    (role_home / "sessions.json").write_text("[]\n", encoding="utf-8")
+    manifest = {
+        "schema": "desks.role.v1",
+        "product": "flex",
+        "unit": "engine",
+        "role_id": "specialist-cell",
+        "type": "specialist",
+        "specialization": "cell",
+        "seat": "specialist-cell",
+        "fleet": "flex-specialists",
+        "workspace_root": str(workspace),
+        "files": {
+            "soul": "SOUL.md",
+            "agents": "AGENTS.md",
+            "memory": "MEMORY.md",
+            "bootstrap": "BOOTSTRAP.md",
+            "compression": "COMPRESSION.md",
+            "sessions": "sessions.json",
+        },
+    }
+    (role_home / "role.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return role_home
+
+
+def test_spawn_manifest_applies_desks_role_defaults(tmp_path):
+    from commands import spawn
+
+    role_home = _write_role_home(tmp_path)
+    args = argparse.Namespace(
+        name=None,
+        manifest=str(role_home / "role.json"),
+        role_home=None,
+        fleet=None,
+        cwd=None,
+        runtime=None,
+        profile=None,
+        prompt=None,
+        work=None,
+        context=None,
+    )
+
+    result = spawn._apply_spawn_manifest(args)
+
+    assert result["ok"] is True
+    assert args.name == "specialist-cell"
+    assert args.fleet == "flex-specialists"
+    assert args.cwd == str(tmp_path / "unit")
+    assert args.runtime == "codex"
+    assert args.profile == "specialist-cell"
+    assert args.context == str(role_home / "AGENTS.md")
+    assert args.prompt == "\n".join([
+        f"Read {role_home / 'BOOTSTRAP.md'} and follow it.",
+        f"Use {role_home} as your Desks role home.",
+    ])
+    assert args._role_manifest_meta["desks_role_home"] == str(role_home)
+    assert args._role_manifest_meta["desks_manifest"] == str(role_home / "role.json")
+    assert args._role_manifest_meta["desks_bootstrap"] == str(role_home / "BOOTSTRAP.md")
+
+
+def test_spawn_role_home_resolves_manifest(tmp_path):
+    from commands import spawn
+
+    role_home = _write_role_home(tmp_path)
+    args = argparse.Namespace(
+        name="specialist-cell",
+        manifest=None,
+        role_home=str(role_home),
+        fleet=None,
+        cwd=None,
+        runtime=None,
+        profile=None,
+        prompt=None,
+        work=None,
+        context=None,
+    )
+
+    result = spawn._apply_spawn_manifest(args)
+
+    assert result["ok"] is True
+    assert args.name == "specialist-cell"
+    assert args.fleet == "flex-specialists"
+
+
+def test_spawn_manifest_rejects_name_mismatch(tmp_path):
+    from commands import spawn
+
+    role_home = _write_role_home(tmp_path)
+    args = argparse.Namespace(
+        name="wrong-seat",
+        manifest=str(role_home / "role.json"),
+        role_home=None,
+        fleet=None,
+        cwd=None,
+        runtime=None,
+        profile=None,
+        prompt=None,
+        work=None,
+        context=None,
+    )
+
+    result = spawn._apply_spawn_manifest(args)
+
+    assert result["ok"] is False
+    assert "manifest seat mismatch" in result["error"]
+
+
+def test_spawn_manifest_rejects_absolute_role_file(tmp_path):
+    from commands import spawn
+
+    role_home = _write_role_home(tmp_path)
+    manifest_path = role_home / "role.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["bootstrap"] = str(role_home / "BOOTSTRAP.md")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    args = argparse.Namespace(
+        name=None,
+        manifest=str(manifest_path),
+        role_home=None,
+        fleet=None,
+        cwd=None,
+        runtime=None,
+        profile=None,
+        prompt=None,
+        work=None,
+        context=None,
+    )
+
+    result = spawn._apply_spawn_manifest(args)
+
+    assert result["ok"] is False
+    assert "files.bootstrap must be relative" in result["error"]
+
+
+def test_spawn_manifest_metadata_reaches_registry_and_workspace_record(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import spawn
+    from lib import registry
+
+    role_home = _write_role_home(tmp_path)
+    args = argparse.Namespace(
+        name=None,
+        manifest=str(role_home / "role.json"),
+        role_home=None,
+        fleet=None,
+        cwd=None,
+        runtime=None,
+        launch_command="printf ready",
+        resume_session=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        context=None,
+    )
+    applied = spawn._apply_spawn_manifest(args)
+    assert applied["ok"] is True
+
+    created = []
+    sent = []
+
+    class FakeTerminal:
+        SESSION_NAME = "flex-specialists"
+        BACKEND_NAME = "tmux"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((name, workdir, detached, command, env, unset_env))
+            return {"ok": True, "target": "flex-specialists:specialist-cell", "pane_id": "%55"}
+
+        @staticmethod
+        def send_text(name, text, submit=True, submit_key="Enter"):
+            sent.append((name, text, submit, submit_key))
+            return {"ok": True, "target": f"flex-specialists:{name}", "text": text}
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["name"] == "specialist-cell"
+    assert result["fleet"] == "flex-specialists"
+    assert result["runtime"] == "codex"
+    assert result["desks_role_home"] == str(role_home)
+    assert result["desks_role_id"] == "specialist-cell"
+    assert result["desks_product"] == "flex"
+    assert result["desks_unit"] == "engine"
+    assert result["desks_manifest"] == str(role_home / "role.json")
+    assert result["desks_bootstrap"] == str(role_home / "BOOTSTRAP.md")
+    assert created[0][4]["AURA_DESKS_ROLE_HOME"] == str(role_home)
+    assert created[0][4]["AURA_DESKS_ROLE_ID"] == "specialist-cell"
+    assert sent[0][1].endswith(f"Read {role_home / 'BOOTSTRAP.md'} and follow it.\nUse {role_home} as your Desks role home.")
+
+    agent = registry.get_agent("specialist-cell", fleet="flex-specialists")
+    assert agent["desks_role_home"] == str(role_home)
+    assert agent["desks_bootstrap"] == str(role_home / "BOOTSTRAP.md")
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "unit" / ".aura" / "state" / "sessions.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert rows[-1]["desks_role_home"] == str(role_home)
+    assert rows[-1]["desks_manifest"] == str(role_home / "role.json")
+
+
 def test_codex_runtime_default_uses_noninteractive_approval_flags():
     from lib import runtimes
 

@@ -1,5 +1,6 @@
 """Spawn new agent."""
 
+import json
 import os
 import subprocess
 import sys
@@ -68,6 +69,13 @@ def _infer_fleet_from_caller():
 
 def run(args):
     """Spawn a new agent."""
+    manifest_result = _apply_spawn_manifest(args)
+    if manifest_result and not manifest_result.get("ok"):
+        return manifest_result
+
+    if not getattr(args, 'name', None):
+        return {"ok": False, "error": "agent name is required unless --manifest or --role-home supplies a seat"}
+
     if getattr(args, 'prompt', None) and getattr(args, 'work', None):
         return {"ok": False, "error": "use either --prompt or --work, not both"}
 
@@ -351,6 +359,15 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "FORCE_COLOR": "1",
         "CLICOLOR_FORCE": "1",
     }
+    role_meta = getattr(args, "_role_manifest_meta", None) or {}
+    if role_meta:
+        launch_env.update({
+            "AURA_DESKS_ROLE_HOME": role_meta.get("desks_role_home", ""),
+            "AURA_DESKS_ROLE_ID": role_meta.get("desks_role_id", ""),
+            "AURA_DESKS_PRODUCT": role_meta.get("desks_product", ""),
+            "AURA_DESKS_UNIT": role_meta.get("desks_unit", ""),
+            "AURA_DESKS_MANIFEST": role_meta.get("desks_manifest", ""),
+        })
     try:
         launch = terminal.create_window(
             args.name,
@@ -418,6 +435,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "transport": "tmux",
         "status": "starting",
         "registered": True,
+        **role_meta,
         **process_meta,
         **session_meta,
     })
@@ -443,6 +461,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "terminal_ref": launch.get("target"),
             "pane_ref": pane_ref,
             "status": "starting",
+            **role_meta,
             **process_meta,
             **session_meta,
         })
@@ -472,6 +491,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "registered": True,
         "fleet": fleet,
         "trace_cell": registered.get("trace_cell"),
+        **role_meta,
         **process_meta,
         **session_meta,
     }
@@ -539,6 +559,147 @@ def _runtime_home(runtime: str, profile: str | None) -> str | None:
     if runtime == "hermes" and profile:
         return str(Path.home() / ".hermes" / "profiles" / profile)
     return None
+
+
+def _apply_spawn_manifest(args) -> dict | None:
+    """Apply role manifest defaults to spawn args.
+
+    Aura stays role-naive at runtime. This adapter only consumes a strict launch
+    contract and records the role metadata with the spawned seat.
+    """
+    manifest_arg = getattr(args, "manifest", None)
+    role_home_arg = getattr(args, "role_home", None)
+    if not manifest_arg and not role_home_arg:
+        return None
+    if manifest_arg and role_home_arg:
+        return {"ok": False, "error": "use either --manifest or --role-home, not both"}
+
+    try:
+        manifest = _load_role_manifest(manifest_arg, role_home_arg)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+    seat = manifest["seat"]
+    fleet = manifest["fleet"]
+    workspace_root = manifest["workspace_root"]
+    bootstrap = manifest["files"]["bootstrap"]
+
+    if getattr(args, "name", None) and args.name != seat:
+        return {"ok": False, "error": f"manifest seat mismatch: name={args.name} manifest={seat}"}
+    if getattr(args, "fleet", None) and args.fleet != fleet:
+        return {"ok": False, "error": f"manifest fleet mismatch: --fleet={args.fleet} manifest={fleet}"}
+    if getattr(args, "cwd", None):
+        try:
+            requested_cwd = Path(args.cwd).expanduser()
+            if not requested_cwd.is_absolute():
+                requested_cwd = Path.cwd() / requested_cwd
+            requested_cwd = requested_cwd.resolve()
+        except OSError:
+            requested_cwd = Path(args.cwd)
+        if requested_cwd != Path(workspace_root):
+            return {"ok": False, "error": f"manifest cwd mismatch: --cwd={requested_cwd} manifest={workspace_root}"}
+    if getattr(args, "prompt", None) or getattr(args, "work", None):
+        return {"ok": False, "error": "manifest supplies the bootstrap prompt; do not combine with --prompt or --work"}
+
+    args.name = seat
+    args.fleet = fleet
+    args.cwd = str(workspace_root)
+    args.runtime = getattr(args, "runtime", None) or manifest.get("runtime") or "codex"
+    args.prompt = "\n".join([
+        f"Read {bootstrap} and follow it.",
+        f"Use {manifest['role_home']} as your Desks role home.",
+    ])
+    if not getattr(args, "context", None) and manifest["files"].get("agents"):
+        args.context = str(manifest["files"]["agents"])
+    if not getattr(args, "profile", None):
+        args.profile = manifest.get("profile") or seat
+    args._role_manifest_meta = {
+        "desks_role_home": str(manifest["role_home"]),
+        "desks_role_id": manifest["role_id"],
+        "desks_product": manifest["product"],
+        "desks_unit": manifest["unit"],
+        "desks_manifest": str(manifest["manifest_path"]),
+        "desks_bootstrap": str(bootstrap),
+        "desks_compression": str(manifest["files"].get("compression")) if manifest["files"].get("compression") else None,
+        "desks_memory": str(manifest["files"].get("memory")) if manifest["files"].get("memory") else None,
+    }
+    args._role_manifest = manifest
+    return {"ok": True, "manifest": str(manifest["manifest_path"])}
+
+
+def _load_role_manifest(manifest_arg: str | None, role_home_arg: str | None) -> dict:
+    manifest_path = Path(manifest_arg or Path(role_home_arg) / "role.json").expanduser()
+    if not manifest_path.is_absolute():
+        manifest_path = Path.cwd() / manifest_path
+    manifest_path = manifest_path.resolve()
+    if not manifest_path.is_file():
+        raise ValueError(f"manifest not found: {manifest_path}")
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"manifest is not valid JSON: {manifest_path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("manifest must be a JSON object")
+    schema = raw.get("schema")
+    if schema != "desks.role.v1":
+        raise ValueError(f"unsupported manifest schema: {schema!r}")
+
+    required = ("product", "unit", "role_id", "seat", "fleet", "workspace_root", "files")
+    missing = [field for field in required if not raw.get(field)]
+    if missing:
+        raise ValueError(f"manifest missing required field(s): {', '.join(missing)}")
+    files = raw.get("files")
+    if not isinstance(files, dict):
+        raise ValueError("manifest files must be an object")
+
+    role_home = manifest_path.parent
+    manifest_role_home = raw.get("role_home")
+    if manifest_role_home:
+        declared = Path(str(manifest_role_home)).expanduser()
+        if not declared.is_absolute():
+            declared = (role_home / declared).resolve()
+        else:
+            declared = declared.resolve()
+        if declared != role_home:
+            raise ValueError(f"manifest role_home mismatch: {declared} != {role_home}")
+
+    workspace_root = Path(str(raw["workspace_root"])).expanduser()
+    if not workspace_root.is_absolute():
+        workspace_root = (manifest_path.parent / workspace_root).resolve()
+    else:
+        workspace_root = workspace_root.resolve()
+    if not workspace_root.is_dir():
+        raise ValueError(f"manifest workspace_root is not a directory: {workspace_root}")
+
+    required_files = ("soul", "agents", "memory", "bootstrap", "compression")
+    missing_files = [field for field in required_files if not files.get(field)]
+    if missing_files:
+        raise ValueError(f"manifest files missing required key(s): {', '.join(missing_files)}")
+
+    resolved_files = {}
+    for key, value in files.items():
+        if value in (None, ""):
+            continue
+        path = Path(str(value)).expanduser()
+        if path.is_absolute():
+            raise ValueError(f"manifest files.{key} must be relative to role_home: {value}")
+        resolved = (role_home / path).resolve()
+        try:
+            resolved.relative_to(role_home)
+        except ValueError as exc:
+            raise ValueError(f"manifest files.{key} escapes role_home: {value}") from exc
+        if key in required_files or key == "sessions":
+            if not resolved.is_file():
+                raise ValueError(f"manifest files.{key} not found: {resolved}")
+        resolved_files[key] = resolved
+
+    return {
+        **raw,
+        "manifest_path": manifest_path,
+        "role_home": role_home,
+        "workspace_root": workspace_root,
+        "files": resolved_files,
+    }
 
 
 def _augment_runtime_prompt(runtime: str, prompt_text: str, *, fleet: str, seat: str, launch_id: str) -> str:
@@ -750,6 +911,14 @@ def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> Non
             "terminal_ref": result.get("terminal_ref"),
             "pane_ref": result.get("pane_ref"),
             "prompt_sent": result.get("prompt_sent", False),
+            "desks_role_home": result.get("desks_role_home"),
+            "desks_role_id": result.get("desks_role_id"),
+            "desks_product": result.get("desks_product"),
+            "desks_unit": result.get("desks_unit"),
+            "desks_manifest": result.get("desks_manifest"),
+            "desks_bootstrap": result.get("desks_bootstrap"),
+            "desks_compression": result.get("desks_compression"),
+            "desks_memory": result.get("desks_memory"),
         })
         workspace_state.write_latest_session(workdir, record)
         try:

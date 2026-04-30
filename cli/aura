@@ -43,7 +43,11 @@ def main():
 
     # spawn
     p_spawn = subparsers.add_parser("spawn", help="Create a new agent")
-    p_spawn.add_argument("name", help="Agent name")
+    p_spawn.add_argument("name", nargs="?", help="Agent name")
+    p_spawn.add_argument("--manifest", metavar="PATH",
+                         help="Spawn from a tool-readable role manifest such as Desks role.json")
+    p_spawn.add_argument("--role-home", metavar="PATH",
+                         help="Spawn from a Desks role home directory containing role.json")
     p_spawn.add_argument("--fleet", "-f", metavar="NAME",
                          help="Fleet name (groups agents in one tmux session)")
     p_spawn.add_argument("--knowledge", "-k", metavar="SESSION",
