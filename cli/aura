@@ -21,7 +21,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route
+from commands import spawn, send, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd
 from lib.output import output
 
 
@@ -50,6 +50,8 @@ def main():
                          help="Nexus session to inherit knowledge from")
     p_spawn.add_argument("--memory", "-m", metavar="SESSION_ID",
                          help="JSONL session to resume")
+    p_spawn.add_argument("--resume-session", metavar="SESSION_ID",
+                         help="Runtime-native session id to resume for terminal runtimes such as Codex")
     p_spawn.add_argument("--at", "-a", metavar="REF",
                          help="Slice at: content search, 'L225' (line), '42' (msg#), or UUID")
     p_spawn.add_argument("--slice", "-s", metavar="N",
@@ -97,6 +99,16 @@ def main():
                         help="Skip send if this key was already delivered to the target")
     p_send.add_argument("--force", action="store_true",
                         help="Send even if dedupe-key was already delivered")
+    p_send.add_argument("--allow-hidden", action="store_true",
+                        help="Allow sending to hidden/internal seats such as Ether panels")
+    p_send.add_argument("--defer-if-busy", action="store_true",
+                        help="Create a deferred delivery job if the target is busy or has queued input")
+    p_send.add_argument("--defer-ttl", default="15m",
+                        help="TTL for --defer-if-busy, e.g. 30s, 15m, 1h (default: 15m)")
+    p_send.add_argument("--defer-retry-every", default="15s",
+                        help="Retry interval for --defer-if-busy (default: 15s)")
+    p_send.add_argument("--no-deferred-daemon", action="store_true",
+                        help="Create deferred record but do not start retry daemon")
 
 
     # write
@@ -119,6 +131,8 @@ def main():
                          help="Include terminal capture after the write")
     p_write.add_argument("--ensure-submit", action="store_true",
                          help="After --enter, verify the terminal did not leave a queued message; retry Enter once if needed")
+    p_write.add_argument("--allow-hidden", action="store_true",
+                         help="Allow writing to hidden/internal seats such as Ether panels")
     p_write.add_argument("--lines", type=int, default=20,
                          help="Capture line count for --capture-before/after (default: 20)")
 
@@ -138,6 +152,8 @@ def main():
                              help="Send even if dedupe-key was already delivered")
     p_broadcast.add_argument("--include-shell", action="store_true",
                              help="Also send to unregistered shell windows like bash")
+    p_broadcast.add_argument("--allow-hidden", action="store_true",
+                             help="Allow broadcasting to hidden/internal fleets such as Ether panels")
 
     # check
     p_check = subparsers.add_parser("check", help="Check agent status")
@@ -146,12 +162,16 @@ def main():
                          help="Include terminal output")
     p_check.add_argument("--lines", type=int, default=20,
                          help="Number of output lines (default: 20)")
+    p_check.add_argument("--format", choices=["text", "ansi"], default="text",
+                         help="Output capture format when --output is used: text or ansi (default: text)")
 
     # capture
     p_capture = subparsers.add_parser("capture", help="Capture seat terminal output")
     p_capture.add_argument("name", help="Seat/agent name")
     p_capture.add_argument("--lines", type=int, default=20,
                            help="Number of output lines (default: 20)")
+    p_capture.add_argument("--format", choices=["text", "ansi"], default="text",
+                           help="Capture format: text or ansi (default: text)")
 
     # sense
     p_sense = subparsers.add_parser("sense", help="Sense inferred semantic state for a seat")
@@ -221,6 +241,24 @@ def main():
     p_route.add_argument("--lines", type=int, default=80,
                          help="Capture line count for route observation (default: 80)")
 
+    # dash
+    p_dash = subparsers.add_parser("dash", help="Manage tmux dashboard layouts for a fleet")
+    dash_sub = p_dash.add_subparsers(dest="dash_action", required=True)
+    p_dash_tile = dash_sub.add_parser("tile", help="Convert registered seat windows into panes in a dashboard window")
+    p_dash_tile.add_argument("--fleet", "-f", metavar="NAME", help="Fleet name")
+    p_dash_tile.add_argument("--dashboard", default="dashboard", help="Dashboard window name (default: dashboard)")
+    p_dash_tile.add_argument("--layout", default="tiled", choices=["tiled", "even-horizontal", "even-vertical", "main-horizontal", "main-vertical"], help="Tmux layout to apply")
+    p_dash_tile.add_argument("--max-panes", type=int, default=20, help="Maximum registered seat windows to tile")
+
+    p_dash_untile = dash_sub.add_parser("untile", help="Break registered dashboard panes back into windows")
+    p_dash_untile.add_argument("--fleet", "-f", metavar="NAME", help="Fleet name")
+    p_dash_untile.add_argument("--dashboard", default="dashboard", help="Dashboard window name (default: dashboard)")
+
+    p_dash_layout = dash_sub.add_parser("layout", help="Apply a tmux layout to the dashboard window")
+    p_dash_layout.add_argument("--fleet", "-f", metavar="NAME", help="Fleet name")
+    p_dash_layout.add_argument("--dashboard", default="dashboard", help="Dashboard window name (default: dashboard)")
+    p_dash_layout.add_argument("--layout", default="tiled", choices=["tiled", "even-horizontal", "even-vertical", "main-horizontal", "main-vertical"], help="Tmux layout to apply")
+
     # set
     p_set = subparsers.add_parser("set", help="Set agent properties")
     p_set.add_argument("name", help="Agent name")
@@ -247,6 +285,31 @@ def main():
                         help="Filter by status")
     p_list.add_argument("--mode", choices=["immediate", "queue", "notify"],
                         help="Filter by mode")
+    p_list.add_argument("--include-hidden", action="store_true",
+                        help="Include hidden/internal seats such as Ether panels")
+
+    # sessions
+    p_sessions = subparsers.add_parser("sessions", help="List live seats with runtime session ids")
+    p_sessions.add_argument("sessions_action", nargs="?", choices=["restore-plan", "self", "bind-current", "bind-nonce"],
+                            help="Optional sessions action")
+    p_sessions.add_argument("nonce", nargs="?",
+                            help="For bind-nonce, unique marker written into the target Codex session")
+    p_sessions.add_argument("--target",
+                            help="For bind-nonce, target seat to update; defaults to current tmux fleet/window")
+    p_sessions.add_argument("--jsonl",
+                            help="For bind-nonce repair, pin the Codex session JSONL that contains the nonce")
+    p_sessions.add_argument("--fleet", "-f", metavar="NAME",
+                            help="Filter by fleet")
+    p_sessions.add_argument("--live", action="store_true",
+                            help="Only include seats with alive terminals")
+    p_sessions.add_argument("--min-confidence", choices=["low", "medium", "high", "exact"],
+                            help="Only include session ids at or above this confidence")
+    p_sessions.add_argument("--include-hidden", action="store_true",
+                            help="Include hidden/internal seats such as Ether panels")
+    p_sessions.add_argument("--dry-run", action="store_true",
+                            help="For restore-plan, produce commands without starting seats")
+    p_sessions.add_argument("--runtime", choices=["codex", "claude-code", "claude", "hermes", "omx", "opencode", "openclaw", "shell", "command"],
+                            help="For sessions self, override runtime inference")
 
     # resolve
     p_resolve = subparsers.add_parser("resolve", help="Resolve agent name or tmux group → session_id + window + status")
@@ -260,6 +323,129 @@ def main():
                          help="Recipient agent (default: self via $AURA_AGENT_NAME)")
     p_sleep.add_argument("--as", dest="sender", metavar="NAME",
                          help="Sender label (default: $AURA_AGENT_NAME or 'cli')")
+
+    # event — durable scheduler
+    p_event = subparsers.add_parser("event", help="Manage durable event scheduler jobs")
+    event_sub = p_event.add_subparsers(dest="event_action", required=True)
+
+    p_event_start = event_sub.add_parser("start", help="Start an interval event job")
+    p_event_start.add_argument("--name", help="Human-readable job name")
+    p_event_start.add_argument("--target", required=True, help="Target seat to wake")
+    p_event_start.add_argument("--as", dest="sender", default="aura-event", help="Sender label")
+    p_event_start.add_argument("--every", type=float, required=True, help="Interval in seconds")
+    p_event_start.add_argument("--ticks", type=int, help="Number of ticks before completion")
+    p_event_start.add_argument("--template", help="Message template. Fields: {tick}, {ticks}, {run_id}, {name}, {job_id}, {target}, {sender}")
+    p_event_start.add_argument("--run-id", help="Run id for template rendering")
+    p_event_start.add_argument("--start-delay", type=float, default=0, help="Delay before first tick in seconds")
+    p_event_start.add_argument("--no-daemon", action="store_true", help="Create job state without spawning the background daemon")
+
+    p_event_status = event_sub.add_parser("status", help="Show event job status")
+    p_event_status.add_argument("ref", help="Job id or name")
+
+    event_sub.add_parser("list", help="List event jobs")
+
+    p_event_pause = event_sub.add_parser("pause", help="Pause an event job")
+    p_event_pause.add_argument("ref", help="Job id or name")
+
+    p_event_resume = event_sub.add_parser("resume", help="Resume an event job")
+    p_event_resume.add_argument("ref", help="Job id or name")
+    p_event_resume.add_argument("--start-delay", type=float, default=0, help="Delay before next tick in seconds")
+    p_event_resume.add_argument("--no-daemon", action="store_true", help="Resume state without spawning the background daemon")
+
+    p_event_stop = event_sub.add_parser("stop", help="Stop an event job")
+    p_event_stop.add_argument("ref", help="Job id or name")
+
+    p_event_run = event_sub.add_parser("run", help="Run one event tick now")
+    p_event_run.add_argument("ref", help="Job id or name")
+
+    p_event_daemon = event_sub.add_parser("daemon", help=argparse.SUPPRESS)
+    p_event_daemon.add_argument("ref", help="Job id")
+
+    # deferred — blocked-send outbox
+    p_deferred = subparsers.add_parser("deferred", help="Manage deferred delivery jobs")
+    deferred_sub = p_deferred.add_subparsers(dest="deferred_action", required=True)
+    p_deferred_list = deferred_sub.add_parser("list", help="List deferred deliveries")
+    p_deferred_list.add_argument("--status")
+    p_deferred_status = deferred_sub.add_parser("status", help="Show deferred delivery")
+    p_deferred_status.add_argument("deferred_id")
+    p_deferred_run = deferred_sub.add_parser("run", help="Run one deferred delivery attempt")
+    p_deferred_run.add_argument("deferred_id")
+    p_deferred_drain = deferred_sub.add_parser("drain", help="Run due deferred delivery attempts once")
+    p_deferred_drain.add_argument("--limit", type=int, help="Maximum due records to run")
+    p_deferred_daemon = deferred_sub.add_parser("daemon", help=argparse.SUPPRESS)
+    p_deferred_daemon.add_argument("deferred_id")
+
+    # clawhip — sidecar adapter boundary
+    p_clawhip = subparsers.add_parser("clawhip", help="Inspect Aura/Clawhip sidecar adapter")
+    clawhip_sub = p_clawhip.add_subparsers(dest="clawhip_action", required=True)
+    clawhip_sub.add_parser("status", help="Show sidecar availability")
+    p_clawhip_verify = clawhip_sub.add_parser("verify-bindings", help="Verify sidecar channel bindings")
+    p_clawhip_verify.add_argument("--scope")
+    p_clawhip_emit = clawhip_sub.add_parser("emit", help="Prepare an Aura sidecar event")
+    p_clawhip_emit.add_argument("--kind", required=True)
+    p_clawhip_emit.add_argument("--payload-json", default="{}")
+    p_clawhip_deliver = clawhip_sub.add_parser("deliver", help="Prepare outbound human-channel delivery")
+    p_clawhip_deliver.add_argument("--from", dest="source", required=True)
+    p_clawhip_deliver.add_argument("--channel")
+    p_clawhip_deliver.add_argument("message")
+    p_clawhip_register = clawhip_sub.add_parser("register-seat", help="Prepare sidecar runtime registration")
+    p_clawhip_register.add_argument("seat")
+    p_clawhip_register.add_argument("--channel")
+
+    # discord — lightweight human bridge
+    p_discord = subparsers.add_parser("discord", help="Bridge Aura messages through Discord")
+    discord_sub = p_discord.add_subparsers(dest="discord_action", required=True)
+
+    p_discord_status = discord_sub.add_parser("status", help="Check Discord bot/channel configuration")
+    p_discord_status.add_argument("--env-file", help="Env file with DISCORD_TOKEN and DISCORD_CHANNEL_ID")
+
+    p_discord_send = discord_sub.add_parser("send", help="Send a message to the configured Discord channel")
+    p_discord_send.add_argument("message", help="Message content")
+    p_discord_send.add_argument("--from", dest="sender", help="Display sender label")
+    p_discord_send.add_argument("--channel", help="Discord channel id override")
+    p_discord_send.add_argument("--env-file", help="Env file with DISCORD_TOKEN and DISCORD_CHANNEL_ID")
+
+    p_discord_listen = discord_sub.add_parser("listen", help="Route Discord @seat messages into Aura")
+    p_discord_listen.add_argument("--channel", help="Discord channel id override")
+    p_discord_listen.add_argument("--env-file", help="Env file with DISCORD_TOKEN and DISCORD_CHANNEL_ID")
+    p_discord_listen.add_argument("--sender-prefix", default="discord", help="Aura sender prefix (default: discord)")
+    p_discord_listen.add_argument("--dry-run", action="store_true", help="Parse and ack routes without sending to Aura")
+    p_discord_listen.add_argument("--ready-once", action="store_true", help="Connect, print ready state, and exit")
+
+    # ether — objective coordination recommendations
+    p_ether = subparsers.add_parser("ether", help="Inspect Aura Ether objectives and recommendations")
+    ether_sub = p_ether.add_subparsers(dest="ether_area", required=True)
+
+    p_ether_objective = ether_sub.add_parser("objective", help="Manage Ether objectives")
+    objective_sub = p_ether_objective.add_subparsers(dest="objective_action", required=True)
+    p_objective_create = objective_sub.add_parser("create", help="Create an objective")
+    p_objective_create.add_argument("objective_id")
+    p_objective_create.add_argument("--title")
+    p_objective_create.add_argument("--seat", action="append", help="Attach seat as FLEET:SEAT; can be repeated or comma-separated")
+    p_objective_list = objective_sub.add_parser("list", help="List objectives")
+    p_objective_list.add_argument("--include-archived", action="store_true")
+    p_objective_show = objective_sub.add_parser("show", help="Show an objective")
+    p_objective_show.add_argument("objective_id")
+    p_objective_add_seat = objective_sub.add_parser("add-seat", help="Attach seats to an objective")
+    p_objective_add_seat.add_argument("objective_id")
+    p_objective_add_seat.add_argument("--seat", action="append", required=True)
+    p_objective_archive = objective_sub.add_parser("archive", help="Archive an objective")
+    p_objective_archive.add_argument("objective_id")
+
+    p_ether_evaluate = ether_sub.add_parser("evaluate", help="Evaluate one objective")
+    p_ether_evaluate.add_argument("objective_id")
+    p_ether_evaluate.add_argument("--dry-run", action="store_true")
+
+    p_ether_recs = ether_sub.add_parser("recommendations", help="List Ether recommendations")
+    p_ether_recs.add_argument("--objective")
+    p_ether_recs.add_argument("--status")
+    p_ether_recs.add_argument("--limit", type=int, default=50)
+
+    p_ether_rec = ether_sub.add_parser("recommendation", help="Manage one recommendation")
+    rec_sub = p_ether_rec.add_subparsers(dest="recommendation_action", required=True)
+    p_ether_rec_mark = rec_sub.add_parser("mark", help="Mark recommendation status")
+    p_ether_rec_mark.add_argument("recommendation_id")
+    p_ether_rec_mark.add_argument("--status", required=True, choices=["accepted", "rejected", "superseded", "expired"])
 
     # ledger
     p_ledger = subparsers.add_parser("ledger", help="Query agent spawn history")
@@ -292,6 +478,8 @@ def main():
             result = watch.run(args)
         elif args.command == "route":
             result = route.run(args)
+        elif args.command == "dash":
+            result = dash.run(args)
         elif args.command == "set":
             result = set_cmd.run(args)
         elif args.command == "cut":
@@ -300,10 +488,22 @@ def main():
             result = stop.run(args)
         elif args.command == "list":
             result = list_cmd.run(args)
+        elif args.command == "sessions":
+            result = sessions_cmd.run(args)
         elif args.command == "resolve":
             result = resolve.run(args)
         elif args.command == "sleep":
             result = sleep_cmd.run(args)
+        elif args.command == "event":
+            result = event.run(args)
+        elif args.command == "deferred":
+            result = deferred_cmd.run(args)
+        elif args.command == "clawhip":
+            result = clawhip_cmd.run(args)
+        elif args.command == "discord":
+            result = discord_bridge.run(args)
+        elif args.command == "ether":
+            result = ether_cmd.run(args)
         elif args.command == "ledger":
             result = ledger.run(args)
         else:

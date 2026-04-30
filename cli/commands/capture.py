@@ -11,6 +11,7 @@ def run(args):
         name=args.name,
         output=True,
         lines=getattr(args, "lines", 20),
+        format=getattr(args, "format", "text"),
     )
     result = check.run(check_args)
     from lib import seat_schema

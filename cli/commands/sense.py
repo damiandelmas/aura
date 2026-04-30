@@ -216,7 +216,17 @@ def run(args):
         record["ok"] = False
         record["error"] = check_result.get("error")
     record = seat_schema.enrich(record)
-    _write_sense_record(args.name, record)
+    try:
+        _write_sense_record(args.name, record)
+    except Exception as exc:
+        record["sense_persisted"] = False
+        record["sense_persist_error"] = str(exc)
+        record.setdefault("diagnostics", {})["sense_state_write_failed"] = {
+            "path": str(state.seat_dir(args.name) / "sense"),
+            "error": str(exc),
+        }
+    else:
+        record["sense_persisted"] = True
     return record
 
 

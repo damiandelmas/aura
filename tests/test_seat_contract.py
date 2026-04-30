@@ -29,12 +29,15 @@ def test_openclaw_and_shell_runtime_specs_exist():
 
 def test_write_submit_retry_detection_is_narrow():
     from commands.write import _needs_submit_retry, _retry_submit
+    from lib.terminal_submit import delivery_blocker
 
     assert _needs_submit_retry(["Messages to be submitted after next tool call"]) is True
     assert _needs_submit_retry(["Press Enter to submit"]) is True
     assert _needs_submit_retry(["› [Pasted Content 1024 chars]", "", "gpt-5.5 high"]) is True
     assert _needs_submit_retry(["› [Pasted Content 1024 chars]", "• Working (1s)"]) is False
     assert _needs_submit_retry(["Working (2s)", "Running tool call"]) is False
+    assert delivery_blocker(["› [Pasted Content 1024 chars]", "", "gpt-5.5 high"]) == "target-input-queued"
+    assert delivery_blocker(["• Working (1s)", "Running tool call"]) == "target-busy"
 
     class FakeTerminal:
         calls = []
@@ -48,6 +51,116 @@ def test_write_submit_retry_detection_is_narrow():
     assert FakeTerminal.calls == [("seat1", "Enter", False)]
 
 
+def test_send_tmux_verifies_submit_and_retries(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
+
+    from commands import send
+
+    class FakeTerminal:
+        captures = [
+            ["› Ready for input", "", "gpt-5.5 high"],
+            ["› [Pasted Content 1024 chars]", "", "gpt-5.5 high"],
+            ["• Working (1s)"],
+        ]
+        keys = []
+
+        @staticmethod
+        def send_text(name, text, submit=True):
+            return {"ok": True, "target": "unitfleet:worker", "bytes": len(text), "submitted": submit}
+
+        @classmethod
+        def capture_output(cls, name, lines=80):
+            return cls.captures.pop(0)
+
+        @classmethod
+        def send_keys(cls, name, text, enter=True):
+            cls.keys.append((name, text, enter))
+            return {"ok": True, "target": "unitfleet:worker"}
+
+    args = argparse.Namespace(
+        target="worker",
+        message="do the thing",
+        sender="tester",
+        dedupe_key="unit-send",
+        force=False,
+    )
+
+    result = send._send_tmux(
+        args,
+        FakeTerminal,
+        __import__("lib.delivery", fromlist=["delivery"]),
+        terminal_target="unitfleet:worker",
+    )
+    assert result["ok"] is True
+    assert result["submitted"] is True
+    assert result["submitted_verified"] is True
+    assert result["submit_retry"] is True
+    assert FakeTerminal.keys == [("unitfleet:worker", "Enter", False)]
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "deliveries.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert records[-1]["delivery_type"] == "semantic_send"
+    assert records[-1]["submitted_verified"] is True
+    assert records[-1]["submit_retry"] is True
+
+
+def test_send_tmux_blocks_when_target_already_has_queued_input(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
+
+    from commands import send
+
+    class FakeTerminal:
+        sent = False
+
+        @staticmethod
+        def capture_output(name, lines=80):
+            return ["› [Pasted Content 1024 chars]", "", "gpt-5.5 high"]
+
+        @classmethod
+        def send_text(cls, name, text, submit=True):
+            cls.sent = True
+            return {"ok": True}
+
+    args = argparse.Namespace(
+        target="worker",
+        message="do not append",
+        sender="tester",
+        dedupe_key="unit-block",
+        force=False,
+    )
+
+    result = send._send_tmux(
+        args,
+        FakeTerminal,
+        __import__("lib.delivery", fromlist=["delivery"]),
+        terminal_target="unitfleet:worker",
+    )
+
+    assert result["ok"] is False
+    assert result["blocked"] is True
+    assert result["reason"] == "target-input-queued"
+    assert FakeTerminal.sent is False
+
+
+def test_tmux_target_exists_uses_exact_window_names(monkeypatch):
+    from lib import tmux
+
+    monkeypatch.setattr(tmux, "TMUX_SESSION", "unitfleet")
+
+    def fake_run(args):
+        if args[:3] == ["list-windows", "-t", "unitfleet"]:
+            return subprocess.CompletedProcess(args, 0, stdout="bash\nmock-efaa\n", stderr="")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(tmux, "_run_tmux", fake_run)
+
+    assert tmux.window_exists("mock-efaa") is True
+    assert tmux.window_exists("mock") is False
+    assert tmux.window_exists("unitfleet:mock-efaa") is True
+
+
 def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
@@ -59,7 +172,8 @@ def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, 
         BACKEND_NAME = "tmux"
 
         @staticmethod
-        def create_window(name, workdir, detached=False):
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            assert unset_env == ["NO_COLOR", "AURA_RUNTIME_SESSION_ID", "AURA_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID"]
             return {"ok": True}
 
         @staticmethod
@@ -109,8 +223,8 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
         BACKEND_NAME = "tmux"
 
         @staticmethod
-        def create_window(name, workdir, detached=False):
-            created.append((name, workdir, detached))
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((name, workdir, detached, command, env, unset_env))
             return {"ok": True}
 
         @staticmethod
@@ -134,9 +248,21 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
     result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
 
     assert result["ok"] is True
-    assert created == [("codex-seat", str(unit), True)]
-    assert sent[0][1] == "printf ready"
-    assert sent[1][1] == "Do the unit work.\n"
+    assert len(created) == 1
+    name, workdir, detached, command, env, unset_env = created[0]
+    assert (name, workdir, detached, command) == ("codex-seat", str(unit), True, "printf ready")
+    assert env["AURA_AGENT_NAME"] == "codex-seat"
+    assert env["AURA_SEAT"] == "codex-seat"
+    assert env["AURA_FLEET"] == "unitfleet"
+    assert env["AURA_RUNTIME"] == "codex"
+    assert env["AURA_LAUNCH_ID"].startswith("aura-launch-")
+    assert env["TERM"] == "xterm-256color"
+    assert env["COLORTERM"] == "truecolor"
+    assert env["FORCE_COLOR"] == "1"
+    assert env["CLICOLOR_FORCE"] == "1"
+    assert unset_env == ["NO_COLOR", "AURA_RUNTIME_SESSION_ID", "AURA_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID"]
+    assert sent[0][1].startswith("[AURA SEAT CONTEXT]\nfleet=unitfleet\nseat=codex-seat\nlaunch_id=aura-launch-")
+    assert sent[0][1].endswith("[/AURA SEAT CONTEXT]\n\nDo the unit work.\n")
     assert result["prompt_sent"] is True
     assert result["context_file"] == str(context_file)
     assert result["work_file"] == str(work_file)
@@ -147,6 +273,61 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
     assert rows[-1]["runtime"] == "codex"
     assert rows[-1]["cwd"] == str(unit)
     assert rows[-1]["work_file"] == str(work_file)
+
+
+def test_codex_runtime_default_uses_noninteractive_approval_flags():
+    from lib import runtimes
+
+    runtime, spec = runtimes.resolve_runtime("codex")
+    command = runtimes.build_command(runtime, spec, name="ops", profile=None)
+
+    assert command == "codex --dangerously-bypass-approvals-and-sandbox"
+
+
+def test_claude_code_terminal_runtime_default_uses_noninteractive_approval_flags():
+    from lib import runtimes
+
+    runtime, spec = runtimes.resolve_runtime("claude-code")
+    command = runtimes.build_command(runtime, spec, name="worker", profile=None)
+
+    assert command == "claude --dangerously-skip-permissions"
+
+
+def test_runtime_session_discovers_codex_thread_from_pane_process(monkeypatch):
+    from lib import runtime_session
+
+    monkeypatch.setattr(runtime_session, "_descendant_pids", lambda pid: [pid, 1002])
+    monkeypatch.setattr(
+        runtime_session,
+        "_read_process_cmdline",
+        lambda pid: ["codex", "resume", "019dd2b7-8919-75d2-b472-7c778a93da92"] if pid == 1002 else [],
+    )
+    monkeypatch.setattr(
+        runtime_session,
+        "_read_process_environ",
+        lambda pid: {"CODEX_THREAD_ID": "inherited-parent-thread"} if pid == 1002 else {},
+    )
+
+    result = runtime_session.discover_from_pane_pid("codex", 1001)
+
+    assert result == {
+        "runtime_session_id": "019dd2b7-8919-75d2-b472-7c778a93da92",
+        "runtime_session_source": "argv:codex-resume",
+        "runtime_session_confidence": "exact",
+        "runtime_session_evidence": {
+            "reason": "codex-resume-argv",
+            "argv": ["codex", "resume", "019dd2b7-8919-75d2-b472-7c778a93da92"],
+        },
+        "runtime_session_pid": 1002,
+    }
+    merged = runtime_session.merge({"name": "engineer"}, result)
+    assert merged["session_id"] == "019dd2b7-8919-75d2-b472-7c778a93da92"
+
+
+def test_terminal_backend_exports_pane_pid():
+    from lib import terminal
+
+    assert hasattr(terminal, "pane_pid")
 
 
 def test_capture_stop_sense_and_watch_commands_are_public_contract_names():
@@ -164,6 +345,146 @@ def test_capture_stop_sense_and_watch_commands_are_public_contract_names():
     assert "watch" in help_result.stdout
     assert "write" in help_result.stdout
     assert "route" in help_result.stdout
+    assert "dash" in help_result.stdout
+    assert "event" in help_result.stdout
+
+
+def test_event_start_uses_uuid_job_dir_and_name_index(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(CLI),
+            "--json",
+            "event",
+            "start",
+            "--name",
+            "flexgraph-ops",
+            "--target",
+            "operations-leader",
+            "--as",
+            "operations",
+            "--every",
+            "180",
+            "--ticks",
+            "40",
+            "--template",
+            "ops cadence tick {tick}/{ticks} run={run_id}",
+            "--run-id",
+            "unit-run",
+            "--no-daemon",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        env={**os.environ, "AURA_STATE_DIR": str(tmp_path), "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    job = data["job"]
+    assert job["job_id"].startswith("evt_")
+    assert job["name"] == "flexgraph-ops"
+    assert job["target"] == "operations-leader"
+    assert (tmp_path / "events" / "jobs" / job["job_id"] / "state.json").exists()
+    assert not (tmp_path / "events" / "jobs" / "flexgraph-ops").exists()
+
+    status = subprocess.run(
+        [sys.executable, str(CLI), "--json", "event", "status", "flexgraph-ops"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        env={**os.environ, "AURA_STATE_DIR": str(tmp_path), "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    assert status.returncode == 0, status.stderr
+    assert json.loads(status.stdout)["job"]["job_id"] == job["job_id"]
+
+
+def test_event_tick_updates_state_without_killing_job_on_delivery_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
+
+    from commands import event
+
+    args = argparse.Namespace(
+        name="ops",
+        target="operations-leader",
+        sender="operations",
+        every=180,
+        ticks=2,
+        template="tick {tick}/{ticks}",
+        run_id="unit-run",
+        start_delay=0,
+        no_daemon=True,
+    )
+    job = event._make_job(args)
+    from lib import events
+
+    events.save_state(job)
+    events.index_name("ops", job["job_id"])
+
+    monkeypatch.setattr(
+        event,
+        "_deliver",
+        lambda job, tick: {
+            "ok": False,
+            "message_id": "aura-msg-unit",
+            "stderr": "simulated delivery failure",
+            "submitted_verified": False,
+        },
+    )
+    result = event._tick(events.load_state(job["job_id"]), force=True)
+    saved = events.load_state(job["job_id"])
+
+    assert result["ran"] is True
+    assert result["ok"] is False
+    assert saved["status"] == "running"
+    assert saved["tick"] == 0
+    assert saved["consecutive_errors"] == 1
+    assert saved["last_error"] == "simulated delivery failure"
+
+
+def test_event_tick_skips_busy_target_without_consuming_tick(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
+
+    from commands import event
+    from lib import events
+
+    args = argparse.Namespace(
+        name="ops",
+        target="manager",
+        sender="operations",
+        every=180,
+        ticks=2,
+        template="tick {tick}/{ticks}",
+        run_id="unit-run",
+        start_delay=0,
+        no_daemon=True,
+    )
+    job = event._make_job(args)
+    events.save_state(job)
+    events.index_name("ops", job["job_id"])
+
+    monkeypatch.setattr(
+        event,
+        "_deliver",
+        lambda job, tick: {
+            "ok": True,
+            "skipped": True,
+            "reason": "target-busy",
+            "submitted_verified": None,
+        },
+    )
+
+    result = event._tick(events.load_state(job["job_id"]), force=True)
+    saved = events.load_state(job["job_id"])
+
+    assert result["ran"] is True
+    assert result["ok"] is True
+    assert result["delivery"]["skipped"] is True
+    assert saved["status"] == "running"
+    assert saved["tick"] == 0
+    assert saved["last_delivery"]["reason"] == "target-busy"
+    assert saved["consecutive_errors"] == 0
 
 
 def test_spawn_runtime_choices_include_openclaw_and_shell():
@@ -645,6 +966,7 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         assert spawn_result.returncode == 0, spawn_result.stderr + spawn_result.stdout
         assert '"runtime": "command"' in spawn_result.stdout
         assert '"trace_cell": "claude_code"' not in spawn_result.stdout
+        assert '"pane_ref": "tmux:' + fleet + ':%' in spawn_result.stdout
 
         send_result = run_aura(
             "send",
@@ -785,6 +1107,47 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         )
         assert spawn_result.returncode == 0, spawn_result.stderr + spawn_result.stdout
         time.sleep(0.8)
+
+        dash_tile_result = run_aura("dash", "tile", "--fleet", fleet)
+        assert dash_tile_result.returncode == 0, dash_tile_result.stderr + dash_tile_result.stdout
+        assert '"action": "tile"' in dash_tile_result.stdout
+        assert '"dashboard": "dashboard"' in dash_tile_result.stdout
+
+        windows_after_tile = subprocess.run(
+            ["tmux", "list-windows", "-t", fleet, "-F", "#{window_name}"],
+            text=True,
+            capture_output=True,
+            timeout=5,
+        )
+        assert "dashboard" in windows_after_tile.stdout.splitlines()
+        assert "fake1" not in windows_after_tile.stdout.splitlines()
+        assert "fake2" not in windows_after_tile.stdout.splitlines()
+
+        tiled_write_result = run_aura("write", "fake2", "tiled hello", "--enter", "--as", "tester")
+        assert tiled_write_result.returncode == 0, tiled_write_result.stderr + tiled_write_result.stdout
+        time.sleep(0.8)
+        tiled_capture_result = run_aura("capture", "fake2", "--lines", "80")
+        assert tiled_capture_result.returncode == 0, tiled_capture_result.stderr + tiled_capture_result.stdout
+        assert "ACK fake2 tiled hello" in tiled_capture_result.stdout
+        assert '"terminal": "alive"' in tiled_capture_result.stdout
+        assert '"pane_ref": "tmux:' + fleet + ':%' in tiled_capture_result.stdout
+
+        dash_layout_result = run_aura("dash", "layout", "--fleet", fleet, "--layout", "even-horizontal")
+        assert dash_layout_result.returncode == 0, dash_layout_result.stderr + dash_layout_result.stdout
+        assert '"action": "layout"' in dash_layout_result.stdout
+
+        dash_untile_result = run_aura("dash", "untile", "--fleet", fleet)
+        assert dash_untile_result.returncode == 0, dash_untile_result.stderr + dash_untile_result.stdout
+        assert '"action": "untile"' in dash_untile_result.stdout
+
+        windows_after_untile = subprocess.run(
+            ["tmux", "list-windows", "-t", fleet, "-F", "#{window_name}"],
+            text=True,
+            capture_output=True,
+            timeout=5,
+        )
+        assert "fake1" in windows_after_untile.stdout.splitlines()
+        assert "fake2" in windows_after_untile.stdout.splitlines()
 
         done_result = run_aura("write", "fake1", "DONE ready for review", "--enter", "--as", "tester")
         assert done_result.returncode == 0, done_result.stderr + done_result.stdout

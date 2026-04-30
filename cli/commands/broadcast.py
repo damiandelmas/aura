@@ -46,13 +46,18 @@ def _fleet_and_message_from_args(args):
     return registry.current_fleet(), ""
 
 
-def _targets_for_fleet(fleet: str, include_shell: bool = False) -> list[str]:
+def _targets_for_fleet(fleet: str, include_shell: bool = False, allow_hidden: bool = False) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
     registry = _registry_mod()
     terminal = _terminal_mod()
 
-    for agent in registry.list_agents(fleet):
+    if registry.is_hidden_fleet(fleet) and not allow_hidden:
+        return []
+
+    for agent in registry.list_agents(fleet, include_hidden=allow_hidden):
+        if registry.is_hidden_agent(agent) and not allow_hidden:
+            continue
         name = agent.get("name")
         if name and name not in seen:
             names.append(name)
@@ -63,7 +68,7 @@ def _targets_for_fleet(fleet: str, include_shell: bool = False) -> list[str]:
     # while the registry is catching up. Shell windows are excluded by default.
     if hasattr(terminal, "configure_session"):
         terminal.configure_session(fleet)
-    if getattr(terminal, "SESSION_NAME", fleet) == fleet:
+    if getattr(terminal, "SESSION_NAME", fleet) == fleet and (allow_hidden or not registry.is_hidden_fleet(fleet)):
         for name in terminal.list_windows():
             if not include_shell and name in ("bash", "sh", "shell"):
                 continue
@@ -77,7 +82,17 @@ def _targets_for_fleet(fleet: str, include_shell: bool = False) -> list[str]:
 def run(args):
     fleet, message = _fleet_and_message_from_args(args)
     include_shell = getattr(args, "include_shell", False)
-    targets = _targets_for_fleet(fleet, include_shell=include_shell)
+    allow_hidden = bool(getattr(args, "allow_hidden", False))
+    registry = _registry_mod()
+    if registry.is_hidden_fleet(fleet) and not allow_hidden:
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "target-hidden",
+            "fleet": fleet,
+            "hint": "use --allow-hidden for explicit operator access to hidden/internal fleets",
+        }
+    targets = _targets_for_fleet(fleet, include_shell=include_shell, allow_hidden=allow_hidden)
 
     results = []
     send = _send_mod()
@@ -94,6 +109,7 @@ def run(args):
             transport=getattr(args, "transport", "auto") or "auto",
             dedupe_key=dedupe_key,
             force=getattr(args, "force", False),
+            allow_hidden=allow_hidden,
         )
         result = send.run(send_args)
         results.append({"target": target, "result": result})

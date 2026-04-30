@@ -154,10 +154,17 @@ def _execute_action(action: dict) -> dict:
         transport="tmux",
         dedupe_key=action["dedupe_key"],
         force=False,
+        allow_hidden=False,
+        defer_if_busy=True,
+        defer_ttl="15m",
+        defer_retry_every="15s",
+        no_deferred_daemon=False,
     )
     result = send.run(send_args)
     if result.get("skipped"):
         return {**action, "status": "skipped_duplicate", "send": result}
+    if result.get("deferred"):
+        return {**action, "status": "deferred", "send": result, "reason": result.get("reason")}
     if not result.get("ok"):
         return {**action, "status": "blocked", "send": result, "reason": result.get("error", "send failed")}
     return {**action, "status": "sent", "send": result}
@@ -225,6 +232,7 @@ def run(args):
             executed.append(_execute_action(action))
         response["actions"] = executed
         response["sent"] = sum(1 for action in executed if action.get("status") == "sent")
+        response["deferred"] = sum(1 for action in executed if action.get("status") == "deferred")
         response["skipped_duplicate"] = sum(1 for action in executed if action.get("status") == "skipped_duplicate")
         _append_event(fleet, {**response, "event": "route_execution"})
 

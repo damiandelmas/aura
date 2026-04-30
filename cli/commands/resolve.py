@@ -105,6 +105,10 @@ def run(args):
         names = [n.strip() for n in target.split(",") if n.strip()]
         mode = "names"
         fleet = registry.current_fleet()
+    elif ":" in target and not target.startswith("tmux:"):
+        fleet, name = target.split(":", 1)
+        names = [name]
+        mode = "fleet-qualified-name"
     elif target in live or registry.get_agent(target):
         names = [target]
         mode = "name"

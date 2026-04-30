@@ -43,6 +43,17 @@ def _key(fleet: str | None, name: str) -> str:
     return f"{fleet or current_fleet()}:{name}"
 
 
+def is_hidden_agent(record: dict[str, Any] | None) -> bool:
+    if not record:
+        return False
+    fleet = str(record.get("fleet") or "")
+    return bool(record.get("hidden")) or record.get("kind") == "ether" or fleet.startswith("_")
+
+
+def is_hidden_fleet(fleet: str | None) -> bool:
+    return bool(fleet and str(fleet).startswith("_"))
+
+
 def read_registry() -> dict[str, dict[str, Any]]:
     path = registry_path()
     if not path.exists():
@@ -100,20 +111,33 @@ def upsert_agent(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_agent(name: str, fleet: str | None = None) -> dict[str, Any] | None:
+    if not fleet and ":" in str(name) and not str(name).startswith("tmux:"):
+        maybe_fleet, maybe_name = str(name).split(":", 1)
+        if maybe_fleet and maybe_name:
+            fleet = maybe_fleet
+            name = maybe_name
     data = read_registry()
     if fleet:
         return data.get(_key(fleet, name))
     matches = [v for v in data.values() if v.get("name") == name]
     if not matches:
         return None
+    preferred_fleet = current_fleet(default="")
+    if preferred_fleet:
+        preferred = [v for v in matches if v.get("fleet") == preferred_fleet]
+        if preferred:
+            preferred.sort(key=lambda r: r.get("last_seen", ""), reverse=True)
+            return preferred[0]
     matches.sort(key=lambda r: r.get("last_seen", ""), reverse=True)
     return matches[0]
 
 
-def list_agents(fleet: str | None = None) -> list[dict[str, Any]]:
+def list_agents(fleet: str | None = None, *, include_hidden: bool = False) -> list[dict[str, Any]]:
     agents = list(read_registry().values())
     if fleet:
         agents = [a for a in agents if a.get("fleet") == fleet]
+    if not include_hidden:
+        agents = [a for a in agents if not is_hidden_agent(a)]
     return sorted(agents, key=lambda a: (a.get("fleet", ""), a.get("name", "")))
 
 

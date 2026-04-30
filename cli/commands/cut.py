@@ -10,25 +10,41 @@ def run(args):
     force = getattr(args, 'force', False)
     graceful_attempted = False
     reg_agent = registry.get_agent(args.name)
+    agent_name = (reg_agent or {}).get("name")
+    agent_fleet = (reg_agent or {}).get("fleet")
+    if not agent_name and ":" in str(args.name) and not str(args.name).startswith("tmux:"):
+        agent_fleet, agent_name = str(args.name).split(":", 1)
+    agent_name = agent_name or args.name
     if (reg_agent or {}).get("fleet") and hasattr(terminal, "configure_session"):
         terminal.configure_session(reg_agent.get("fleet"))
+    terminal_target = (reg_agent or {}).get("pane_ref") or (reg_agent or {}).get("terminal_ref") or args.name
+
+    def _target_exists(target: str) -> bool:
+        if hasattr(terminal, "target_exists"):
+            exists = terminal.target_exists(target)
+            if exists or target != args.name:
+                return exists
+        return terminal.window_exists(target)
+
+    target_exists = _target_exists(terminal_target)
 
     runtime = (reg_agent or {}).get("runtime")
     graceful_exit = runtimes.graceful_exit(runtime)
 
-    if terminal.window_exists(args.name) and not force:
+    if target_exists and not force:
         graceful_attempted = True
-        terminal.send_text(args.name, graceful_exit, submit=True)
+        terminal.send_text(terminal_target, graceful_exit, submit=True)
         time.sleep(1.0)
 
     if not force:
         # Mesh unregister is best-effort; tmux remains the source of process truth.
         mesh.unregister(args.name)
 
-    if terminal.window_exists(args.name):
-        terminal.kill_window(args.name)
-        registry.mark_status(args.name, "dead", fleet=(reg_agent or {}).get("fleet"))
-        return {
+    target_exists = _target_exists(terminal_target)
+    if target_exists:
+        terminal.kill_window(terminal_target)
+        registry.mark_status(agent_name, "dead", fleet=agent_fleet)
+        result = {
             "ok": True,
             "name": args.name,
             "cut": True,
@@ -37,11 +53,15 @@ def run(args):
             "graceful_exit": graceful_exit if graceful_attempted else None,
             "terminal": "killed",
         }
+        _record_stop(result, reg_agent, terminal_target)
+        return result
 
     if force:
         mesh.unregister(args.name)
+        if reg_agent:
+            registry.mark_status(agent_name, "dead", fleet=agent_fleet)
 
-    return {
+    result = {
         "ok": True,
         "name": args.name,
         "cut": True,
@@ -50,3 +70,27 @@ def run(args):
         "graceful_exit": graceful_exit if graceful_attempted else None,
         "note": "window not found",
     }
+    _record_stop(result, reg_agent, terminal_target)
+    return result
+
+
+def _record_stop(result: dict, reg_agent: dict | None, terminal_target: str) -> None:
+    try:
+        from lib import session_ledger
+
+        session_ledger.append_record({
+            "event": "stop",
+            "seat": result.get("name"),
+            "name": result.get("name"),
+            "fleet": (reg_agent or {}).get("fleet"),
+            "runtime": (reg_agent or {}).get("runtime"),
+            "terminal_ref": (reg_agent or {}).get("terminal_ref"),
+            "pane_ref": (reg_agent or {}).get("pane_ref"),
+            "target": terminal_target,
+            "force": result.get("force"),
+            "graceful_attempted": result.get("graceful_attempted"),
+            "graceful_exit": result.get("graceful_exit"),
+            "result": result,
+        })
+    except Exception:
+        pass
