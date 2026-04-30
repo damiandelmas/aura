@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -11,24 +12,311 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "cli"))
 
 
-def test_runtime_session_discovers_codex_thread_from_descendant(monkeypatch):
+def test_runtime_session_discovers_codex_thread_from_resume_argv(monkeypatch):
     from lib import runtime_session
 
     monkeypatch.setattr(runtime_session, "_descendant_pids", lambda pid: [pid, 1002])
     monkeypatch.setattr(
         runtime_session,
+        "_read_process_cmdline",
+        lambda pid: ["codex", "resume", "019dd2b7-8919-75d2-b472-7c778a93da92"] if pid == 1002 else [],
+    )
+    monkeypatch.setattr(
+        runtime_session,
         "_read_process_environ",
-        lambda pid: {"CODEX_THREAD_ID": "codex-thread-123"} if pid == 1002 else {},
+        lambda pid: {"CODEX_THREAD_ID": "inherited-parent-thread"} if pid == 1002 else {},
     )
 
     result = runtime_session.discover_from_pane_pid("codex", 1001)
 
     assert result == {
-        "runtime_session_id": "codex-thread-123",
-        "runtime_session_env": "CODEX_THREAD_ID",
+        "runtime_session_id": "019dd2b7-8919-75d2-b472-7c778a93da92",
+        "runtime_session_source": "argv:codex-resume",
+        "runtime_session_confidence": "exact",
+        "runtime_session_evidence": {
+            "reason": "codex-resume-argv",
+            "argv": ["codex", "resume", "019dd2b7-8919-75d2-b472-7c778a93da92"],
+        },
         "runtime_session_pid": 1002,
     }
-    assert runtime_session.merge({"name": "engineer"}, result)["session_id"] == "codex-thread-123"
+    assert runtime_session.merge({"name": "engineer"}, result)["session_id"] == "019dd2b7-8919-75d2-b472-7c778a93da92"
+
+
+def test_runtime_session_ignores_inherited_codex_thread_env(monkeypatch):
+    from lib import runtime_session
+
+    monkeypatch.setattr(runtime_session, "_descendant_pids", lambda pid: [pid, 1002])
+    monkeypatch.setattr(runtime_session, "_read_process_cmdline", lambda pid: ["codex"])
+    monkeypatch.setattr(
+        runtime_session,
+        "_read_process_environ",
+        lambda pid: {"CODEX_THREAD_ID": "inherited-parent-thread"} if pid == 1002 else {},
+    )
+
+    assert runtime_session.discover_from_pane_pid("codex", 1001) == {}
+
+
+def test_runtime_session_recovers_fresh_codex_thread_from_state_db(monkeypatch, tmp_path):
+    from lib import runtime_session
+
+    db = tmp_path / "state_5.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """
+        CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            cwd TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            first_user_message TEXT NOT NULL,
+            agent_nickname TEXT,
+            agent_role TEXT,
+            agent_path TEXT
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "019dd797-1169-7931-b2f7-17824b3b7134",
+            "/repo/specialist-cell",
+            1_777_438_495_400,
+            1_777_438_540_766,
+            "[AURA MESSAGE id=aura-msg from=cli]",
+            "specialist-cell role memory validation",
+            None,
+            None,
+            None,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "019dd797-dead-7931-b2f7-17824b3b7134",
+            "/repo/specialist-cell",
+            1_777_438_495_500,
+            1_777_438_540_999,
+            "other thread",
+            "unrelated",
+            None,
+            None,
+            None,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("CODEX_STATE_DB", str(db))
+    monkeypatch.setattr(runtime_session, "_descendant_pids", lambda pid: [pid, 1002])
+    monkeypatch.setattr(runtime_session, "_read_process_cmdline", lambda pid: ["codex"])
+    monkeypatch.setattr(runtime_session, "_process_cwd", lambda pid: "/repo/specialist-cell")
+    monkeypatch.setattr(runtime_session, "_process_start_epoch", lambda pid: 1_777_438_495.450)
+    monkeypatch.setattr(runtime_session, "_read_process_environ", lambda pid: {})
+
+    result = runtime_session.discover_from_pane_pid("codex", 1001, seat_name="specialist-cell")
+
+    assert result["runtime_session_id"] == "019dd797-1169-7931-b2f7-17824b3b7134"
+    assert result["runtime_session_source"] == "codex-state:cwd-start"
+    assert result["runtime_session_confidence"] == "high"
+    assert result["runtime_session_evidence"]["reason"] == "cwd-start-seat-name"
+
+
+def test_runtime_session_prefers_currently_updated_state_candidate(monkeypatch, tmp_path):
+    from lib import runtime_session
+
+    db = tmp_path / "state_5.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """
+        CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            cwd TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            first_user_message TEXT NOT NULL,
+            agent_nickname TEXT,
+            agent_role TEXT,
+            agent_path TEXT
+        )
+        """
+    )
+    conn.executemany(
+        "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                "019dd724-49b1-7503-99ac-7c534c6d5ec5",
+                "/repo/flexsearch/main",
+                1_777_430_973_050,
+                1_777_438_147_251,
+                "You are the manager seat for the Flex release/parity unit of work.",
+                "You are the manager seat for the Flex release/parity unit of work.",
+                None,
+                None,
+                None,
+            ),
+            (
+                "019dd722-42f3-7592-919b-0b64eadea2bb",
+                "/repo/flexsearch/main",
+                1_777_430_840_277,
+                1_777_430_927_933,
+                "You are the long-horizon manager seat for the Flex release/parity plan sequence.",
+                "You are the long-horizon manager seat for the Flex release/parity plan sequence.",
+                None,
+                None,
+                None,
+            ),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("CODEX_STATE_DB", str(db))
+    monkeypatch.setattr(runtime_session, "_descendant_pids", lambda pid: [pid])
+    monkeypatch.setattr(runtime_session, "_read_process_cmdline", lambda pid: ["codex"])
+    monkeypatch.setattr(runtime_session, "_process_cwd", lambda pid: "/repo/flexsearch/main")
+    monkeypatch.setattr(runtime_session, "_process_start_epoch", lambda pid: 1_777_431_280.420)
+    monkeypatch.setattr(runtime_session, "_read_process_environ", lambda pid: {})
+
+    result = runtime_session.discover_from_pane_pid("codex", 1001, seat_name="flex-release-parity-manager")
+
+    assert result["runtime_session_id"] == "019dd724-49b1-7503-99ac-7c534c6d5ec5"
+    assert result["runtime_session_confidence"] == "high"
+    assert result["runtime_session_evidence"]["reason"] == "cwd-start-seat-name-currently-updated"
+
+
+def test_runtime_session_does_not_match_single_word_seat_from_target_mentions(monkeypatch, tmp_path):
+    from lib import runtime_session
+
+    db = tmp_path / "state_5.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """
+        CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            cwd TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            first_user_message TEXT NOT NULL,
+            agent_nickname TEXT,
+            agent_role TEXT,
+            agent_path TEXT
+        )
+        """
+    )
+    conn.executemany(
+        "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                "manager-thread",
+                "/tmp/aura-codex-trio",
+                1_777_517_843_387,
+                1_777_517_904_628,
+                "You are the manager for the Aura Codex trio Receipt Relay E2E.",
+                "You are the manager for the Aura Codex trio Receipt Relay E2E.",
+                None,
+                None,
+                None,
+            ),
+            (
+                "tester-thread",
+                "/tmp/aura-codex-trio",
+                1_777_517_842_862,
+                1_777_517_950_876,
+                "You are the tester. Send aura-codex-trio:manager a report.",
+                "You are the tester. Send aura-codex-trio:manager a report.",
+                None,
+                None,
+                None,
+            ),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("CODEX_STATE_DB", str(db))
+    monkeypatch.setattr(runtime_session, "_descendant_pids", lambda pid: [pid])
+    monkeypatch.setattr(runtime_session, "_read_process_cmdline", lambda pid: ["codex"])
+    monkeypatch.setattr(runtime_session, "_process_cwd", lambda pid: "/tmp/aura-codex-trio")
+    monkeypatch.setattr(runtime_session, "_process_start_epoch", lambda pid: 1_777_517_819.0)
+    monkeypatch.setattr(runtime_session, "_read_process_environ", lambda pid: {})
+
+    result = runtime_session.discover_from_pane_pid("codex", 1001, seat_name="manager")
+
+    assert result["runtime_session_id"] == "manager-thread"
+    assert result["runtime_session_confidence"] == "high"
+    assert result["runtime_session_evidence"]["reason"] == "cwd-start-seat-name"
+
+
+def test_runtime_session_launch_id_is_exact_join_key(monkeypatch, tmp_path):
+    from lib import runtime_session
+
+    db = tmp_path / "state_5.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """
+        CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            cwd TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            first_user_message TEXT NOT NULL,
+            agent_nickname TEXT,
+            agent_role TEXT,
+            agent_path TEXT
+        )
+        """
+    )
+    conn.executemany(
+        "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                "manager-thread",
+                "/tmp/aura-codex-trio",
+                1_777_517_843_387,
+                1_777_517_904_628,
+                "[AURA SEAT CONTEXT] fleet=lab seat=manager launch_id=aura-launch-manager [/AURA SEAT CONTEXT]",
+                "[AURA SEAT CONTEXT]\nfleet=lab\nseat=manager\nlaunch_id=aura-launch-manager\n[/AURA SEAT CONTEXT]",
+                None,
+                None,
+                None,
+            ),
+            (
+                "tester-thread",
+                "/tmp/aura-codex-trio",
+                1_777_517_842_862,
+                1_777_517_950_876,
+                "You are the tester. Send aura-codex-trio:manager a report.",
+                "You are the tester. Send aura-codex-trio:manager a report.",
+                None,
+                None,
+                None,
+            ),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("CODEX_STATE_DB", str(db))
+    monkeypatch.setattr(runtime_session, "_descendant_pids", lambda pid: [pid])
+    monkeypatch.setattr(runtime_session, "_read_process_cmdline", lambda pid: ["codex"])
+    monkeypatch.setattr(runtime_session, "_process_cwd", lambda pid: "/tmp/aura-codex-trio")
+    monkeypatch.setattr(runtime_session, "_process_start_epoch", lambda pid: 1_777_517_819.0)
+    monkeypatch.setattr(runtime_session, "_read_process_environ", lambda pid: {})
+
+    result = runtime_session.discover_from_pane_pid(
+        "codex",
+        1001,
+        seat_name="manager",
+        launch_id="aura-launch-manager",
+    )
+
+    assert result["runtime_session_id"] == "manager-thread"
+    assert result["runtime_session_confidence"] == "exact"
+    assert result["runtime_session_evidence"]["reason"] == "aura-launch-id"
 
 
 def test_spawn_exports_aura_runtime_env_and_records_pane_ref(monkeypatch, tmp_path):
@@ -36,6 +324,7 @@ def test_spawn_exports_aura_runtime_env_and_records_pane_ref(monkeypatch, tmp_pa
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
 
     from commands import spawn
+    monkeypatch.setattr(spawn.uuid, "uuid4", lambda: type("U", (), {"hex": "1234567890abcdef1234"})())
 
     unit = tmp_path / "unit"
     unit.mkdir()
@@ -79,14 +368,310 @@ def test_spawn_exports_aura_runtime_env_and_records_pane_ref(monkeypatch, tmp_pa
                 "AURA_SEAT": "codex-seat",
                 "AURA_FLEET": "unitfleet",
                 "AURA_RUNTIME": "codex",
+                "AURA_LAUNCH_ID": "aura-launch-1234567890abcdef",
                 "TERM": "xterm-256color",
                 "COLORTERM": "truecolor",
                 "FORCE_COLOR": "1",
                 "CLICOLOR_FORCE": "1",
             },
-            ["NO_COLOR"],
+            ["NO_COLOR", "AURA_RUNTIME_SESSION_ID", "AURA_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID"],
         )
     ]
+
+
+def test_spawn_codex_resume_session_builds_autonomous_resume_command(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+
+    created = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((name, command))
+            return {"ok": True, "target": "unitfleet:outreach", "pane_id": "%43"}
+
+    session_id = "019dd1ba-70ff-72c3-8ccd-739cccf4e3fc"
+    args = argparse.Namespace(
+        name="outreach",
+        runtime="codex",
+        resume_session=session_id,
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert created[0][1] == f"codex --dangerously-bypass-approvals-and-sandbox resume {session_id}"
+    assert result["source_session_id"] == session_id
+    assert result["session_id"] == session_id
+    assert result["runtime_session_id"] == session_id
+    assert result["runtime_session_source"] == "spawn:resume-session"
+    assert result["runtime_session_confidence"] == "exact"
+    assert result["runtime_session_mode"] == "native-resume"
+    assert result["isolation"] == "shared-native-thread"
+    assert result["session_observation"]["status"] == "already-bound"
+
+
+def test_spawn_codex_prompt_embeds_aura_launch_context(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+    monkeypatch.setattr(spawn.uuid, "uuid4", lambda: type("U", (), {"hex": "abcdef1234567890ffff"})())
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+    sent = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            return {"ok": True, "target": "unitfleet:builder", "pane_id": "%44"}
+
+        @staticmethod
+        def send_text(name, text, submit=False):
+            sent.append((name, text, submit))
+            return {"ok": True}
+
+    args = argparse.Namespace(
+        name="builder",
+        runtime="codex",
+        resume_session=None,
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt="build the artifact",
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["aura_launch_id"] == "aura-launch-abcdef1234567890"
+    assert sent == [(
+        "builder",
+        "[AURA SEAT CONTEXT]\nfleet=unitfleet\nseat=builder\nlaunch_id=aura-launch-abcdef1234567890\n[/AURA SEAT CONTEXT]\n\nbuild the artifact",
+        True,
+    )]
+
+
+def test_spawn_codex_prompt_retries_submit_before_session_observation(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SPAWN_SESSION_OBSERVE_TIMEOUT", "0")
+
+    from commands import spawn
+    from lib import runtime_session
+
+    monkeypatch.setattr(spawn.uuid, "uuid4", lambda: type("U", (), {"hex": "abcdef1234567890aaaa"})())
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+    sent = []
+    keys = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            return {"ok": True, "target": "unitfleet:builder", "pane_id": "%44"}
+
+        @staticmethod
+        def send_text(name, text, submit=False):
+            sent.append((name, text, submit))
+            return {"ok": True}
+
+        @staticmethod
+        def send_keys(name, text, enter=False):
+            keys.append((name, text, enter))
+            return {"ok": True, "target": name}
+
+        @staticmethod
+        def pane_pid(target):
+            return 1001
+
+    monkeypatch.setattr(
+        runtime_session,
+        "discover_for_target",
+        lambda *args, **kwargs: {
+            "runtime_session_id": "codex-thread-after-submit",
+            "runtime_session_source": "codex-state:cwd-start",
+            "runtime_session_confidence": "exact",
+            "runtime_session_evidence": {"reason": "aura-launch-id"},
+            "runtime_session_cwd": str(unit),
+        },
+    )
+
+    args = argparse.Namespace(
+        name="builder",
+        runtime="codex",
+        resume_session=None,
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt="build the artifact",
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["prompt_sent"] is True
+    assert result["prompt_submit_retry"]["ok"] is True
+    assert result["prompt_submit_retry"]["session_seen"] is True
+    assert result["prompt_submit_retry"]["attempts"] == 1
+    assert keys == [("tmux:unitfleet:%44", "Enter", False)]
+    assert result["runtime_session_id"] == "codex-thread-after-submit"
+    assert sent[0][0] == "builder"
+
+
+def test_spawn_auto_observes_codex_session_by_launch_id(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SPAWN_SESSION_OBSERVE_TIMEOUT", "0")
+
+    from commands import spawn
+    from lib import registry, runtime_session, session_ledger
+
+    monkeypatch.setattr(spawn.uuid, "uuid4", lambda: type("U", (), {"hex": "feedfacecafebeef1234"})())
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            return {"ok": True, "target": "unitfleet:builder", "pane_id": "%44"}
+
+        @staticmethod
+        def send_text(name, text, submit=False):
+            return {"ok": True}
+
+        @staticmethod
+        def pane_pid(target):
+            assert target == "tmux:unitfleet:%44"
+            return 1001
+
+    def fake_discover(runtime, terminal, target, *, seat_name=None, launch_id=None):
+        assert runtime == "codex"
+        assert seat_name == "builder"
+        assert launch_id == "aura-launch-feedfacecafebeef"
+        return {
+            "runtime_session_id": "codex-thread-launch",
+            "runtime_session_source": "codex-state:cwd-start",
+            "runtime_session_confidence": "exact",
+            "runtime_session_evidence": {"reason": "aura-launch-id"},
+            "runtime_session_cwd": str(unit),
+        }
+
+    monkeypatch.setattr(runtime_session, "discover_for_target", fake_discover)
+
+    args = argparse.Namespace(
+        name="builder",
+        runtime="codex",
+        resume_session=None,
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt="build the artifact",
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["session_id"] == "codex-thread-launch"
+    assert result["runtime_session_id"] == "codex-thread-launch"
+    assert result["session_observation"]["status"] == "observed"
+    assert result["session_observation"]["runtime_session_confidence"] == "exact"
+
+    agent = registry.get_agent("builder", fleet="unitfleet")
+    assert agent["session_id"] == "codex-thread-launch"
+    assert agent["runtime_session_confidence"] == "exact"
+
+    rows = session_ledger.iter_records()
+    assert any(row.get("event") == "session_observed_after_spawn" and row.get("runtime_session_id") == "codex-thread-launch" for row in rows)
+
+
+def test_spawn_session_observation_pending_without_high_confidence(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SPAWN_SESSION_OBSERVE_TIMEOUT", "0")
+
+    from commands import spawn
+    from lib import registry, runtime_session
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            return {"ok": True, "target": "unitfleet:builder", "pane_id": "%44"}
+
+        @staticmethod
+        def pane_pid(target):
+            return 1001
+
+    monkeypatch.setattr(runtime_session, "discover_for_target", lambda *args, **kwargs: {})
+
+    args = argparse.Namespace(
+        name="builder",
+        runtime="codex",
+        resume_session=None,
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["session_observation"]["status"] == "pending"
+    assert result["session_observation"]["reason"] == "no-high-confidence-session-evidence"
+    assert "runtime_session_id" not in result
+
+    agent = registry.get_agent("builder", fleet="unitfleet")
+    assert "runtime_session_id" not in agent
 
 
 def test_list_merges_runtime_session_id_from_pane(monkeypatch, tmp_path):
@@ -139,7 +724,7 @@ def test_list_merges_runtime_session_id_from_pane(monkeypatch, tmp_path):
     monkeypatch.setattr(
         runtime_session,
         "discover_from_pane_pid",
-        lambda runtime, pane_pid: {
+        lambda runtime, pane_pid, **kwargs: {
             "runtime_session_id": "codex-thread-123",
             "runtime_session_env": "CODEX_THREAD_ID",
             "runtime_session_pid": pane_pid,
@@ -148,5 +733,457 @@ def test_list_merges_runtime_session_id_from_pane(monkeypatch, tmp_path):
 
     rows = list_cmd.run(argparse.Namespace(fleet="unitfleet", status=None, mode=None))
 
-    assert rows[0]["session_id"] == "codex-thread-123"
-    assert rows[0]["runtime_session_env"] == "CODEX_THREAD_ID"
+    engineer = next(row for row in rows if row["name"] == "engineer")
+    assert engineer["session_id"] == "codex-thread-123"
+    assert engineer["runtime_session_env"] == "CODEX_THREAD_ID"
+
+
+def test_runtime_session_merge_preserves_exact_registry_binding_over_lower_live_heuristic():
+    from lib import runtime_session
+
+    record = {
+        "name": "engineer",
+        "session_id": "exact-thread",
+        "runtime_session_id": "exact-thread",
+        "runtime_session_source": "codex-jsonl:nonce",
+        "runtime_session_confidence": "exact",
+        "runtime_session_evidence": {"reason": "codex-jsonl-nonce"},
+    }
+    session = {
+        "runtime_session_id": "heuristic-thread",
+        "runtime_session_source": "codex-state:cwd-start",
+        "runtime_session_confidence": "high",
+        "runtime_session_evidence": {"reason": "cwd-start-seat-name"},
+        "runtime_session_cwd": "/repo",
+    }
+
+    merged = runtime_session.merge(record, session)
+
+    assert merged["session_id"] == "exact-thread"
+    assert merged["runtime_session_id"] == "exact-thread"
+    assert merged["runtime_session_source"] == "codex-jsonl:nonce"
+    assert merged["runtime_session_confidence"] == "exact"
+
+
+def test_runtime_session_merge_allows_exact_live_source_to_replace_exact_registry_binding():
+    from lib import runtime_session
+
+    record = {
+        "name": "engineer",
+        "session_id": "old-exact-thread",
+        "runtime_session_id": "old-exact-thread",
+        "runtime_session_source": "codex-jsonl:nonce",
+        "runtime_session_confidence": "exact",
+    }
+    session = {
+        "runtime_session_id": "new-exact-thread",
+        "runtime_session_source": "argv:codex-resume",
+        "runtime_session_confidence": "exact",
+    }
+
+    merged = runtime_session.merge(record, session)
+
+    assert merged["session_id"] == "new-exact-thread"
+    assert merged["runtime_session_id"] == "new-exact-thread"
+    assert merged["runtime_session_source"] == "argv:codex-resume"
+
+
+def test_sessions_restore_plan_marks_high_confidence_codex_restore_ready(monkeypatch):
+    from commands import sessions
+
+    rows = [{
+        "name": "engineer",
+        "fleet": "flex-leaders-2",
+        "runtime": "codex",
+        "terminal": "alive",
+        "status": "idle",
+        "hidden": False,
+        "kind": None,
+        "session_id": "019dd2b7-8919-75d2-b472-7c778a93da92",
+        "runtime_session_id": "019dd2b7-8919-75d2-b472-7c778a93da92",
+        "runtime_session_source": "codex-state:cwd-start",
+        "runtime_session_confidence": "high",
+        "pane_ref": "tmux:flex-leaders-2:%291",
+        "cwd": "/repo/flexsearch/main",
+    }]
+
+    monkeypatch.setattr(sessions.list_cmd, "run", lambda args: rows)
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="restore-plan",
+        fleet=None,
+        live=True,
+        min_confidence=None,
+        include_hidden=False,
+    ))
+
+    assert result["ok"] is True
+    assert result["restore_ready"] == 1
+    assert result["rows"][0]["restore_ready"] is True
+    assert "codex --dangerously-bypass-approvals-and-sandbox resume 019dd2b7-8919-75d2-b472-7c778a93da92" in result["rows"][0]["restore_command"]
+
+
+def test_runtime_session_self_prefers_current_codex_thread_env(monkeypatch):
+    from lib import runtime_session
+
+    monkeypatch.setenv("CODEX_THREAD_ID", "019dd624-0108-75a3-b0aa-5ac218048091")
+    monkeypatch.setenv("AURA_RUNTIME_SESSION_ID", "stale-normalized-session")
+    monkeypatch.setenv("AURA_RUNTIME", "codex")
+    monkeypatch.delenv("AURA_SESSION_ID", raising=False)
+    monkeypatch.setattr(runtime_session, "_tmux_current_fleet_seat", lambda: ("unitfleet", "engineer"))
+    monkeypatch.setattr(runtime_session, "_tmux_current_pane_pid", lambda: 1001)
+    monkeypatch.setattr(
+        runtime_session,
+        "discover_from_pane_pid",
+        lambda runtime, pane_pid, seat_name=None: {
+            "runtime_session_id": "019dd624-0108-75a3-b0aa-5ac218048091",
+            "runtime_session_source": "argv:codex-resume",
+            "runtime_session_confidence": "exact",
+            "runtime_session_evidence": {"reason": "codex-resume-argv"},
+        },
+    )
+
+    result = runtime_session.resolve_current_process()
+
+    assert result["ok"] is True
+    assert result["session_id"] == "019dd624-0108-75a3-b0aa-5ac218048091"
+    assert result["runtime_session_source"] == "env:CODEX_THREAD_ID"
+    assert result["runtime_session_confidence"] == "exact"
+    assert result["cross_check"] == "confirmed"
+    assert result["mismatch"] is False
+
+
+def test_runtime_session_self_reports_stale_pane_cross_check_without_losing_env(monkeypatch):
+    from lib import runtime_session
+
+    monkeypatch.setenv("CODEX_THREAD_ID", "019dd624-0108-75a3-b0aa-5ac218048091")
+    monkeypatch.setenv("AURA_RUNTIME", "codex")
+    monkeypatch.delenv("AURA_RUNTIME_SESSION_ID", raising=False)
+    monkeypatch.delenv("AURA_SESSION_ID", raising=False)
+    monkeypatch.setattr(runtime_session, "_tmux_current_fleet_seat", lambda: ("unitfleet", "engineer"))
+    monkeypatch.setattr(runtime_session, "_tmux_current_pane_pid", lambda: 1001)
+    monkeypatch.setattr(
+        runtime_session,
+        "discover_from_pane_pid",
+        lambda runtime, pane_pid, seat_name=None: {
+            "runtime_session_id": "019dd679-a7e1-7021-a0c8-53a9bb9fd4ed",
+            "runtime_session_source": "codex-state:cwd-start",
+            "runtime_session_confidence": "high",
+            "runtime_session_evidence": {"reason": "cwd-start-seat-name"},
+        },
+    )
+
+    result = runtime_session.resolve_current_process()
+
+    assert result["ok"] is True
+    assert result["session_id"] == "019dd624-0108-75a3-b0aa-5ac218048091"
+    assert result["runtime_session_source"] == "env:CODEX_THREAD_ID"
+    assert result["runtime_session_confidence"] == "exact"
+    assert result["cross_check"] == "mismatch"
+    assert result["mismatch"] is True
+    assert result["warning"] == "current-process-env-disagrees-with-pane-evidence"
+
+
+def test_sessions_self_delegates_to_current_process_resolver(monkeypatch):
+    from commands import sessions
+    from lib import runtime_session
+
+    monkeypatch.setattr(
+        runtime_session,
+        "resolve_current_process",
+        lambda runtime=None: {"ok": True, "runtime": runtime, "session_id": "thread-1"},
+    )
+
+    result = sessions.run(argparse.Namespace(sessions_action="self", runtime="codex"))
+
+    assert result == {"ok": True, "runtime": "codex", "session_id": "thread-1"}
+
+
+def test_sessions_bind_current_resolves_and_updates_target_registry(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+
+    from commands import sessions
+    from lib import registry, runtime_session
+
+    monkeypatch.setattr(
+        runtime_session,
+        "resolve_current_process",
+        lambda runtime=None: {
+            "ok": True,
+            "runtime": runtime or "codex",
+            "session_id": "thread-current",
+            "runtime_session_id": "thread-current",
+            "runtime_session_source": "env:CODEX_THREAD_ID",
+            "runtime_session_confidence": "exact",
+            "cross_check": "confirmed",
+            "warning": None,
+            "fleet": "fleet-a",
+            "seat": "engineer",
+            "pane": "%1",
+            "pane_pid": 123,
+            "cwd": "/repo/current",
+            "evidence": [{"source": "env:CODEX_THREAD_ID", "session_id": "thread-current"}],
+        },
+    )
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="bind-current",
+        runtime="codex",
+        target="fleet-a:engineer",
+    ))
+
+    assert result["ok"] is True
+    assert result["session_id"] == "thread-current"
+    assert result["runtime_session_source"] == "env:CODEX_THREAD_ID"
+    assert result["runtime_session_confidence"] == "exact"
+    assert result["cross_check"] == "confirmed"
+
+    agent = registry.get_agent("engineer", fleet="fleet-a")
+    assert agent["session_id"] == "thread-current"
+    assert agent["runtime_session_id"] == "thread-current"
+    assert agent["runtime_session_evidence"]["reason"] == "current-runtime-session"
+
+
+def test_sessions_bind_current_is_idempotent(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+
+    from commands import sessions
+    from lib import registry, runtime_session
+
+    registry.upsert_agent({
+        "name": "engineer",
+        "fleet": "fleet-a",
+        "runtime": "codex",
+        "session_id": "thread-current",
+        "runtime_session_id": "thread-current",
+        "runtime_session_source": "env:CODEX_THREAD_ID",
+        "runtime_session_confidence": "exact",
+    })
+    monkeypatch.setattr(
+        runtime_session,
+        "resolve_current_process",
+        lambda runtime=None: {
+            "ok": True,
+            "runtime": "codex",
+            "session_id": "thread-current",
+            "runtime_session_source": "env:CODEX_THREAD_ID",
+            "runtime_session_confidence": "exact",
+            "cross_check": "single-source",
+            "warning": None,
+            "fleet": "fleet-a",
+            "seat": "engineer",
+            "cwd": "/repo/current",
+            "evidence": [],
+        },
+    )
+
+    args = argparse.Namespace(sessions_action="bind-current", runtime="codex", target="fleet-a:engineer")
+    first = sessions.run(args)
+    second = sessions.run(args)
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert second["session_id"] == "thread-current"
+    assert registry.get_agent("engineer", fleet="fleet-a")["runtime_session_confidence"] == "exact"
+
+
+def test_sessions_bind_current_requires_exact_session(monkeypatch):
+    from commands import sessions
+    from lib import runtime_session
+
+    monkeypatch.setattr(
+        runtime_session,
+        "resolve_current_process",
+        lambda runtime=None: {
+            "ok": True,
+            "runtime": "codex",
+            "session_id": "thread-high",
+            "runtime_session_confidence": "high",
+        },
+    )
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="bind-current",
+        runtime="codex",
+        target="fleet-a:engineer",
+    ))
+
+    assert result["ok"] is False
+    assert result["error"] == "current runtime session id is not exact; use bind-nonce fallback"
+
+
+def test_sessions_bind_nonce_default_target_prefers_aura_env(monkeypatch):
+    from commands import sessions
+
+    monkeypatch.setenv("AURA_FLEET", "fleet-a")
+    monkeypatch.setenv("AURA_SEAT", "engineer")
+    monkeypatch.setenv("TMUX_PANE", "%99")
+
+    result = sessions._target_fleet_seat(None)
+
+    assert result == ("fleet-a", "engineer")
+
+
+def test_sessions_bind_nonce_default_target_uses_current_tmux_pane(monkeypatch):
+    from commands import sessions
+
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = "fleet-a\tengineer\n"
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return Result()
+
+    monkeypatch.delenv("AURA_FLEET", raising=False)
+    monkeypatch.delenv("AURA_SEAT", raising=False)
+    monkeypatch.delenv("AURA_AGENT_NAME", raising=False)
+    monkeypatch.setenv("TMUX_PANE", "%99")
+    monkeypatch.setattr(sessions.subprocess, "run", fake_run)
+
+    result = sessions._target_fleet_seat(None)
+
+    assert result == ("fleet-a", "engineer")
+    assert calls == [["tmux", "display-message", "-p", "-t", "%99", "#{session_name}\t#{window_name}"]]
+
+
+def test_sessions_bind_nonce_tmux_target_resolves_target_pane(monkeypatch):
+    from commands import sessions
+
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = "fleet-b\ttesting\n"
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return Result()
+
+    monkeypatch.setattr(sessions.subprocess, "run", fake_run)
+
+    result = sessions._target_fleet_seat("tmux:fleet-b:%42")
+
+    assert result == ("fleet-b", "testing")
+    assert calls == [["tmux", "display-message", "-p", "-t", "fleet-b:%42", "#{session_name}\t#{window_name}"]]
+
+
+def test_sessions_bind_nonce_updates_target_registry(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+
+    session_dir = tmp_path / ".codex" / "sessions" / "2026" / "04" / "29"
+    session_dir.mkdir(parents=True)
+    jsonl = session_dir / "rollout-2026-04-29T20-31-42-019ddc71-3db7-7c72-9ffd-8da9e3aa96a2.jsonl"
+    nonce = "aura-session-nonce-test"
+    jsonl.write_text(
+        "\n".join([
+            '{"timestamp":"2026-04-30T03:31:43.483Z","type":"session_meta","payload":{"id":"019ddc71-3db7-7c72-9ffd-8da9e3aa96a2","timestamp":"2026-04-30T03:31:42.449Z","cwd":"/repo"}}',
+            '{"timestamp":"2026-04-30T03:31:44.000Z","type":"response_item","payload":{"output":"aura-session-nonce-test"}}',
+        ]),
+        encoding="utf-8",
+    )
+
+    from commands import sessions
+    from lib import registry
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="bind-nonce",
+        nonce=nonce,
+        target="fleet-a:engineer",
+    ))
+
+    assert result["ok"] is True
+    assert result["session_id"] == "019ddc71-3db7-7c72-9ffd-8da9e3aa96a2"
+    assert result["runtime_session_source"] == "codex-jsonl:nonce"
+    assert result["runtime_session_confidence"] == "exact"
+
+    agent = registry.get_agent("engineer", fleet="fleet-a")
+    assert agent["session_id"] == "019ddc71-3db7-7c72-9ffd-8da9e3aa96a2"
+    assert agent["runtime_session_evidence"]["nonce"] == nonce
+
+
+def test_sessions_bind_nonce_prefers_target_registry_cwd_when_nonce_has_multiple_matches(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+
+    session_dir = tmp_path / ".codex" / "sessions" / "2026" / "04" / "29"
+    session_dir.mkdir(parents=True)
+    nonce = "aura-session-nonce-shared"
+    target_jsonl = session_dir / "target.jsonl"
+    current_jsonl = session_dir / "current.jsonl"
+    target_jsonl.write_text(
+        "\n".join([
+            '{"type":"session_meta","payload":{"id":"target-thread","cwd":"/repo/target"}}',
+            '{"type":"response_item","payload":{"output":"aura-session-nonce-shared"}}',
+        ]),
+        encoding="utf-8",
+    )
+    current_jsonl.write_text(
+        "\n".join([
+            '{"type":"session_meta","payload":{"id":"current-thread","cwd":"/repo/current"}}',
+            '{"type":"response_item","payload":{"output":"aura-session-nonce-shared"}}',
+        ]),
+        encoding="utf-8",
+    )
+
+    from commands import sessions
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "engineer",
+        "fleet": "fleet-a",
+        "runtime": "codex",
+        "runtime_session_cwd": "/repo/target",
+    })
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="bind-nonce",
+        nonce=nonce,
+        target="fleet-a:engineer",
+        jsonl=None,
+    ))
+
+    assert result["ok"] is True
+    assert result["session_id"] == "target-thread"
+    assert result["jsonl"] == str(target_jsonl)
+
+
+def test_sessions_bind_nonce_can_pin_jsonl_for_repair(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+
+    session_dir = tmp_path / ".codex" / "sessions" / "2026" / "04" / "29"
+    session_dir.mkdir(parents=True)
+    nonce = "aura-session-nonce-pinned"
+    target_jsonl = session_dir / "target.jsonl"
+    current_jsonl = session_dir / "current.jsonl"
+    target_jsonl.write_text(
+        "\n".join([
+            '{"type":"session_meta","payload":{"id":"target-thread","cwd":"/repo/target"}}',
+            '{"type":"response_item","payload":{"output":"aura-session-nonce-pinned"}}',
+        ]),
+        encoding="utf-8",
+    )
+    current_jsonl.write_text(
+        "\n".join([
+            '{"type":"session_meta","payload":{"id":"current-thread","cwd":"/repo/current"}}',
+            '{"type":"response_item","payload":{"output":"aura-session-nonce-pinned"}}',
+        ]),
+        encoding="utf-8",
+    )
+
+    from commands import sessions
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="bind-nonce",
+        nonce=nonce,
+        target="fleet-a:engineer",
+        jsonl=str(target_jsonl),
+    ))
+
+    assert result["ok"] is True
+    assert result["session_id"] == "target-thread"
+    assert result["jsonl"] == str(target_jsonl)

@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 # Add lib to path
@@ -304,6 +305,15 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     if not requested_runtime and getattr(args, 'launch_command', None):
         requested_runtime = "command"
     runtime, spec = runtimes.resolve_runtime(requested_runtime)
+    resume_session = getattr(args, 'resume_session', None)
+    launch_command = getattr(args, 'launch_command', None)
+    if resume_session:
+        if launch_command:
+            return result_fn({"ok": False, "error": "use either --resume-session or --command, not both", "name": args.name})
+        try:
+            launch_command = runtimes.build_resume_command(runtime, resume_session)
+        except ValueError as exc:
+            return result_fn({"ok": False, "error": str(exc), "name": args.name})
     profile = getattr(args, 'profile', None) or args.name
     command = runtimes.build_command(
         runtime,
@@ -311,7 +321,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         name=args.name,
         profile=profile,
         model=getattr(args, 'model', None),
-        command_override=getattr(args, 'launch_command', None),
+        command_override=launch_command,
     )
     workdir_path = workspace_state.resolve_workdir(getattr(args, 'cwd', None))
     workdir = str(workdir_path)
@@ -328,12 +338,14 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     prompt_text = workspace_state.read_work_prompt(work_path) or getattr(args, 'prompt', None)
     native_state_ref = workspace_state.infer_native_state_ref(workdir_path, spec)
     fleet = getattr(terminal, "SESSION_NAME", None) or registry.current_fleet(default="aura")
+    launch_id = f"aura-launch-{uuid.uuid4().hex[:16]}"
 
     launch_env = {
         "AURA_AGENT_NAME": args.name,
         "AURA_SEAT": args.name,
         "AURA_FLEET": fleet,
         "AURA_RUNTIME": runtime,
+        "AURA_LAUNCH_ID": launch_id,
         "TERM": "xterm-256color",
         "COLORTERM": "truecolor",
         "FORCE_COLOR": "1",
@@ -346,7 +358,13 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             detached=getattr(args, 'as_pane', False),
             command=command,
             env=launch_env,
-            unset_env=["NO_COLOR"],
+            unset_env=[
+                "NO_COLOR",
+                "AURA_RUNTIME_SESSION_ID",
+                "AURA_SESSION_ID",
+                "CODEX_THREAD_ID",
+                "CLAUDE_SESSION_ID",
+            ],
         )
     except TypeError:
         # Compatibility for tests or alternate terminal backends that have not
@@ -356,6 +374,28 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         launch = terminal.send_text(args.name, command, submit=True)
     if not launch.get("ok"):
         return result_fn({"ok": False, "error": launch.get("error", "launch failed"), "name": args.name})
+
+    pane_ref = f"tmux:{fleet}:{launch.get('pane_id')}" if launch.get("pane_id") else None
+    process_meta = {}
+    if pane_ref and hasattr(terminal, "pane_pid"):
+        try:
+            from lib import runtime_session
+
+            process_meta = runtime_session.process_metadata(terminal.pane_pid(pane_ref))
+        except Exception:
+            process_meta = {}
+    session_meta = {}
+    if resume_session:
+        session_meta = {
+            "session_id": resume_session,
+            "runtime_session_id": resume_session,
+            "runtime_session_source": "spawn:resume-session",
+            "runtime_session_confidence": "exact",
+            "runtime_session_evidence": {
+                "reason": "aura-spawn-resume-session",
+                "resume_session": resume_session,
+            },
+        }
 
     registered = registry.upsert_agent({
         "name": args.name,
@@ -369,12 +409,45 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "work_file": str(work_path) if work_path else None,
         "runtime_home": _runtime_home(runtime, profile),
         "native_state_ref": native_state_ref,
+        "aura_launch_id": launch_id,
+        "source_session_id": resume_session,
+        "runtime_session_mode": "native-resume" if resume_session else None,
+        "isolation": "shared-native-thread" if resume_session and runtime == "codex" else None,
         "terminal_ref": launch.get("target"),
-        "pane_ref": f"tmux:{fleet}:{launch.get('pane_id')}" if launch.get("pane_id") else None,
+        "pane_ref": pane_ref,
         "transport": "tmux",
         "status": "starting",
         "registered": True,
+        **process_meta,
+        **session_meta,
     })
+    try:
+        from lib import session_ledger
+
+        session_ledger.append_record({
+            "event": "spawn",
+            "seat": args.name,
+            "name": args.name,
+            "fleet": fleet,
+            "runtime": runtime,
+            "profile": profile if runtime == "hermes" else None,
+            "command": command,
+            "aura_launch_id": launch_id,
+            "source_session_id": resume_session,
+            "runtime_session_mode": "native-resume" if resume_session else None,
+            "isolation": "shared-native-thread" if resume_session and runtime == "codex" else None,
+            "cwd": workdir,
+            "workdir": workdir,
+            "context_file": str(context_path) if context_path else None,
+            "work_file": str(work_path) if work_path else None,
+            "terminal_ref": launch.get("target"),
+            "pane_ref": pane_ref,
+            "status": "starting",
+            **process_meta,
+            **session_meta,
+        })
+    except Exception:
+        pass
 
     result = {
         "ok": True,
@@ -389,20 +462,74 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "work_file": str(work_path) if work_path else None,
         "runtime_home": _runtime_home(runtime, profile),
         "native_state_ref": native_state_ref,
+        "aura_launch_id": launch_id,
+        "source_session_id": resume_session,
+        "runtime_session_mode": "native-resume" if resume_session else None,
+        "isolation": "shared-native-thread" if resume_session and runtime == "codex" else None,
         "terminal_ref": launch.get("target"),
-        "pane_ref": f"tmux:{fleet}:{launch.get('pane_id')}" if launch.get("pane_id") else None,
+        "pane_ref": pane_ref,
         "status": "starting",
         "registered": True,
         "fleet": fleet,
         "trace_cell": registered.get("trace_cell"),
+        **process_meta,
+        **session_meta,
     }
 
     if prompt_text:
         time.sleep(1)
-        prompt_result = terminal.send_text(args.name, prompt_text, submit=True)
+        prompt_target = pane_ref or launch.get("target") or args.name
+        prompt_result = terminal.send_text(
+            args.name,
+            _augment_runtime_prompt(runtime, prompt_text, fleet=fleet, seat=args.name, launch_id=launch_id),
+            submit=True,
+        )
         result["prompt_sent"] = bool(prompt_result.get("ok"))
         if not prompt_result.get("ok"):
             result["prompt_error"] = prompt_result.get("error")
+        elif runtime == "codex" and hasattr(terminal, "send_keys"):
+            result["prompt_submit_retry"] = _retry_codex_prompt_submit(
+                terminal=terminal,
+                target=prompt_target,
+                seat=args.name,
+                launch_id=launch_id,
+            )
+
+    session_observation = _observe_spawn_session(
+        runtime=runtime,
+        terminal=terminal,
+        target=pane_ref or launch.get("target") or args.name,
+        seat=args.name,
+        fleet=fleet,
+        launch_id=launch_id,
+        workdir=workdir,
+        terminal_ref=launch.get("target"),
+        pane_ref=pane_ref,
+        registered=registered,
+        existing_session=session_meta,
+        timeout=float(os.environ.get("AURA_SPAWN_SESSION_OBSERVE_TIMEOUT", "6.0" if prompt_text else "0.5")),
+    )
+    if session_observation:
+        result["session_observation"] = session_observation
+        if session_observation.get("runtime_session_id"):
+            session_observation.setdefault("session_id", session_observation["runtime_session_id"])
+            session_fields = {
+                key: session_observation.get(key)
+                for key in (
+                    "session_id",
+                    "runtime_session_id",
+                    "runtime_session_source",
+                    "runtime_session_confidence",
+                    "runtime_session_evidence",
+                    "runtime_session_env",
+                    "runtime_session_cwd",
+                    "runtime_session_created_at_ms",
+                    "runtime_session_updated_at_ms",
+                    "runtime_session_pid",
+                )
+                if session_observation.get(key) is not None
+            }
+            result.update(session_fields)
 
     _record_workspace_spawn(workdir_path, result, runtime=runtime)
     return result_fn({k: v for k, v in result.items() if v is not None})
@@ -412,6 +539,181 @@ def _runtime_home(runtime: str, profile: str | None) -> str | None:
     if runtime == "hermes" and profile:
         return str(Path.home() / ".hermes" / "profiles" / profile)
     return None
+
+
+def _augment_runtime_prompt(runtime: str, prompt_text: str, *, fleet: str, seat: str, launch_id: str) -> str:
+    if runtime != "codex":
+        return prompt_text
+    return "\n".join([
+        "[AURA SEAT CONTEXT]",
+        f"fleet={fleet}",
+        f"seat={seat}",
+        f"launch_id={launch_id}",
+        "[/AURA SEAT CONTEXT]",
+        "",
+        prompt_text,
+    ])
+
+
+def _confidence_at_least(value: str | None, minimum: str) -> bool:
+    order = {"exact": 4, "high": 3, "medium": 2, "low": 1}
+    return order.get(value or "", 0) >= order[minimum]
+
+
+def _retry_codex_prompt_submit(*, terminal, target: str, seat: str, launch_id: str) -> dict:
+    """Nudge a freshly pasted Codex spawn prompt until the thread exists.
+
+    Codex can briefly accept a tmux paste before its input widget is ready,
+    especially on first-run trust or MCP startup screens. Repeating a literal
+    Enter until state-db evidence appears makes spawn prompt delivery
+    deterministic without binding the seat manually.
+    """
+    from lib import runtime_session
+
+    attempts = []
+    max_attempts = int(os.environ.get("AURA_CODEX_PROMPT_SUBMIT_RETRIES", "4"))
+    for index in range(max(1, max_attempts)):
+        time.sleep(0.5 if index == 0 else 1.5)
+        retry_result = terminal.send_keys(target, "Enter", enter=False) or {}
+        attempts.append(retry_result)
+        time.sleep(0.5)
+        try:
+            session_info = runtime_session.discover_for_target(
+                "codex",
+                terminal,
+                target,
+                seat_name=seat,
+                launch_id=launch_id,
+            )
+        except Exception:
+            session_info = {}
+        if session_info and _confidence_at_least(session_info.get("runtime_session_confidence"), "high"):
+            return {
+                "ok": True,
+                "attempts": len(attempts),
+                "results": attempts,
+                "session_seen": True,
+                "runtime_session_id": session_info.get("runtime_session_id"),
+                "runtime_session_confidence": session_info.get("runtime_session_confidence"),
+            }
+    return {
+        "ok": any(result.get("ok") for result in attempts),
+        "attempts": len(attempts),
+        "results": attempts,
+        "session_seen": False,
+    }
+
+
+def _observe_spawn_session(
+    *,
+    runtime: str,
+    terminal,
+    target: str | None,
+    seat: str,
+    fleet: str,
+    launch_id: str,
+    workdir: str,
+    terminal_ref: str | None,
+    pane_ref: str | None,
+    registered: dict,
+    existing_session: dict,
+    timeout: float,
+) -> dict:
+    """Best-effort post-spawn runtime session observation.
+
+    This makes Aura-spawned Codex seats self-describing without requiring the
+    agent to run bind-current as a ritual. It only binds evidence at high/exact
+    confidence; bind-current remains the repair path for ambiguous sessions.
+    """
+    if runtime != "codex":
+        return {"status": "skipped", "reason": "runtime-not-observed-at-spawn", "runtime": runtime}
+
+    if existing_session.get("runtime_session_id") and _confidence_at_least(
+        existing_session.get("runtime_session_confidence"),
+        "high",
+    ):
+        session_id = existing_session.get("runtime_session_id")
+        return {
+            "status": "already-bound",
+            "session_id": session_id,
+            "runtime_session_id": session_id,
+            "runtime_session_source": existing_session.get("runtime_session_source"),
+            "runtime_session_confidence": existing_session.get("runtime_session_confidence"),
+            "runtime_session_evidence": existing_session.get("runtime_session_evidence"),
+        }
+
+    if not target or not hasattr(terminal, "pane_pid"):
+        return {"status": "pending", "reason": "no-pane-target", "runtime": runtime}
+
+    from lib import registry, runtime_session, session_ledger
+
+    deadline = time.time() + max(timeout, 0)
+    attempts = 0
+    last_session: dict = {}
+    while True:
+        attempts += 1
+        try:
+            session_info = runtime_session.discover_for_target(
+                runtime,
+                terminal,
+                target,
+                seat_name=seat,
+                launch_id=launch_id,
+            )
+        except Exception as exc:
+            return {
+                "status": "error",
+                "reason": "session-discovery-error",
+                "error": str(exc),
+                "attempts": attempts,
+            }
+
+        if session_info:
+            last_session = session_info
+            if _confidence_at_least(session_info.get("runtime_session_confidence"), "high"):
+                merged = registry.upsert_agent(runtime_session.merge(dict(registered), session_info))
+                try:
+                    session_ledger.append_record({
+                        "event": "session_observed_after_spawn",
+                        "seat": seat,
+                        "name": seat,
+                        "fleet": fleet,
+                        "runtime": runtime,
+                        "terminal_ref": terminal_ref,
+                        "pane_ref": pane_ref,
+                        "cwd": merged.get("cwd") or merged.get("workdir") or workdir,
+                        "workdir": merged.get("workdir") or workdir,
+                        "aura_launch_id": launch_id,
+                        "observation_attempts": attempts,
+                        **session_info,
+                    })
+                except Exception:
+                    pass
+                return {
+                    "status": "observed",
+                    "attempts": attempts,
+                    "session_id": session_info.get("runtime_session_id"),
+                    **session_info,
+                }
+
+        if time.time() >= deadline:
+            break
+        time.sleep(0.25)
+
+    pending = {
+        "status": "pending",
+        "reason": "no-high-confidence-session-evidence",
+        "attempts": attempts,
+        "runtime": runtime,
+    }
+    if last_session:
+        pending.update({
+            "last_runtime_session_id": last_session.get("runtime_session_id"),
+            "last_runtime_session_source": last_session.get("runtime_session_source"),
+            "last_runtime_session_confidence": last_session.get("runtime_session_confidence"),
+            "last_runtime_session_evidence": last_session.get("runtime_session_evidence"),
+        })
+    return pending
 
 
 def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> None:
@@ -431,14 +733,34 @@ def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> Non
             "profile": result.get("profile"),
             "runtime_home": result.get("runtime_home"),
             "native_state_ref": result.get("native_state_ref"),
+            "aura_launch_id": result.get("aura_launch_id"),
+            "source_session_id": result.get("source_session_id"),
+            "runtime_session_mode": result.get("runtime_session_mode"),
+            "isolation": result.get("isolation"),
             "runtime_session_id": result.get("runtime_session_id"),
             "runtime_session_env": result.get("runtime_session_env"),
+            "runtime_session_source": result.get("runtime_session_source"),
+            "runtime_session_confidence": result.get("runtime_session_confidence"),
+            "runtime_session_evidence": result.get("runtime_session_evidence"),
+            "runtime_process_pid": result.get("runtime_process_pid"),
+            "runtime_process_cwd": result.get("runtime_process_cwd"),
+            "runtime_process_started_at_epoch": result.get("runtime_process_started_at_epoch"),
+            "runtime_process_argv": result.get("runtime_process_argv"),
             "command": result.get("command"),
             "terminal_ref": result.get("terminal_ref"),
             "pane_ref": result.get("pane_ref"),
             "prompt_sent": result.get("prompt_sent", False),
         })
         workspace_state.write_latest_session(workdir, record)
+        try:
+            from lib import session_ledger
+
+            session_ledger.append_record({
+                "event": "workspace_spawn",
+                **{k: v for k, v in record.items() if v is not None},
+            })
+        except Exception:
+            pass
     except Exception as exc:
         result["workspace_state_error"] = str(exc)
 

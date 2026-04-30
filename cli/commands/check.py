@@ -15,8 +15,19 @@ def run(args):
     agent = {**(reg_agent or {}), **(mesh_agent or {})} if (reg_agent or mesh_agent) else None
     if (agent or {}).get("fleet") and hasattr(terminal, "configure_session"):
         terminal.configure_session(agent.get("fleet"))
+    elif ":" in args.name and not args.name.startswith("tmux:") and hasattr(terminal, "configure_session"):
+        terminal.configure_session(args.name.split(":", 1)[0])
     terminal_target = (agent or {}).get("pane_ref") or (agent or {}).get("terminal_ref") or args.name
     terminal_alive = _target_exists(terminal_target)
+    target_diagnostic = None
+    if not terminal_alive and terminal_target != args.name and _target_exists(args.name):
+        target_diagnostic = {
+            "reason": "registered-target-missing-window-name-alive",
+            "registered_target": terminal_target,
+            "fallback_target": args.name,
+        }
+        terminal_target = args.name
+        terminal_alive = True
 
     if not agent and not terminal_alive:
         return {"ok": False, "error": f"agent not found: {args.name}", "status": "stopped"}
@@ -27,23 +38,34 @@ def run(args):
 
     from lib import runtime_session
 
-    session_info = runtime_session.discover_for_target((agent or {}).get("runtime"), terminal, terminal_target) if terminal_alive else {}
+    session_info = runtime_session.discover_for_target(
+        (agent or {}).get("runtime"),
+        terminal,
+        terminal_target,
+        seat_name=args.name,
+        launch_id=(agent or {}).get("aura_launch_id"),
+    ) if terminal_alive else {}
     if reg_agent and session_info:
         registry.upsert_agent(runtime_session.merge(dict(reg_agent), session_info))
 
+    display_name = (agent or {}).get("name") or (args.name.split(":", 1)[1] if ":" in args.name and not args.name.startswith("tmux:") else args.name)
+    display_fleet = (agent or {}).get("fleet") or (args.name.split(":", 1)[0] if ":" in args.name and not args.name.startswith("tmux:") else registry.current_fleet())
+
     response = runtime_session.merge({
         "ok": True,
-        "name": args.name,
-        "fleet": (agent or {}).get("fleet", registry.current_fleet()),
+        "name": display_name,
+        "fleet": display_fleet,
         "runtime": (agent or {}).get("runtime"),
+        "aura_launch_id": (agent or {}).get("aura_launch_id"),
         "status": status,
         "mode": (agent or {}).get("delivery_mode", "immediate"),
         "registered": bool((agent or {}).get("socket_path")) or bool((agent or {}).get("registered")),
         "terminal": "alive" if terminal_alive else "missing",
         "backend": "tmux" if terminal_alive or (agent or {}).get("terminal_ref") else None,
-        "terminal_ref": (agent or {}).get("terminal_ref") or (f"tmux:{terminal.SESSION_NAME}:{args.name}" if terminal_alive else None),
+        "terminal_ref": (agent or {}).get("terminal_ref") or (f"{display_fleet}:{display_name}" if terminal_alive else None),
         "backend_ref": (agent or {}).get("backend_ref") or ((agent or {}).get("terminal_ref") or "").removeprefix("tmux:"),
         "pane_ref": (agent or {}).get("pane_ref"),
+        "target_diagnostic": target_diagnostic,
         "trace_cell": (agent or {}).get("trace_cell"),
         "last_seen": (agent or {}).get("last_seen", "")
     }, session_info)
