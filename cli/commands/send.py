@@ -9,22 +9,44 @@ def run(args):
 
     nudge = getattr(args, 'nudge', False)
     reg_agent = registry.get_agent(args.target)
+    if reg_agent and registry.is_hidden_agent(reg_agent) and not getattr(args, "allow_hidden", False):
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "target-hidden",
+            "error": "target is hidden/internal; use an explicit operator path or --allow-hidden",
+            "target": args.target,
+        }
+    if args.target.startswith("tmux:"):
+        parts = args.target.split(":", 2)
+        if len(parts) == 3 and registry.is_hidden_fleet(parts[1]) and not getattr(args, "allow_hidden", False):
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "target-hidden",
+                "error": "target is hidden/internal; use an explicit operator path or --allow-hidden",
+                "target": args.target,
+            }
     if (reg_agent or {}).get("fleet") and hasattr(terminal, "configure_session"):
         terminal.configure_session(reg_agent.get("fleet"))
+    elif ":" in args.target and not args.target.startswith("tmux:") and hasattr(terminal, "configure_session"):
+        terminal.configure_session(args.target.split(":", 1)[0])
+    terminal_target = (reg_agent or {}).get("pane_ref") or (reg_agent or {}).get("terminal_ref") or args.target
+    target_exists = terminal.target_exists(terminal_target) if hasattr(terminal, "target_exists") else terminal.window_exists(terminal_target)
 
-    # --nudge: just send Enter via tmux as a delivery kick
+    # --nudge: send a literal Enter key as a delivery kick.
     if nudge:
-        if terminal.window_exists(args.target):
-            result = terminal.send_keys(args.target, "", enter=True) or {}
+        if target_exists:
+            result = terminal.send_keys(terminal_target, "Enter", enter=False) or {}
             return {"ok": True, "nudged": True, "name": args.target, "terminal_ref": result.get("target")}
         return {"error": f"window not found: {args.target}"}
 
     transport = getattr(args, 'transport', 'auto') or 'auto'
     if transport == 'auto':
-        transport = 'tmux' if terminal.window_exists(args.target) else 'mesh'
+        transport = 'tmux' if target_exists else 'mesh'
 
     if transport == 'tmux':
-        return _send_tmux(args, terminal, delivery)
+        return _send_tmux(args, terminal, delivery, terminal_target=terminal_target)
 
     # Legacy mesh path remains available for wrapper-managed Claude sessions.
     mode = args.mode
@@ -52,55 +74,133 @@ def run(args):
     return result
 
 
-def _send_tmux(args, terminal, delivery):
+def _send_tmux(args, terminal, delivery, terminal_target=None):
+    from lib import terminal_submit
+
     sender = args.sender or "cli"
     body = args.message or ""
+    terminal_target = terminal_target or args.target
     dedupe_key = getattr(args, 'dedupe_key', None) or delivery.default_dedupe_key(args.target, sender, body)
 
     if not getattr(args, 'force', False):
         previous = delivery.has_successful_dedupe(args.target, dedupe_key)
         if previous:
-            record = delivery.append_record({
-                "message_id": delivery.new_message_id(),
-                "target": args.target,
-                "sender": sender,
-                "transport": "tmux",
-                "dedupe_key": dedupe_key,
-                "state": "skipped_duplicate",
-                "previous_message_id": previous,
-                "created_at": delivery.now_iso(),
-            })
+            record = delivery.new_delivery_record(
+                delivery_type="semantic_send",
+                sender=sender,
+                target=args.target,
+                backend="tmux",
+                dedupe_key=dedupe_key,
+                state="skipped_duplicate",
+                previous_message_id=previous,
+                transport="tmux",
+            )
+            delivery.append_attempt(record, state="skipped_duplicate", evidence={"previous_message_id": previous})
+            record = delivery.append_record(record)
             return {"ok": True, "skipped": True, "reason": "duplicate", "previous_message_id": previous, "record": record}
+
+    preflight_capture = terminal.capture_output(terminal_target, 80)
+    blocker = terminal_submit.delivery_blocker(preflight_capture)
+    if blocker:
+        record = delivery.new_delivery_record(
+            delivery_type="semantic_send",
+            sender=sender,
+            target=args.target,
+            backend="tmux",
+            backend_ref=terminal_target,
+            dedupe_key=dedupe_key,
+            state="blocked",
+            transport="tmux",
+            error=blocker,
+            capture_before_lines=len(preflight_capture),
+        )
+        delivery.append_attempt(record, state="blocked", evidence={
+            "blocker": blocker,
+            "preflight_capture_lines": len(preflight_capture),
+        })
+        record = delivery.append_record(record)
+        deferred_record = None
+        if getattr(args, "defer_if_busy", False) and blocker in {"target-busy", "target-input-queued"}:
+            from lib import deferred
+
+            ttl_seconds = deferred.parse_duration(getattr(args, "defer_ttl", None), default=900)
+            retry_seconds = deferred.parse_duration(getattr(args, "defer_retry_every", None), default=15)
+            deferred_record = deferred.create(
+                target=args.target,
+                message=body,
+                sender=sender,
+                dedupe_key=dedupe_key,
+                transport="tmux",
+                retry_every_seconds=retry_seconds,
+                ttl_seconds=ttl_seconds,
+                blocked_reason=blocker,
+                blocked_message_id=record.get("message_id"),
+            )
+            if not getattr(args, "no_deferred_daemon", False):
+                deferred_record["daemon"] = deferred.spawn_daemon(deferred_record["deferred_id"])
+        return {
+            "ok": bool(deferred_record),
+            "blocked": True,
+            "deferred": bool(deferred_record),
+            "reason": blocker,
+            "error": f"target not ready for paste: {blocker}",
+            "record": record,
+            "deferred_record": deferred_record,
+        }
 
     message_id = delivery.new_message_id()
     sent_at = delivery.now_iso()
     envelope = delivery.render_envelope(message_id, sender, body, sent_at=sent_at)
 
-    delivery.append_record({
-        "message_id": message_id,
-        "target": args.target,
-        "sender": sender,
-        "transport": "tmux",
-        "dedupe_key": dedupe_key,
-        "state": "pending",
-        "created_at": sent_at,
-        "body_hash": delivery.body_hash(body),
-    })
+    pending = delivery.new_delivery_record(
+        delivery_type="semantic_send",
+        sender=sender,
+        target=args.target,
+        payload_hash=delivery.body_hash(body),
+        backend="tmux",
+        backend_ref=terminal_target,
+        dedupe_key=dedupe_key,
+        message_id=message_id,
+        transport="tmux",
+        state="pending",
+    )
+    pending["created_at"] = sent_at
+    pending["updated_at"] = sent_at
+    delivery.append_attempt(pending, state="pending", evidence={"body_hash": delivery.body_hash(body)})
+    delivery.append_record(pending)
 
-    result = terminal.send_text(args.target, envelope, submit=True)
-    state = "delivered" if result.get("ok") else "failed"
-    record = delivery.append_record({
-        "message_id": message_id,
-        "target": args.target,
-        "sender": sender,
-        "transport": "tmux",
-        "dedupe_key": dedupe_key,
-        "state": state,
-        "updated_at": delivery.now_iso(),
+    result = terminal.send_text(terminal_target, envelope, submit=True)
+    submit_verified = None
+    submit_retry = False
+    verify_reason = None
+    if result.get("ok"):
+        verify = terminal_submit.verify_submit(terminal, terminal_target, message_id=message_id, lines=160)
+        submit_verified = verify["submitted_verified"]
+        submit_retry = verify["submit_retry"]
+        verify_reason = verify.get("verify_reason")
+
+    state = "delivered" if result.get("ok") and submit_verified is not False else "failed"
+    delivery.append_attempt(pending, state="attempted", evidence={
+        "paste_ok": bool(result.get("ok")),
         "terminal_ref": result.get("target"),
-        "error": result.get("error"),
         "bytes": result.get("bytes"),
+        "submitted": result.get("submitted", False),
+        "submitted_verified": submit_verified,
+        "submit_verify_reason": verify_reason,
+        "submit_retry": submit_retry,
+        "error": result.get("error"),
     })
+    record = delivery.append_final_record(
+        pending,
+        state=state,
+        terminal_ref=result.get("target"),
+        error=result.get("error"),
+        bytes=result.get("bytes"),
+        submitted=result.get("submitted", False),
+        submitted_verified=submit_verified,
+        submit_verify_reason=verify_reason,
+        submit_retry=submit_retry,
+    )
 
     if not result.get("ok"):
         return {"ok": False, "error": result.get("error", "tmux send failed"), "message_id": message_id, "record": record}
@@ -112,6 +212,11 @@ def _send_tmux(args, terminal, delivery):
         "target": args.target,
         "terminal_ref": result.get("target"),
         "state": state,
+        "submitted": result.get("submitted", False),
+        "submitted_verified": submit_verified,
+        "submit_verify_reason": verify_reason,
+        "submit_retry": submit_retry,
+        "record": record,
     }
 
 
