@@ -330,7 +330,15 @@ class Mesh:
                                 _event_log("mesh:out", json.loads(response))
                             except Exception:
                                 _event_log("mesh:out", {"raw": response[:4000]})
-                            conn.send(response.encode('utf-8'))
+                            try:
+                                conn.sendall(response.encode('utf-8'))
+                            except BrokenPipeError:
+                                # Clients such as `aura list | head` may close the
+                                # read side early. Treat that as a dropped response,
+                                # not as a daemon-fatal condition.
+                                self._log("client disconnected before response was sent")
+                            except ConnectionResetError:
+                                self._log("client reset before response was sent")
                     finally:
                         conn.close()
 
