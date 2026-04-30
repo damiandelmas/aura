@@ -196,36 +196,7 @@ def _send_tmux(args, terminal, delivery, terminal_target=None):
     if not result.get("ok"):
         return {"ok": False, "error": result.get("error", "tmux send failed"), "message_id": message_id, "record": record}
 
-    deferred_record = None
-    if submit_verified is False and getattr(args, "defer_if_busy", False) and verify_reason == "queued-input":
-        deferred_record = _create_deferred_delivery(
-            args,
-            body=body,
-            sender=sender,
-            dedupe_key=dedupe_key,
-            blocked_reason=f"submit-unverified:{verify_reason or 'unknown'}",
-            blocked_message_id=message_id,
-        )
-        return {
-            "ok": True,
-            "blocked": True,
-            "deferred": True,
-            "reason": "submit-unverified",
-            "error": f"submit could not be verified: {verify_reason or 'unknown'}",
-            "transport": "tmux",
-            "message_id": message_id,
-            "target": args.target,
-            "terminal_ref": result.get("target"),
-            "state": state,
-            "submitted": result.get("submitted", False),
-            "submitted_verified": submit_verified,
-            "submit_verify_reason": verify_reason,
-            "submit_retry": submit_retry,
-            "record": record,
-            "deferred_record": deferred_record,
-        }
-
-    return {
+    response = {
         "ok": True,
         "transport": "tmux",
         "message_id": message_id,
@@ -238,6 +209,9 @@ def _send_tmux(args, terminal, delivery, terminal_target=None):
         "submit_retry": submit_retry,
         "record": record,
     }
+    if submit_verified is False:
+        response["warning"] = "submit-unverified"
+    return response
 
 
 def _create_deferred_delivery(args, *, body, sender, dedupe_key, blocked_reason, blocked_message_id=None):

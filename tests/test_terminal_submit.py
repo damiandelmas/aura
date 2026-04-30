@@ -141,7 +141,7 @@ def test_verify_submit_retries_queued_input_until_message_visible():
     assert FakeTerminal.keys == [("fleet:seat", "Enter", False)]
 
 
-def test_verify_submit_does_not_retry_missing_positive_evidence():
+def test_verify_submit_retries_missing_positive_evidence_until_message_visible():
     from lib import terminal_submit
 
     class FakeTerminal:
@@ -167,13 +167,13 @@ def test_verify_submit_does_not_retry_missing_positive_evidence():
         sleep=lambda _: None,
     )
 
-    assert result["submitted_verified"] is False
-    assert result["verify_reason"] == "missing-positive-submit-evidence"
-    assert result["submit_retry"] is False
-    assert FakeTerminal.keys == []
+    assert result["submitted_verified"] is True
+    assert result["verify_reason"] == "message-id-visible"
+    assert result["submit_retry"] is True
+    assert FakeTerminal.keys == [("fleet:seat", "Enter", False)]
 
 
-def test_verify_submit_does_not_treat_prompt_text_as_active_composer():
+def test_verify_submit_retries_prompt_text_after_paste_attempt():
     from lib import terminal_submit
 
     class FakeTerminal:
@@ -197,5 +197,8 @@ def test_verify_submit_does_not_treat_prompt_text_as_active_composer():
 
     assert result["submitted_verified"] is False
     assert result["verify_reason"] == "missing-positive-submit-evidence"
-    assert result["submit_retry"] is False
-    assert FakeTerminal.keys == []
+    assert result["submit_retry"] is True
+    assert FakeTerminal.keys == [
+        ("fleet:seat", "Enter", False),
+        ("fleet:seat", "Enter", False),
+    ]

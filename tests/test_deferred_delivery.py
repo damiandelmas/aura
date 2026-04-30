@@ -61,6 +61,7 @@ def test_send_does_not_defer_on_prompt_text(monkeypatch, tmp_path):
             ["› human draft in progress", "", "gpt-5.5 high"],
         ]
         sent = False
+        keys = []
 
         @classmethod
         def capture_output(cls, name, lines=80):
@@ -70,6 +71,11 @@ def test_send_does_not_defer_on_prompt_text(monkeypatch, tmp_path):
         def send_text(cls, name, text, submit=True):
             cls.sent = True
             return {"ok": True, "target": "tmux:fleet:%1", "bytes": len(text), "submitted": submit}
+
+        @classmethod
+        def send_keys(cls, name, text, enter=True):
+            cls.keys.append((name, text, enter))
+            return {"ok": True, "target": "tmux:fleet:%1"}
 
     args = argparse.Namespace(
         target="worker",
@@ -90,7 +96,12 @@ def test_send_does_not_defer_on_prompt_text(monkeypatch, tmp_path):
     assert result.get("deferred") is not True
     assert result["submitted_verified"] is False
     assert result["submit_verify_reason"] == "missing-positive-submit-evidence"
+    assert result["submit_retry"] is True
     assert FakeTerminal.sent is True
+    assert FakeTerminal.keys == [
+        ("tmux:fleet:%1", "Enter", False),
+        ("tmux:fleet:%1", "Enter", False),
+    ]
 
 
 def test_send_defer_if_submit_unverified_records_metadata_without_outbox(monkeypatch, tmp_path):
@@ -141,7 +152,11 @@ def test_send_defer_if_submit_unverified_records_metadata_without_outbox(monkeyp
     assert result.get("deferred") is not True
     assert result["submitted_verified"] is False
     assert result["submit_verify_reason"] == "missing-positive-submit-evidence"
-    assert FakeTerminal.keys == []
+    assert result["submit_retry"] is True
+    assert FakeTerminal.keys == [
+        ("tmux:fleet:%1", "Enter", False),
+        ("tmux:fleet:%1", "Enter", False),
+    ]
 
 
 def test_deferred_run_once_marks_delivered(monkeypatch, tmp_path):

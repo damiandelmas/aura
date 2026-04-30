@@ -134,7 +134,7 @@ def verify_submit(
     max_retries: int = 2,
     sleep=None,
 ) -> dict:
-    """Capture a terminal target, retry Enter if queued, and report evidence."""
+    """Capture a terminal target, retry Enter on uncertain submit, and report evidence."""
     if sleep is None:
         import time
 
@@ -153,7 +153,7 @@ def verify_submit(
         submitted_verified, verify_reason = submission_evidence(verify_capture, message_id=message_id)
         if submitted_verified:
             break
-        if verify_reason != "queued-input" or attempt >= max_retries:
+        if verify_reason not in {"queued-input", "missing-positive-submit-evidence"} or attempt >= max_retries:
             break
         retry_result = retry_submit(target, terminal)
         retry_results.append(retry_result)
