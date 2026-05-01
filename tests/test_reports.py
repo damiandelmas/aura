@@ -7,6 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 AURA = ROOT / "cli" / "aura"
+sys.path.insert(0, str(ROOT / "cli"))
 
 
 def run_aura(args, env, cwd=None):
@@ -150,7 +151,7 @@ def test_report_releases_queued_messages_for_reporting_seat(monkeypatch, tmp_pat
     sent = []
 
     def fake_send(args):
-        sent.append((args.target, args.message, args.sender, args.dedupe_key))
+        sent.append((args.target, args.message, args.sender, args.dedupe_key, args.force))
         return {"ok": True, "message_id": "aura-msg-test"}
 
     monkeypatch.setattr(send, "run", fake_send)
@@ -163,7 +164,104 @@ def test_report_releases_queued_messages_for_reporting_seat(monkeypatch, tmp_pat
     report = reports.append_report({"state": "complete", "work": "done"})
     released = reports.release_queued_messages(report)
 
-    assert sent == [("unitfleet:worker", "continue after report", "tester", f"queue:{queued['queue_id']}")]
+    assert sent == [("unitfleet:worker", "continue after report", "tester", f"queue:{queued['queue_id']}", True)]
+    assert released[0]["status"] == "released"
+    saved = queued_messages.load(queued["queue_id"])
+    assert saved["release_report_id"] == report["report_id"]
+    assert saved["release_message_id"] == "aura-msg-test"
+
+
+def test_report_release_failure_is_inspectable_and_not_retried(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+
+    from commands import send
+    from lib import queued_messages, reports
+
+    calls = []
+
+    def fake_send(args):
+        calls.append((args.target, args.dedupe_key, args.force))
+        return {"ok": False, "error": "target missing"}
+
+    monkeypatch.setattr(send, "run", fake_send)
+
+    queued = queued_messages.create(
+        target="unitfleet:worker",
+        message="continue after report",
+        sender="tester",
+    )
+    first_report = reports.append_report({"state": "complete", "work": "first"})
+    first_release = reports.release_queued_messages(first_report)
+    second_report = reports.append_report({"state": "complete", "work": "second"})
+    second_release = reports.release_queued_messages(second_report)
+
+    assert len(calls) == 1
+    assert calls == [("unitfleet:worker", f"queue:{queued['queue_id']}", True)]
+    assert first_release[0]["status"] == "release_failed"
+    assert first_release[0]["release_report_id"] == first_report["report_id"]
+    assert first_release[0]["error"] == "target missing"
+    assert second_release == []
+    saved = queued_messages.load(queued["queue_id"])
+    assert saved["status"] == "release_failed"
+    assert saved["attempts"][0]["report_id"] == first_report["report_id"]
+
+
+def test_report_release_records_send_exception_without_breaking_report(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+
+    from commands import send
+    from lib import queued_messages, reports
+
+    def broken_send(args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(send, "run", broken_send)
+
+    queued = queued_messages.create(
+        target="unitfleet:worker",
+        message="continue after report",
+        sender="tester",
+    )
+    report = reports.append_report({"state": "complete", "work": "done"})
+    released = reports.release_queued_messages(report)
+
+    assert released[0]["status"] == "release_failed"
+    assert released[0]["error"] == "queue release send failed: boom"
+    saved = queued_messages.load(queued["queue_id"])
+    assert saved["attempts"][0]["ok"] is False
+    assert saved["attempts"][0]["result"]["error"] == "queue release send failed: boom"
+
+
+def test_report_release_matches_rehomed_seat_alias(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "newfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+
+    from commands import send
+    from lib import queued_messages, registry, reports
+
+    sent = []
+
+    def fake_send(args):
+        sent.append(args.target)
+        return {"ok": True, "message_id": "aura-msg-test"}
+
+    monkeypatch.setattr(send, "run", fake_send)
+    registry.add_alias("oldfleet:worker", "newfleet:worker", reason="test")
+
+    queued = queued_messages.create(
+        target="oldfleet:worker",
+        message="continue after report",
+        sender="tester",
+    )
+    report = reports.append_report({"state": "complete", "work": "done"})
+    released = reports.release_queued_messages(report)
+
+    assert sent == ["oldfleet:worker"]
     assert released[0]["status"] == "released"
     assert queued_messages.load(queued["queue_id"])["release_report_id"] == report["report_id"]
 

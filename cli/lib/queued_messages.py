@@ -106,7 +106,20 @@ def _matches_report(record: dict[str, Any], report: dict[str, Any]) -> bool:
     after = record.get("after") or "next-report"
     if after != "next-report":
         return after == report.get("report_id")
-    return record.get("target") in _report_targets(report)
+    report_targets = _report_targets(report)
+    target = record.get("target")
+    if target in report_targets:
+        return True
+    if target:
+        try:
+            from lib import registry
+
+            resolved, chain = registry.resolve_alias(str(target))
+            if chain and resolved in report_targets:
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def release_for_report(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -125,14 +138,17 @@ def release_for_report(report: dict[str, Any]) -> list[dict[str, Any]]:
             nudge=False,
             transport="auto",
             dedupe_key=f"queue:{record.get('queue_id')}",
-            force=False,
+            force=True,
             allow_hidden=False,
             defer_if_busy=False,
             defer_ttl="15m",
             defer_retry_every="15s",
             no_deferred_daemon=True,
         )
-        result = send.run(args)
+        try:
+            result = send.run(args)
+        except Exception as exc:
+            result = {"ok": False, "error": f"queue release send failed: {exc}"}
         attempts = list(record.get("attempts") or [])
         attempts.append({
             "at": now_iso(),
@@ -141,13 +157,14 @@ def release_for_report(report: dict[str, Any]) -> list[dict[str, Any]]:
             "result": result,
         })
         record["attempts"] = attempts
+        record["release_report_id"] = report.get("report_id")
         if result and result.get("ok"):
             record["status"] = "released"
             record["released_at"] = now_iso()
-            record["release_report_id"] = report.get("report_id")
+            record["release_message_id"] = result.get("message_id")
+            record.pop("error", None)
         else:
             record["status"] = "release_failed"
             record["error"] = (result or {}).get("error") or "send failed"
-            record["release_report_id"] = report.get("report_id")
         released.append(save(record))
     return released
