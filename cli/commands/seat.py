@@ -96,6 +96,65 @@ def _move_terminal(record: dict, *, fleet: str, name: str, index: str | None) ->
     }
 
 
+def _seat_target(record: dict) -> str | None:
+    return record.get("pane_ref") or record.get("terminal_ref") or record.get("backend_ref")
+
+
+def _target_exists(terminal, target: str | None) -> bool:
+    if not target:
+        return False
+    if hasattr(terminal, "target_exists"):
+        return bool(terminal.target_exists(target))
+    return bool(terminal.window_exists(target))
+
+
+def _sweep(args, registry, terminal) -> dict:
+    include_hidden = bool(getattr(args, "include_hidden", False))
+    agents = registry.list_agents(getattr(args, "fleet", None), include_hidden=include_hidden)
+    stale = []
+    alive = 0
+    for agent in agents:
+        fleet = agent.get("fleet")
+        if fleet and hasattr(terminal, "configure_session"):
+            terminal.configure_session(fleet)
+        target = _seat_target(agent)
+        terminal_alive = _target_exists(terminal, target)
+        if terminal_alive:
+            alive += 1
+            continue
+        stale.append({
+            "seat": agent.get("name"),
+            "fleet": fleet,
+            "seat_ref": registry.seat_ref(fleet, agent.get("name")),
+            "status": agent.get("status"),
+            "runtime": agent.get("runtime"),
+            "terminal_ref": agent.get("terminal_ref"),
+            "backend_ref": agent.get("backend_ref"),
+            "pane_ref": agent.get("pane_ref"),
+            "reason": "registered-terminal-missing",
+        })
+
+    removed = []
+    if getattr(args, "confirm", False):
+        for row in stale:
+            if registry.remove_agent(row["seat"], fleet=row.get("fleet")):
+                removed.append(row["seat_ref"])
+
+    return {
+        "ok": True,
+        "schema": "aura.seat_sweep.v1",
+        "dry_run": not getattr(args, "confirm", False),
+        "fleet": getattr(args, "fleet", None),
+        "include_hidden": include_hidden,
+        "checked": len(agents),
+        "alive": alive,
+        "stale": stale,
+        "stale_count": len(stale),
+        "removed": removed,
+        "removed_count": len(removed),
+    }
+
+
 def run(args):
     from lib import registry
 
@@ -113,6 +172,10 @@ def run(args):
             result["seat_cut"] = True
             result["seat"] = result.get("name")
         return result
+    if action == "sweep":
+        from lib import terminal
+
+        return _sweep(args, registry, terminal)
     if action == "rehome":
         try:
             metadata = _load_role_metadata(getattr(args, "role_home", None), getattr(args, "manifest", None))

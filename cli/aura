@@ -151,6 +151,12 @@ def main():
     p_seat_cut.add_argument("name", help="Seat ref, usually fleet:seat")
     p_seat_cut.add_argument("--force", action="store_true",
                             help="Skip graceful shutdown")
+    p_seat_sweep = seat_sub.add_parser("sweep", help="Find or remove stale registered seats")
+    p_seat_sweep.add_argument("--fleet", "-f", metavar="NAME", help="Limit sweep to one fleet")
+    p_seat_sweep.add_argument("--include-hidden", action="store_true",
+                              help="Include hidden/internal seats")
+    p_seat_sweep.add_argument("--confirm", action="store_true",
+                              help="Remove stale registry records; default is dry-run")
     seat_sub.add_parser("aliases", help="List seat aliases")
 
 

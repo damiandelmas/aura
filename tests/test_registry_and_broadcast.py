@@ -245,6 +245,83 @@ def test_seat_cut_routes_through_cut_command(monkeypatch):
     assert result["seat"] == "fleet:worker"
 
 
+def test_seat_sweep_dry_run_lists_stale_registered_seats(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import seat
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "alive",
+        "fleet": "fleet",
+        "runtime": "codex",
+        "pane_ref": "tmux:fleet:%1",
+    })
+    registry.upsert_agent({
+        "name": "stale",
+        "fleet": "fleet",
+        "runtime": "codex",
+        "pane_ref": "tmux:fleet:%2",
+    })
+
+    class FakeTerminal:
+        @staticmethod
+        def configure_session(fleet):
+            return fleet
+
+        @staticmethod
+        def target_exists(target):
+            return target == "tmux:fleet:%1"
+
+    result = seat._sweep(argparse.Namespace(
+        seat_action="sweep",
+        fleet="fleet",
+        include_hidden=False,
+        confirm=False,
+    ), registry, FakeTerminal)
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert result["checked"] == 2
+    assert result["alive"] == 1
+    assert result["stale_count"] == 1
+    assert result["stale"][0]["seat_ref"] == "fleet:stale"
+    assert registry.get_agent("stale", fleet="fleet") is not None
+
+
+def test_seat_sweep_confirm_removes_stale_registered_seats(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import seat
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "stale",
+        "fleet": "fleet",
+        "runtime": "codex",
+        "pane_ref": "tmux:fleet:%2",
+    })
+
+    class FakeTerminal:
+        @staticmethod
+        def configure_session(fleet):
+            return fleet
+
+        @staticmethod
+        def target_exists(target):
+            return False
+
+    result = seat._sweep(argparse.Namespace(
+        seat_action="sweep",
+        fleet="fleet",
+        include_hidden=False,
+        confirm=True,
+    ), registry, FakeTerminal)
+
+    assert result["ok"] is True
+    assert result["dry_run"] is False
+    assert result["removed"] == ["fleet:stale"]
+    assert registry.get_agent("stale", fleet="fleet") is None
+
+
 def test_send_blocks_hidden_targets_without_operator_override(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     from commands import send
