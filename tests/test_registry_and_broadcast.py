@@ -260,6 +260,7 @@ def test_seat_sweep_dry_run_lists_stale_registered_seats(tmp_path, monkeypatch):
         "name": "stale",
         "fleet": "fleet",
         "runtime": "codex",
+        "status": "dead",
         "pane_ref": "tmux:fleet:%2",
     })
 
@@ -284,8 +285,52 @@ def test_seat_sweep_dry_run_lists_stale_registered_seats(tmp_path, monkeypatch):
     assert result["checked"] == 2
     assert result["alive"] == 1
     assert result["stale_count"] == 1
+    assert result["suspect_count"] == 0
     assert result["stale"][0]["seat_ref"] == "fleet:stale"
+    assert result["stale"][0]["checked_targets"] == ["tmux:fleet:%2"]
     assert registry.get_agent("stale", fleet="fleet") is not None
+
+
+def test_seat_sweep_missing_active_seat_is_suspect_not_stale(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import seat
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "worker",
+        "fleet": "fleet",
+        "runtime": "codex",
+        "status": "idle",
+        "terminal_ref": "fleet:old-name",
+        "backend_ref": "fleet:old-name",
+        "pane_ref": "tmux:fleet:%2",
+    })
+
+    class FakeTerminal:
+        @staticmethod
+        def configure_session(fleet):
+            return fleet
+
+        @staticmethod
+        def target_exists(target):
+            return False
+
+    monkeypatch.setattr(seat, "_pane_exists_anywhere", lambda pane_ref: True)
+    result = seat._sweep(argparse.Namespace(
+        seat_action="sweep",
+        fleet="fleet",
+        include_hidden=False,
+        confirm=True,
+    ), registry, FakeTerminal)
+
+    assert result["ok"] is True
+    assert result["stale_count"] == 0
+    assert result["suspect_count"] == 1
+    assert result["suspect"][0]["seat_ref"] == "fleet:worker"
+    assert result["suspect"][0]["reason"] == "registered-terminal-unverified"
+    assert result["suspect"][0]["pane_exists_anywhere"] is True
+    assert result["removed_count"] == 0
+    assert registry.get_agent("worker", fleet="fleet") is not None
 
 
 def test_seat_sweep_confirm_removes_stale_registered_seats(tmp_path, monkeypatch):
@@ -297,6 +342,7 @@ def test_seat_sweep_confirm_removes_stale_registered_seats(tmp_path, monkeypatch
         "name": "stale",
         "fleet": "fleet",
         "runtime": "codex",
+        "status": "dead",
         "pane_ref": "tmux:fleet:%2",
     })
 

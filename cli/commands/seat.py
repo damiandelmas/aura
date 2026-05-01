@@ -96,8 +96,15 @@ def _move_terminal(record: dict, *, fleet: str, name: str, index: str | None) ->
     }
 
 
-def _seat_target(record: dict) -> str | None:
-    return record.get("pane_ref") or record.get("terminal_ref") or record.get("backend_ref")
+def _seat_targets(record: dict) -> list[str]:
+    seen = set()
+    targets = []
+    for key in ("pane_ref", "terminal_ref", "backend_ref"):
+        value = record.get(key)
+        if value and value not in seen:
+            seen.add(value)
+            targets.append(value)
+    return targets
 
 
 def _target_exists(terminal, target: str | None) -> bool:
@@ -108,21 +115,39 @@ def _target_exists(terminal, target: str | None) -> bool:
     return bool(terminal.window_exists(target))
 
 
+def _pane_exists_anywhere(pane_ref: str | None) -> bool:
+    if not pane_ref:
+        return False
+    target = _tmux_target(pane_ref)
+    if not target.startswith("%"):
+        return False
+    result = _run_tmux(["display-message", "-p", "-t", target, "#{pane_id}"])
+    return result.returncode == 0
+
+
+def _safe_stale(agent: dict) -> bool:
+    status = str(agent.get("status") or "").lower()
+    if status in {"dead", "stopped", "cut", "terminated", "exited"}:
+        return True
+    return bool(agent.get("cut_at") or agent.get("ended_at") or agent.get("terminated_at"))
+
+
 def _sweep(args, registry, terminal) -> dict:
     include_hidden = bool(getattr(args, "include_hidden", False))
     agents = registry.list_agents(getattr(args, "fleet", None), include_hidden=include_hidden)
     stale = []
+    suspect = []
     alive = 0
     for agent in agents:
         fleet = agent.get("fleet")
         if fleet and hasattr(terminal, "configure_session"):
             terminal.configure_session(fleet)
-        target = _seat_target(agent)
-        terminal_alive = _target_exists(terminal, target)
-        if terminal_alive:
+        targets = _seat_targets(agent)
+        alive_targets = [target for target in targets if _target_exists(terminal, target)]
+        if alive_targets:
             alive += 1
             continue
-        stale.append({
+        row = {
             "seat": agent.get("name"),
             "fleet": fleet,
             "seat_ref": registry.seat_ref(fleet, agent.get("name")),
@@ -131,7 +156,16 @@ def _sweep(args, registry, terminal) -> dict:
             "terminal_ref": agent.get("terminal_ref"),
             "backend_ref": agent.get("backend_ref"),
             "pane_ref": agent.get("pane_ref"),
-            "reason": "registered-terminal-missing",
+            "checked_targets": targets,
+        }
+        if _safe_stale(agent):
+            stale.append({**row, "reason": "registered-terminal-missing"})
+            continue
+        pane_exists = _pane_exists_anywhere(agent.get("pane_ref"))
+        suspect.append({
+            **row,
+            "reason": "registered-terminal-unverified",
+            "pane_exists_anywhere": pane_exists,
         })
 
     removed = []
@@ -150,6 +184,8 @@ def _sweep(args, registry, terminal) -> dict:
         "alive": alive,
         "stale": stale,
         "stale_count": len(stale),
+        "suspect": suspect,
+        "suspect_count": len(suspect),
         "removed": removed,
         "removed_count": len(removed),
     }
