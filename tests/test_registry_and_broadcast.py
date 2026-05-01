@@ -222,6 +222,29 @@ def test_seat_rehome_index_requires_move_terminal(tmp_path, monkeypatch):
     assert "--index requires --move-terminal" in result["error"]
 
 
+def test_seat_cut_routes_through_cut_command(monkeypatch):
+    from commands import seat
+
+    seen = {}
+
+    def fake_cut(args):
+        seen["args"] = args
+        return {"ok": True, "name": args.name, "cut": True}
+
+    monkeypatch.setattr("commands.cut.run", fake_cut)
+    result = seat.run(argparse.Namespace(
+        seat_action="cut",
+        name="fleet:worker",
+        force=True,
+    ))
+
+    assert seen["args"].name == "fleet:worker"
+    assert seen["args"].force is True
+    assert result["ok"] is True
+    assert result["seat_cut"] is True
+    assert result["seat"] == "fleet:worker"
+
+
 def test_send_blocks_hidden_targets_without_operator_override(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     from commands import send

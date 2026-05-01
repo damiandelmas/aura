@@ -105,6 +105,14 @@ def run(args):
     if action == "resolve":
         target = registry.get_agent(args.target)
         return {"ok": bool(target), "target": args.target, "record": target, "error": None if target else "seat not found"}
+    if action == "cut":
+        from commands import cut
+
+        result = cut.run(args)
+        if result.get("ok"):
+            result["seat_cut"] = True
+            result["seat"] = result.get("name")
+        return result
     if action == "rehome":
         try:
             metadata = _load_role_metadata(getattr(args, "role_home", None), getattr(args, "manifest", None))
