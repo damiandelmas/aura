@@ -21,7 +21,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, send, queue as queue_cmd, seat as seat_cmd, check, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd
+from commands import spawn, send, queue as queue_cmd, seat as seat_cmd, check, inspect as inspect_cmd, set as set_cmd, cut, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd
 from lib.output import output
 
 
@@ -35,7 +35,12 @@ def env_float(name, default):
 def main():
     parser = argparse.ArgumentParser(
         prog="aura",
-        description="AI-first agent orchestration"
+        description="AI-first agent orchestration",
+        epilog=(
+            "Agent primitives: spawn, seat, send, queue, report, view, inspect, event. "
+            "Operator tools: capture, sense, watch, route, dash, deferred, sessions, "
+            "ether, discord, clawhip, write, ledger."
+        ),
     )
     parser.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
 
@@ -199,6 +204,33 @@ def main():
                          help="Number of output lines (default: 20)")
     p_check.add_argument("--format", choices=["text", "ansi"], default="text",
                          help="Output capture format when --output is used: text or ansi (default: text)")
+
+    # inspect
+    p_inspect = subparsers.add_parser("inspect", help="Inspect one seat: status, terminal excerpt, or semantic sense")
+    p_inspect.add_argument("name", help="Seat/agent name")
+    inspect_mode = p_inspect.add_mutually_exclusive_group()
+    inspect_mode.add_argument("--raw", action="store_true",
+                              help="Return raw terminal excerpt with mechanical status")
+    inspect_mode.add_argument("--sense", action="store_true",
+                              help="Run semantic sense over the terminal excerpt")
+    p_inspect.add_argument("--lines", type=int, default=40,
+                           help="Number of terminal lines to inspect (default: 40)")
+    p_inspect.add_argument("--format", choices=["text", "ansi"], default="text",
+                           help="Output capture format for status/raw modes: text or ansi (default: text)")
+    p_inspect.add_argument("--question", help="Optional question for semantic state inference")
+    p_inspect.add_argument("--features", help="Optional comma-separated desired sense features")
+    p_inspect.add_argument("--contract",
+                           help="Custom sense contract as inline JSON, @file, path, or name under ~/.aura/contracts/sense/")
+    p_inspect.add_argument("--sense-mode", choices=["auto", "llm", "heuristic"],
+                           default=os.environ.get("AURA_SENSE_MODE", "auto"),
+                           help="Sense backend for --sense: local LLM with fallback, LLM-only, or heuristic (default: auto)")
+    p_inspect.add_argument("--model", default=os.environ.get("AURA_SENSE_MODEL"),
+                           help="Local Ollama model for --sense")
+    p_inspect.add_argument("--ollama-host", default=os.environ.get("AURA_OLLAMA_HOST"),
+                           help="Ollama host for --sense")
+    p_inspect.add_argument("--llm-timeout", type=float,
+                           default=env_float("AURA_SENSE_TIMEOUT", 8.0),
+                           help="Seconds to wait for local LLM sense before fallback/error")
 
     # capture
     p_capture = subparsers.add_parser("capture", help="Capture seat terminal output")
@@ -538,6 +570,8 @@ def main():
             result = write_cmd.run(args)
         elif args.command == "check":
             result = check.run(args)
+        elif args.command == "inspect":
+            result = inspect_cmd.run(args)
         elif args.command == "capture":
             result = capture.run(args)
         elif args.command == "sense":
