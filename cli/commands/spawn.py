@@ -373,6 +373,10 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "DESKS_UNIT": role_meta.get("desks_unit", ""),
             "DESKS_MANIFEST": role_meta.get("desks_manifest", ""),
         })
+        if role_meta.get("flex_project_manifest"):
+            launch_env["FLEX_PROJECT_MANIFEST"] = role_meta["flex_project_manifest"]
+        if role_meta.get("flex_project_root"):
+            launch_env["FLEX_PROJECT_ROOT"] = role_meta["flex_project_root"]
     try:
         launch = terminal.create_window(
             args.name,
@@ -627,6 +631,8 @@ def _apply_spawn_manifest(args) -> dict | None:
         "desks_bootstrap": str(bootstrap),
         "desks_compression": str(manifest["files"].get("compression")) if manifest["files"].get("compression") else None,
         "desks_memory": str(manifest["files"].get("memory")) if manifest["files"].get("memory") else None,
+        "flex_project_manifest": str(manifest["flex_project_manifest"]) if manifest.get("flex_project_manifest") else None,
+        "flex_project_root": str(manifest["flex_project_root"]) if manifest.get("flex_project_root") else None,
     }
     args._role_manifest = manifest
     return {"ok": True, "manifest": str(manifest["manifest_path"])}
@@ -698,13 +704,50 @@ def _load_role_manifest(manifest_arg: str | None, role_home_arg: str | None) -> 
                 raise ValueError(f"manifest files.{key} not found: {resolved}")
         resolved_files[key] = resolved
 
+    flex_project_manifest, flex_project_root = _resolve_flex_project(raw, workspace_root)
+
     return {
         **raw,
         "manifest_path": manifest_path,
         "role_home": role_home,
         "workspace_root": workspace_root,
         "files": resolved_files,
+        "flex_project_manifest": flex_project_manifest,
+        "flex_project_root": flex_project_root,
     }
+
+
+def _resolve_flex_project(raw: dict, workspace_root: Path) -> tuple[Path | None, Path | None]:
+    manifest_value = raw.get("flex_project_manifest")
+    root_value = raw.get("flex_project_root")
+
+    def resolve_under_workspace(value: str) -> Path:
+        path = Path(str(value)).expanduser()
+        if path.is_absolute():
+            return path.resolve()
+        return (workspace_root / path).resolve()
+
+    if manifest_value:
+        manifest = resolve_under_workspace(str(manifest_value))
+        if not manifest.is_file():
+            raise ValueError(f"manifest flex_project_manifest not found: {manifest}")
+        return manifest, manifest.parent.parent
+
+    if root_value:
+        root = resolve_under_workspace(str(root_value))
+        manifest = root / ".flex" / "project.yaml"
+        if not manifest.is_file():
+            raise ValueError(f"manifest flex_project_root missing .flex/project.yaml: {root}")
+        return manifest, root
+
+    candidates = [
+        workspace_root / ".flex" / "project.yaml",
+        workspace_root / "context" / ".flex" / "project.yaml",
+    ]
+    for manifest in candidates:
+        if manifest.is_file():
+            return manifest.resolve(), manifest.parent.parent.resolve()
+    return None, None
 
 
 def _augment_runtime_prompt(runtime: str, prompt_text: str, *, fleet: str, seat: str, launch_id: str) -> str:

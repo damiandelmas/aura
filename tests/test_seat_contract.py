@@ -369,6 +369,33 @@ def test_spawn_role_home_resolves_manifest(tmp_path):
     assert args.fleet == "flex-specialists"
 
 
+def test_spawn_manifest_infers_flex_project_env_from_workspace_context(tmp_path):
+    from commands import spawn
+
+    role_home = _write_role_home(tmp_path)
+    project_manifest = tmp_path / "unit" / "context" / ".flex" / "project.yaml"
+    project_manifest.parent.mkdir(parents=True)
+    project_manifest.write_text("version: 1\nproject:\n  name: test\ncommands: {}\n", encoding="utf-8")
+    args = argparse.Namespace(
+        name=None,
+        manifest=str(role_home / "role.json"),
+        role_home=None,
+        fleet=None,
+        cwd=None,
+        runtime=None,
+        profile=None,
+        prompt=None,
+        work=None,
+        context=None,
+    )
+
+    result = spawn._apply_spawn_manifest(args)
+
+    assert result["ok"] is True
+    assert args._role_manifest_meta["flex_project_manifest"] == str(project_manifest)
+    assert args._role_manifest_meta["flex_project_root"] == str(project_manifest.parent.parent)
+
+
 def test_spawn_manifest_rejects_name_mismatch(tmp_path):
     from commands import spawn
 
@@ -495,6 +522,57 @@ def test_spawn_manifest_metadata_reaches_registry_and_workspace_record(monkeypat
     ]
     assert rows[-1]["desks_role_home"] == str(role_home)
     assert rows[-1]["desks_manifest"] == str(role_home / "role.json")
+
+
+def test_spawn_terminal_exports_inferred_flex_project_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import spawn
+
+    role_home = _write_role_home(tmp_path)
+    project_manifest = tmp_path / "unit" / "context" / ".flex" / "project.yaml"
+    project_manifest.parent.mkdir(parents=True)
+    project_manifest.write_text("version: 1\nproject:\n  name: test\ncommands: {}\n", encoding="utf-8")
+    args = argparse.Namespace(
+        name=None,
+        manifest=str(role_home / "role.json"),
+        role_home=None,
+        fleet=None,
+        cwd=None,
+        runtime=None,
+        launch_command="printf ready",
+        resume_session=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        context=None,
+    )
+    applied = spawn._apply_spawn_manifest(args)
+    assert applied["ok"] is True
+
+    created = []
+
+    class FakeTerminal:
+        SESSION_NAME = "flex-specialists"
+        BACKEND_NAME = "tmux"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((name, workdir, detached, command, env, unset_env))
+            return {"ok": True, "target": "flex-specialists:specialist-cell", "pane_id": "%55"}
+
+        @staticmethod
+        def send_text(name, text, submit=True, submit_key="Enter"):
+            return {"ok": True, "target": f"flex-specialists:{name}", "text": text}
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert created[0][4]["FLEX_PROJECT_MANIFEST"] == str(project_manifest)
+    assert created[0][4]["FLEX_PROJECT_ROOT"] == str(project_manifest.parent.parent)
 
 
 def test_codex_runtime_default_uses_noninteractive_approval_flags():
