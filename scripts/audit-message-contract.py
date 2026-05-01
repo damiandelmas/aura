@@ -20,7 +20,8 @@ MESSAGE_PATTERNS = (
 
 CONTRACT_PATTERNS = (
     "message-contract.md",
-    "aura-send-message",
+    "aura-send",
+    "aura-queue",
 )
 
 SKIP_PARTS = {
