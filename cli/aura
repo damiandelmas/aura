@@ -95,8 +95,8 @@ def main():
     p_send = subparsers.add_parser("send", help="Send message to agent")
     p_send.add_argument("target", help="Target agent name")
     p_send.add_argument("message", nargs="?", default="", help="Message content")
-    p_send.add_argument("--as", dest="sender", default="cli",
-                        help="Send as (default: cli)")
+    p_send.add_argument("--as", dest="sender",
+                        help="Send as (default: current Aura seat, else cli)")
     p_send.add_argument("--mode", choices=["immediate", "queue", "notify", "auto"],
                         help=argparse.SUPPRESS)
     p_send.add_argument("--nudge", action="store_true",
@@ -122,8 +122,8 @@ def main():
     p_queue = subparsers.add_parser("queue", help="Hold a message until a report boundary")
     p_queue.add_argument("target", nargs="?", help="Target agent name")
     p_queue.add_argument("message", nargs="?", help="Message content")
-    p_queue.add_argument("--as", dest="sender", default="cli",
-                         help="Sender label (default: cli)")
+    p_queue.add_argument("--as", dest="sender",
+                         help="Sender label (default: current Aura seat, else cli)")
     p_queue.add_argument("--after", default="next-report",
                          help="Release condition: next-report or a report id (default: next-report)")
     p_queue.add_argument("--list", action="store_true",
@@ -164,8 +164,8 @@ def main():
     p_write = subparsers.add_parser("write", help="Write raw text or keys to a terminal seat")
     p_write.add_argument("target", help="Seat name or explicit backend ref like tmux:FLEET:WINDOW")
     p_write.add_argument("message", nargs="?", default="", help="Raw text to write")
-    p_write.add_argument("--as", dest="sender", default="cli",
-                         help="Sender label for audit records (default: cli)")
+    p_write.add_argument("--as", dest="sender",
+                         help="Sender label for audit records (default: current Aura seat, else cli)")
     enter_group = p_write.add_mutually_exclusive_group()
     enter_group.add_argument("--enter", dest="enter", action="store_true",
                              help="Submit after writing text")
@@ -191,8 +191,8 @@ def main():
                              help="Either: MESSAGE when --fleet is set, or FLEET MESSAGE")
     p_broadcast.add_argument("--fleet", "-f", metavar="NAME",
                              help="Fleet name")
-    p_broadcast.add_argument("--as", dest="sender", default="cli",
-                             help="Send as (default: cli)")
+    p_broadcast.add_argument("--as", dest="sender",
+                             help="Send as (default: current Aura seat, else cli)")
     p_broadcast.add_argument("--transport", choices=["auto", "tmux", "mesh"], default="auto",
                              help="Delivery transport for each target")
     p_broadcast.add_argument("--dedupe-key", metavar="KEY",

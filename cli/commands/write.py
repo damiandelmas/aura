@@ -54,9 +54,9 @@ def _retry_submit(name: str, terminal) -> dict:
 
 def run(args):
     """Write directly to the terminal body behind a seat or backend ref."""
-    from lib import delivery, registry, seat_schema, terminal
+    from lib import delivery, identity, registry, seat_schema, terminal
 
-    sender = getattr(args, "sender", None) or "cli"
+    sender = identity.sender(getattr(args, "sender", None))
     target = args.target
     message = getattr(args, "message", None) or ""
     key_sequence = getattr(args, "keys", None)

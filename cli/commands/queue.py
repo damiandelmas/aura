@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def run(args):
-    from lib import queued_messages
+    from lib import identity, queued_messages
 
     if getattr(args, "list", False):
         return {
@@ -23,7 +23,7 @@ def run(args):
     record = queued_messages.create(
         target=args.target,
         message=args.message,
-        sender=getattr(args, "sender", None) or "cli",
+        sender=identity.sender(getattr(args, "sender", None)),
         after=getattr(args, "after", None) or "next-report",
     )
     return {

@@ -32,9 +32,10 @@ def _is_current_seat(target: str, record: dict | None) -> bool:
 
 def run(args):
     """Send message to agent."""
-    from lib import delivery, mesh, registry, terminal
+    from lib import delivery, identity, mesh, registry, terminal
 
     nudge = getattr(args, 'nudge', False)
+    sender = identity.sender(getattr(args, "sender", None))
     reg_agent = registry.get_agent(args.target)
     if _is_current_seat(args.target, reg_agent) and not getattr(args, "force", False):
         return {
@@ -87,7 +88,7 @@ def run(args):
         transport = 'tmux' if target_exists else 'mesh'
 
     if transport == 'tmux':
-        return _send_tmux(args, terminal, delivery, terminal_target=terminal_target)
+        return _send_tmux(args, terminal, delivery, terminal_target=terminal_target, sender=sender)
 
     # Legacy mesh path remains available for wrapper-managed Claude sessions.
     mode = args.mode
@@ -100,10 +101,9 @@ def run(args):
         status = (agent or {}).get("status", "idle")
         mode = "queue" if status == "busy" else "immediate"
 
-    result = mesh.send_message(args.target, args.message, args.sender, mode)
+    result = mesh.send_message(args.target, args.message, sender, mode)
 
     if result.get("ok"):
-        sender = args.sender or "cli"
         _confirm_delivery_async(args.target, args.message, sender)
 
         return {
@@ -115,10 +115,11 @@ def run(args):
     return result
 
 
-def _send_tmux(args, terminal, delivery, terminal_target=None):
+def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None):
     from lib import terminal_submit
+    from lib import identity
 
-    sender = args.sender or "cli"
+    sender = identity.sender(sender if sender is not None else getattr(args, "sender", None))
     body = args.message or ""
     terminal_target = terminal_target or args.target
     dedupe_key = getattr(args, 'dedupe_key', None) or delivery.default_dedupe_key(args.target, sender, body)

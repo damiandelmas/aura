@@ -109,6 +109,41 @@ def test_send_refuses_current_seat_without_force(monkeypatch, tmp_path):
     assert result["reason"] == "target-is-current-seat"
 
 
+def test_send_infers_current_seat_sender(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "lead")
+
+    from commands import send
+    from lib import delivery
+
+    sent = {}
+
+    class FakeTerminal:
+        @staticmethod
+        def send_text(name, text, submit=True):
+            sent["text"] = text
+            return {"ok": True, "target": "tmux:unitfleet:%1", "bytes": len(text), "submitted": submit}
+
+        @staticmethod
+        def capture_output(name, lines=80):
+            return [sent["text"]]
+
+    args = argparse.Namespace(
+        target="worker",
+        message="hello from lead",
+        sender=None,
+        dedupe_key="unit-sender",
+        force=False,
+    )
+
+    result = send._send_tmux(args, FakeTerminal, delivery, terminal_target="tmux:unitfleet:%1")
+
+    assert result["ok"] is True
+    assert "from=unitfleet:lead" in sent["text"]
+    assert result["record"]["sender"] == "unitfleet:lead"
+
+
 def test_send_tmux_delivered_record_has_attempt_evidence(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
 

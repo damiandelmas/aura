@@ -186,3 +186,19 @@ def test_queue_command_records_pending_message(tmp_path):
     assert listed["ok"] is True
     assert listed["records"][0]["message"] == "after your next report"
     assert listed["records"][0]["sender"] == "tester"
+
+
+def test_queue_command_infers_current_seat_sender(tmp_path):
+    env = {
+        **os.environ,
+        "AURA_STATE_DIR": str(tmp_path / ".aura"),
+        "AURA_FLEET": "unitfleet",
+        "AURA_SEAT": "lead",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+    result = run_aura(["queue", "unitfleet:worker", "after your next report"], env)
+
+    assert result["ok"] is True
+    listed = run_aura(["queue", "--list", "--status", "pending"], env)
+    assert listed["records"][0]["sender"] == "unitfleet:lead"

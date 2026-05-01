@@ -80,6 +80,8 @@ def _targets_for_fleet(fleet: str, include_shell: bool = False, allow_hidden: bo
 
 
 def run(args):
+    from lib import identity
+
     fleet, message = _fleet_and_message_from_args(args)
     include_shell = getattr(args, "include_shell", False)
     allow_hidden = bool(getattr(args, "allow_hidden", False))
@@ -103,7 +105,7 @@ def run(args):
         send_args = argparse.Namespace(
             target=target,
             message=message,
-            sender=getattr(args, "sender", "cli") or "cli",
+            sender=identity.sender(getattr(args, "sender", None)),
             mode=None,
             nudge=False,
             transport=getattr(args, "transport", "auto") or "auto",
