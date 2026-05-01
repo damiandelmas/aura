@@ -1,6 +1,33 @@
 """Send message to agent."""
 
+import os
 import threading
+
+
+def _is_current_seat(target: str, record: dict | None) -> bool:
+    fleet = os.environ.get("AURA_FLEET")
+    seat = os.environ.get("AURA_SEAT") or os.environ.get("AURA_AGENT_NAME")
+    if seat and target in {seat, f"{fleet}:{seat}" if fleet else ""}:
+        return True
+
+    record = record or {}
+    if seat and record.get("name") == seat and (not fleet or record.get("fleet") == fleet):
+        return True
+
+    current_session = os.environ.get("AURA_RUNTIME_SESSION_ID") or os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
+    if current_session and current_session in {
+        record.get("runtime_session_id"),
+        record.get("session_id"),
+        record.get("source_session_id"),
+    }:
+        return True
+
+    tmux_pane = os.environ.get("TMUX_PANE")
+    pane_ref = str(record.get("pane_ref") or "")
+    if tmux_pane and pane_ref.endswith(f":{tmux_pane}"):
+        return True
+
+    return False
 
 
 def run(args):
@@ -9,6 +36,20 @@ def run(args):
 
     nudge = getattr(args, 'nudge', False)
     reg_agent = registry.get_agent(args.target)
+    if _is_current_seat(args.target, reg_agent) and not getattr(args, "force", False):
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "target-is-current-seat",
+            "error": "refusing to paste an Aura message into the current seat; use the conversation directly or pass --force",
+            "target": args.target,
+            "current": {
+                "fleet": os.environ.get("AURA_FLEET"),
+                "seat": os.environ.get("AURA_SEAT") or os.environ.get("AURA_AGENT_NAME"),
+                "runtime_session_id": os.environ.get("AURA_RUNTIME_SESSION_ID") or os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID"),
+                "tmux_pane": os.environ.get("TMUX_PANE"),
+            },
+        }
     if reg_agent and registry.is_hidden_agent(reg_agent) and not getattr(args, "allow_hidden", False):
         return {
             "ok": False,

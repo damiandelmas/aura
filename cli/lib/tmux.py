@@ -254,6 +254,16 @@ def send_keys(name: str, text: str, enter: bool = True):
     return {"ok": True, "target": _target(name), "submitted": enter}
 
 
+def _submit_delay_seconds(default: float = 0.75) -> float:
+    raw = os.environ.get("AURA_TMUX_SUBMIT_DELAY_SECONDS")
+    if raw is None:
+        return default
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return default
+
+
 def send_text(name: str, text: str, submit: bool = True, submit_key: str = "Enter") -> dict:
     """Paste text into a tmux window safely, optionally submitting it.
 
@@ -287,8 +297,11 @@ def send_text(name: str, text: str, submit: bool = True, submit_key: str = "Ente
             return {"ok": False, "error": paste.stderr.strip() or "tmux paste-buffer failed", "name": name}
 
         submitted = False
+        delay_seconds = 0.0
         if submit:
-            time.sleep(0.3)
+            delay_seconds = _submit_delay_seconds()
+            if delay_seconds:
+                time.sleep(delay_seconds)
             key = "Enter" if submit_key in ("Enter", "") else submit_key
             submit_result = subprocess.run(
                 ["tmux", "send-keys", "-t", _tmux_target(name), key],
@@ -306,6 +319,7 @@ def send_text(name: str, text: str, submit: bool = True, submit_key: str = "Ente
             "pane_id": pane_id(name),
             "bytes": len(text.encode("utf-8")),
             "submitted": submitted,
+            "submit_delay_seconds": delay_seconds,
         }
     finally:
         try:

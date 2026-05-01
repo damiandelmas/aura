@@ -149,6 +149,33 @@ def test_send_tmux_blocks_when_target_already_has_queued_input(monkeypatch, tmp_
     assert result["submit_retry"] is True
 
 
+def test_tmux_send_text_waits_before_submit(monkeypatch):
+    from lib import tmux
+
+    calls = []
+    sleeps = []
+
+    def fake_run(cmd, capture_output=True, text=True):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setenv("AURA_TMUX_SUBMIT_DELAY_SECONDS", "0.5")
+    monkeypatch.setattr(tmux, "target_exists", lambda name: True)
+    monkeypatch.setattr(tmux, "pane_id", lambda name: "%42")
+    monkeypatch.setattr(tmux.subprocess, "run", fake_run)
+    monkeypatch.setattr(tmux.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = tmux.send_text("unitfleet:worker", "hello", submit=True)
+
+    assert result["ok"] is True
+    assert result["submitted"] is True
+    assert result["submit_delay_seconds"] == 0.5
+    assert sleeps == [0.5]
+    assert calls[0][1] == "load-buffer"
+    assert calls[1][1] == "paste-buffer"
+    assert calls[2][-1] == "Enter"
+
+
 def test_tmux_target_exists_uses_exact_window_names(monkeypatch):
     from lib import tmux
 

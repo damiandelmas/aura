@@ -74,6 +74,41 @@ def test_standard_send_tmux_does_not_preflight_block_busy_target(monkeypatch, tm
     assert record["attempts"][-1]["evidence"]["paste_ok"] is True
 
 
+def test_send_refuses_current_seat_without_force(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+    monkeypatch.setenv("CODEX_THREAD_ID", "session-self")
+
+    from commands import send
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "worker",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "runtime_session_id": "session-self",
+        "pane_ref": "tmux:unitfleet:%1",
+    })
+
+    args = argparse.Namespace(
+        target="unitfleet:worker",
+        message="do not paste into self",
+        sender="tester",
+        transport="tmux",
+        mode="auto",
+        force=False,
+        nudge=False,
+        allow_hidden=False,
+    )
+
+    result = send.run(args)
+
+    assert result["ok"] is False
+    assert result["blocked"] is True
+    assert result["reason"] == "target-is-current-seat"
+
+
 def test_send_tmux_delivered_record_has_attempt_evidence(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
 
