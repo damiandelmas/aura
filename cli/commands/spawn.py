@@ -524,6 +524,23 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 launch_id=launch_id,
             )
 
+    cwd_choice = _resolve_codex_cwd_choice(
+        runtime=runtime,
+        resume_session=resume_session,
+        terminal=terminal,
+        target=pane_ref or launch.get("target") or args.name,
+        desired_cwd=workdir,
+    )
+    if cwd_choice:
+        result["cwd_choice"] = cwd_choice
+        if cwd_choice.get("detected") and cwd_choice.get("selected_path"):
+            registry.upsert_agent({
+                **registry.get_agent(args.name, fleet=fleet),
+                "name": args.name,
+                "fleet": fleet,
+                "cwd_choice": cwd_choice,
+            })
+
     session_observation = _observe_spawn_session(
         runtime=runtime,
         terminal=terminal,
@@ -767,6 +784,74 @@ def _augment_runtime_prompt(runtime: str, prompt_text: str, *, fleet: str, seat:
 def _confidence_at_least(value: str | None, minimum: str) -> bool:
     order = {"exact": 4, "high": 3, "medium": 2, "low": 1}
     return order.get(value or "", 0) >= order[minimum]
+
+
+def _codex_cwd_choice_from_capture(capture: list[str], desired_cwd: str | None) -> dict | None:
+    lines = [str(line) for line in capture or []]
+    if not any("Choose working directory to resume this session" in line for line in lines):
+        return None
+    options = []
+    for line in lines:
+        stripped = line.strip()
+        if ". Use " not in stripped or "(" not in stripped or ")" not in stripped:
+            continue
+        number, rest = stripped.split(".", 1)
+        if not number.strip().isdigit():
+            continue
+        path = rest.rsplit("(", 1)[-1].rsplit(")", 1)[0]
+        label = rest.split("(", 1)[0].strip()
+        options.append({
+            "number": number.strip(),
+            "label": label,
+            "path": path,
+        })
+    selected = None
+    if desired_cwd:
+        try:
+            desired = str(Path(desired_cwd).expanduser().resolve())
+        except OSError:
+            desired = str(desired_cwd)
+        selected = next((option for option in options if option.get("path") == desired), None)
+    if not selected:
+        selected = next((option for option in options if "session directory" in option.get("label", "").lower()), None)
+    if not selected and options:
+        selected = options[0]
+    return {
+        "detected": True,
+        "options": options,
+        "selected": selected,
+    }
+
+
+def _resolve_codex_cwd_choice(*, runtime: str, resume_session: str | None, terminal, target: str | None, desired_cwd: str | None) -> dict | None:
+    if runtime != "codex" or not resume_session or not target or not hasattr(terminal, "capture_output"):
+        return None
+    attempts = int(os.environ.get("AURA_CODEX_CWD_CHOICE_ATTEMPTS", "8"))
+    for index in range(max(1, attempts)):
+        time.sleep(0.25 if index else 0.75)
+        capture = terminal.capture_output(target, 80)
+        choice = _codex_cwd_choice_from_capture(capture, desired_cwd)
+        if not choice:
+            continue
+        selected = choice.get("selected")
+        if not selected:
+            return {**choice, "ok": False, "reason": "no-selectable-option"}
+        if not hasattr(terminal, "send_keys"):
+            return {**choice, "ok": False, "reason": "terminal-send-keys-unavailable"}
+        result = terminal.send_keys(target, selected["number"], enter=True) or {}
+        time.sleep(0.75)
+        verify_capture = terminal.capture_output(target, 80)
+        verified = _codex_cwd_choice_from_capture(verify_capture, desired_cwd) is None
+        return {
+            **choice,
+            "ok": bool(result.get("ok")) and verified,
+            "selected_number": selected["number"],
+            "selected_path": selected.get("path"),
+            "selected_label": selected.get("label"),
+            "send_result": result,
+            "verified": verified,
+        }
+    return {"detected": False, "ok": True}
 
 
 def _retry_codex_prompt_submit(*, terminal, target: str, seat: str, launch_id: str) -> dict:

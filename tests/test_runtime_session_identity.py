@@ -427,6 +427,71 @@ def test_spawn_codex_resume_session_builds_autonomous_resume_command(monkeypatch
     assert result["session_observation"]["status"] == "already-bound"
 
 
+def test_spawn_codex_resume_resolves_cwd_choice_to_requested_cwd(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+
+    session_dir = tmp_path / "session"
+    current_dir = tmp_path / "desks"
+    session_dir.mkdir()
+    current_dir.mkdir()
+    keys = []
+    captures = [
+        [
+            "Choose working directory to resume this session",
+            "",
+            f"  1. Use session directory ({session_dir})",
+            f"  2. Use current directory ({current_dir})",
+            "",
+            "  Press enter to continue",
+        ],
+        ["› ready"],
+    ]
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            return {"ok": True, "target": "unitfleet:substrate", "pane_id": "%43"}
+
+        @staticmethod
+        def capture_output(target, lines=80):
+            return captures.pop(0)
+
+        @staticmethod
+        def send_keys(target, text, enter=False):
+            keys.append((target, text, enter))
+            return {"ok": True, "target": target}
+
+    session_id = "019ddfa4-1b45-7eb0-9620-965f2ebb2482"
+    args = argparse.Namespace(
+        name="substrate",
+        runtime="codex",
+        resume_session=session_id,
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(current_dir),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["cwd_choice"]["detected"] is True
+    assert result["cwd_choice"]["ok"] is True
+    assert result["cwd_choice"]["selected_number"] == "2"
+    assert result["cwd_choice"]["selected_path"] == str(current_dir)
+    assert result["cwd_choice"]["verified"] is True
+    assert keys == [("tmux:unitfleet:%43", "2", True)]
+
+
 def test_spawn_codex_prompt_embeds_aura_launch_context(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
