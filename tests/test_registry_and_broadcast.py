@@ -1,5 +1,6 @@
 import argparse
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -200,6 +201,146 @@ def test_seat_rehome_move_terminal_updates_physical_refs(tmp_path, monkeypatch):
     assert moved["backend_ref"] == "new-fleet:new-seat"
     assert moved["pane_ref"] == "tmux:new-fleet:%12"
     assert moved["physical_fleet"] == "new-fleet"
+
+
+def test_seat_rehome_move_terminal_refreshes_stale_pane_ref(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import seat
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "developer",
+        "fleet": "flex-desk",
+        "runtime": "codex",
+        "aura_launch_id": "aura-launch-real",
+        "runtime_session_id": "session-real",
+        "pane_ref": "tmux:flex-desks:%770",
+        "terminal_ref": "flex-desks:developer",
+        "backend_ref": "flex-desks:developer",
+    })
+
+    monkeypatch.setattr(seat, "_list_tmux_panes", lambda: [
+        {"session": "flex-desks", "window_index": "7", "window_name": "developer-stale", "pane_id": "%770", "pane_pid": 770},
+        {"session": "flex-desk", "window_index": "1", "window_name": "developer", "pane_id": "%789", "pane_pid": 789},
+    ])
+
+    def fake_discover(record, pane):
+        if pane["pane_id"] == "%789":
+            return {
+                "runtime_session_id": "session-real",
+                "runtime_session_evidence": {"aura_launch_id": "aura-launch-real"},
+            }
+        return {}
+
+    monkeypatch.setattr(seat, "_discover_pane", fake_discover)
+
+    calls = []
+
+    def fake_run_tmux(args):
+        calls.append(args)
+        if args[:3] == ["display-message", "-p", "-t"]:
+            target = args[3]
+            fmt = args[4]
+            if target == "flex-desks:%770" and "pane_pid" in fmt:
+                return subprocess.CompletedProcess(args, 0, stdout="flex-desks\t7\tdeveloper-stale\t%770\t770\n", stderr="")
+            if target == "flex-desk:%789" and fmt == "#{session_name}:#{window_index}:#{pane_id}":
+                return subprocess.CompletedProcess(args, 0, stdout="flex-desk:1:%789\n", stderr="")
+            if target == "%789" and fmt == "#{session_name}:#{window_index}:#{window_name}:#{pane_id}":
+                return subprocess.CompletedProcess(args, 0, stdout="flex-desks:8:developer:%789\n", stderr="")
+        if args[:2] == ["has-session", "-t"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:2] == ["move-window", "-s"]:
+            assert args[2] == "flex-desk:1"
+            assert args[4] == "flex-desks:"
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:2] == ["rename-window", "-t"]:
+            assert args[2] == "%789"
+            assert args[3] == "developer"
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(seat, "_run_tmux", fake_run_tmux)
+
+    result = seat.run(argparse.Namespace(
+        seat_action="rehome",
+        source="flex-desk:developer",
+        name="developer",
+        fleet="flex-desks",
+        role_home=None,
+        manifest=None,
+        move_terminal=True,
+        index=None,
+        no_alias_old=False,
+    ))
+
+    assert result["ok"] is True
+    moved = registry.get_agent("flex-desks:developer")
+    assert moved["pane_ref"] == "tmux:flex-desks:%789"
+    assert moved["rehome_source_refreshed"] is True
+    assert moved["rehome_previous_pane_ref"] == "tmux:flex-desks:%770"
+
+
+def test_seat_rehome_move_terminal_refuses_destination_collision(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import seat
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "developer",
+        "fleet": "flex-desk",
+        "runtime": "codex",
+        "aura_launch_id": "aura-launch-real",
+        "runtime_session_id": "session-real",
+        "pane_ref": "tmux:flex-desk:%789",
+        "terminal_ref": "flex-desk:developer",
+        "backend_ref": "flex-desk:developer",
+    })
+
+    def fake_discover(record, pane):
+        if pane["pane_id"] == "%789":
+            return {
+                "runtime_session_id": "session-real",
+                "runtime_session_evidence": {"aura_launch_id": "aura-launch-real"},
+            }
+        return {}
+
+    monkeypatch.setattr(seat, "_discover_pane", fake_discover)
+
+    def fake_run_tmux(args):
+        if args[:3] == ["display-message", "-p", "-t"]:
+            target = args[3]
+            fmt = args[4]
+            if target == "flex-desk:%789" and "pane_pid" in fmt:
+                return subprocess.CompletedProcess(args, 0, stdout="flex-desk\t1\tdeveloper\t%789\t789\n", stderr="")
+            if target == "flex-desk:%789" and fmt == "#{session_name}:#{window_index}:#{pane_id}":
+                return subprocess.CompletedProcess(args, 0, stdout="flex-desk:1:%789\n", stderr="")
+            if target == "flex-desks:developer" and "pane_pid" in fmt:
+                return subprocess.CompletedProcess(args, 0, stdout="flex-desks\t7\tdeveloper\t%770\t770\n", stderr="")
+        if args[:2] == ["has-session", "-t"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:2] == ["move-window", "-s"]:
+            raise AssertionError("should refuse before moving a colliding destination")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(seat, "_run_tmux", fake_run_tmux)
+
+    result = seat.run(argparse.Namespace(
+        seat_action="rehome",
+        source="flex-desk:developer",
+        name="developer",
+        fleet="flex-desks",
+        role_home=None,
+        manifest=None,
+        move_terminal=True,
+        index=None,
+        no_alias_old=False,
+    ))
+
+    assert result["ok"] is False
+    assert result["reason"] == "target-window-exists"
+    assert result["existing"]["pane_id"] == "%770"
+    assert registry.get_agent("flex-desk:developer")["pane_ref"] == "tmux:flex-desk:%789"
+    assert registry.get_agent("flex-desks:developer") is None
 
 
 def test_seat_rehome_index_requires_move_terminal(tmp_path, monkeypatch):

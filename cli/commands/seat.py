@@ -41,8 +41,193 @@ def _run_tmux(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(["tmux", *args], capture_output=True, text=True)
 
 
-def _move_terminal(record: dict, *, fleet: str, name: str, index: str | None) -> dict:
+def _list_tmux_panes() -> list[dict]:
+    result = _run_tmux([
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}",
+    ])
+    if result.returncode != 0:
+        return []
+    panes = []
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 5:
+            continue
+        session, window_index, window_name, pane_id, pane_pid = parts
+        try:
+            pid = int(pane_pid)
+        except ValueError:
+            pid = None
+        panes.append({
+            "session": session,
+            "window_index": window_index,
+            "window_name": window_name,
+            "pane_id": pane_id,
+            "pane_pid": pid,
+        })
+    return panes
+
+
+def _discovery_matches_record(record: dict, discovery: dict) -> bool:
+    if not discovery:
+        return False
+    expected_session = record.get("runtime_session_id") or record.get("session_id")
+    discovered_session = discovery.get("runtime_session_id") or discovery.get("session_id")
+    if expected_session and discovered_session and str(expected_session) == str(discovered_session):
+        return True
+    evidence = discovery.get("runtime_session_evidence") or {}
+    launch_id = record.get("aura_launch_id")
+    return bool(launch_id and evidence.get("aura_launch_id") == launch_id)
+
+
+def _discover_pane(record: dict, pane: dict) -> dict:
+    from lib import runtime_session
+
+    discovered = runtime_session.discover_from_pane_pid(
+        record.get("runtime"),
+        pane.get("pane_pid"),
+        seat_name=record.get("name") or record.get("seat"),
+        launch_id=record.get("aura_launch_id"),
+    )
+    return discovered or {}
+
+
+def _verified_move_source(record: dict) -> dict:
+    """Resolve the real pane for a seat before moving it.
+
+    Registry pane refs are cached operational state. A rehome with
+    --move-terminal is a physical operation, so prefer launch/session evidence
+    when it can identify the live pane more accurately than the cached ref.
+    """
     source = record.get("pane_ref") or record.get("terminal_ref")
+    if not record.get("aura_launch_id") and not (record.get("runtime_session_id") or record.get("session_id")):
+        return {"ok": True, "source": source, "refreshed": False}
+
+    stale_source_discovery = {}
+    if source:
+        source_target = _tmux_target(source)
+        info = _run_tmux([
+            "display-message",
+            "-p",
+            "-t",
+            source_target,
+            "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}",
+        ])
+        if info.returncode == 0:
+            parts = info.stdout.strip().split("\t")
+            if len(parts) == 5:
+                pane = {
+                    "session": parts[0],
+                    "window_index": parts[1],
+                    "window_name": parts[2],
+                    "pane_id": parts[3],
+                    "pane_pid": int(parts[4]) if parts[4].isdigit() else None,
+                }
+                stale_source_discovery = _discover_pane(record, pane)
+                if _discovery_matches_record(record, stale_source_discovery):
+                    return {"ok": True, "source": source, "refreshed": False, "discovery": stale_source_discovery}
+
+    matches = []
+    for pane in _list_tmux_panes():
+        discovered = _discover_pane(record, pane)
+        if not _discovery_matches_record(record, discovered):
+            continue
+        matches.append({**pane, "discovery": discovered})
+
+    if len(matches) == 1:
+        pane = matches[0]
+        return {
+            "ok": True,
+            "source": f"tmux:{pane['session']}:{pane['pane_id']}",
+            "refreshed": True,
+            "pane_ref": f"tmux:{pane['session']}:{pane['pane_id']}",
+            "pane_pid": pane.get("pane_pid"),
+            "discovery": pane.get("discovery"),
+            "previous_source": source,
+        }
+    if len(matches) > 1:
+        return {
+            "ok": False,
+            "error": "multiple tmux panes match seat launch/session evidence; refusing physical move",
+            "matches": [
+                {
+                    "session": pane.get("session"),
+                    "window_index": pane.get("window_index"),
+                    "window_name": pane.get("window_name"),
+                    "pane_id": pane.get("pane_id"),
+                    "pane_pid": pane.get("pane_pid"),
+                    "runtime_session_id": (pane.get("discovery") or {}).get("runtime_session_id"),
+                }
+                for pane in matches
+            ],
+            "previous_source": source,
+            "previous_discovery": stale_source_discovery,
+        }
+
+    if source:
+        return {
+            "ok": True,
+            "source": source,
+            "refreshed": False,
+            "warning": "could not verify pane by launch/session evidence; using cached source",
+            "previous_discovery": stale_source_discovery,
+        }
+    return {"ok": False, "error": "seat has no pane_ref or terminal_ref to move"}
+
+
+def _tmux_target_info(target: str | None) -> dict | None:
+    if not target:
+        return None
+    result = _run_tmux([
+        "display-message",
+        "-p",
+        "-t",
+        _tmux_target(target),
+        "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}",
+    ])
+    if result.returncode != 0:
+        return None
+    parts = result.stdout.strip().split("\t")
+    if len(parts) != 5:
+        return None
+    session, window_index, window_name, pane_id, pane_pid = parts
+    try:
+        pid = int(pane_pid)
+    except ValueError:
+        pid = None
+    return {
+        "session": session,
+        "window_index": window_index,
+        "window_name": window_name,
+        "pane_id": pane_id,
+        "pane_pid": pid,
+    }
+
+
+def _destination_collision(*, fleet: str, name: str, source_pane_id: str) -> dict | None:
+    existing = _tmux_target_info(f"{fleet}:{name}")
+    if not existing:
+        return None
+    if existing.get("pane_id") == source_pane_id:
+        return None
+    return {
+        "ok": False,
+        "error": f"target tmux window already exists: {fleet}:{name}",
+        "reason": "target-window-exists",
+        "target": f"{fleet}:{name}",
+        "existing": existing,
+        "source_pane_id": source_pane_id,
+        "hint": "move or rename the existing window first, or rehome with --index to an explicit free window slot",
+    }
+
+
+def _move_terminal(record: dict, *, fleet: str, name: str, index: str | None) -> dict:
+    verified = _verified_move_source(record)
+    if not verified.get("ok"):
+        return verified
+    source = verified.get("source")
     if not source:
         return {"ok": False, "error": "seat has no pane_ref or terminal_ref to move"}
 
@@ -61,6 +246,10 @@ def _move_terminal(record: dict, *, fleet: str, name: str, index: str | None) ->
     session = _run_tmux(["has-session", "-t", fleet])
     if session.returncode != 0:
         return {"ok": False, "error": f"tmux session not found: {fleet}"}
+
+    collision = _destination_collision(fleet=fleet, name=name, source_pane_id=pane_id)
+    if collision:
+        return collision
 
     destination = f"{fleet}:{index}" if index is not None else f"{fleet}:"
     if current_fleet != fleet or (index is not None and current_index != str(index)):
@@ -93,6 +282,9 @@ def _move_terminal(record: dict, *, fleet: str, name: str, index: str | None) ->
         "terminal_ref": f"{final_fleet}:{final_name}",
         "backend_ref": f"{final_fleet}:{final_name}",
         "physical_fleet": final_fleet,
+        "source_refreshed": verified.get("refreshed", False),
+        "previous_pane_ref": verified.get("previous_source"),
+        "source_warning": verified.get("warning"),
     }
 
 
@@ -240,6 +432,11 @@ def run(args):
                 "pane_ref": moved["pane_ref"],
                 "physical_fleet": moved["physical_fleet"],
             })
+            if moved.get("source_refreshed"):
+                metadata["rehome_source_refreshed"] = True
+                metadata["rehome_previous_pane_ref"] = moved.get("previous_pane_ref")
+            if moved.get("source_warning"):
+                metadata["rehome_source_warning"] = moved.get("source_warning")
         return registry.rehome_agent(
             args.source,
             new_name=getattr(args, "name", None),
