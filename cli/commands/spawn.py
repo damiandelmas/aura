@@ -533,6 +533,27 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             submit=True,
         )
         result["prompt_sent"] = bool(prompt_result.get("ok"))
+        if prompt_result.get("ok") and flex_packet and flex_manifest and flex_root:
+            try:
+                from lib import delivery
+
+                packet_at = delivery.now_iso()
+                packet_fields = {
+                    "flex_project_packet_delivered": True,
+                    "flex_project_packet_delivered_at": packet_at,
+                    "flex_project_packet_source": "spawn.prompt",
+                    "flex_project_packet_manifest": str(flex_manifest),
+                    "flex_project_packet_session_key": resume_session or launch_id,
+                }
+                result.update(packet_fields)
+                registry.upsert_agent({
+                    **(registry.get_agent(args.name, fleet=fleet) or {}),
+                    "name": args.name,
+                    "fleet": fleet,
+                    **packet_fields,
+                })
+            except Exception:
+                pass
         if not prompt_result.get("ok"):
             result["prompt_error"] = prompt_result.get("error")
         elif runtime == "codex" and hasattr(terminal, "send_keys"):
@@ -595,6 +616,14 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 if session_observation.get(key) is not None
             }
             result.update(session_fields)
+            if result.get("flex_project_packet_delivered") and result.get("runtime_session_id"):
+                result["flex_project_packet_session_key"] = result["runtime_session_id"]
+                registry.upsert_agent({
+                    **(registry.get_agent(args.name, fleet=fleet) or {}),
+                    "name": args.name,
+                    "fleet": fleet,
+                    "flex_project_packet_session_key": result["runtime_session_id"],
+                })
 
     _record_workspace_spawn(workdir_path, result, runtime=runtime)
     return result_fn({k: v for k, v in result.items() if v is not None})
@@ -1135,6 +1164,13 @@ def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> Non
             "terminal_ref": result.get("terminal_ref"),
             "pane_ref": result.get("pane_ref"),
             "prompt_sent": result.get("prompt_sent", False),
+            "flex_project_manifest": result.get("flex_project_manifest"),
+            "flex_project_root": result.get("flex_project_root"),
+            "flex_project_packet_delivered": result.get("flex_project_packet_delivered"),
+            "flex_project_packet_delivered_at": result.get("flex_project_packet_delivered_at"),
+            "flex_project_packet_source": result.get("flex_project_packet_source"),
+            "flex_project_packet_manifest": result.get("flex_project_packet_manifest"),
+            "flex_project_packet_session_key": result.get("flex_project_packet_session_key"),
             "desks_role_home": result.get("desks_role_home"),
             "desks_role_id": result.get("desks_role_id"),
             "desks_product": result.get("desks_product"),

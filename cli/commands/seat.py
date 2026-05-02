@@ -6,6 +6,8 @@ import json
 import subprocess
 from pathlib import Path
 
+FLEX_PACKET_MARKER = "[FLEX PROJECT RETRIEVAL]"
+
 
 def _load_role_metadata(role_home: str | None, manifest_path: str | None) -> dict:
     if not role_home and not manifest_path:
@@ -299,6 +301,271 @@ def _seat_targets(record: dict) -> list[str]:
     return targets
 
 
+def _flex_project_for_record(record: dict) -> tuple[Path | None, Path | None]:
+    manifest_value = record.get("flex_project_manifest")
+    root_value = record.get("flex_project_root")
+    if manifest_value and root_value:
+        manifest = Path(str(manifest_value)).expanduser()
+        root = Path(str(root_value)).expanduser()
+        if manifest.is_file():
+            try:
+                return manifest.resolve(), root.resolve()
+            except OSError:
+                return manifest, root
+
+    from commands import spawn
+
+    workdir = record.get("cwd") or record.get("workdir") or record.get("runtime_session_cwd")
+    role_meta = {
+        key: record.get(key)
+        for key in (
+            "desks_role_home",
+            "desks_role_id",
+            "desks_product",
+            "desks_unit",
+            "desks_manifest",
+            "flex_project_manifest",
+            "flex_project_root",
+        )
+        if record.get(key)
+    }
+    if workdir:
+        return spawn._resolve_launch_flex_project(Path(str(workdir)), role_meta)
+    if role_meta:
+        return spawn._resolve_launch_flex_project(Path.cwd(), role_meta)
+    return None, None
+
+
+def _packet_session_key(record: dict) -> str | None:
+    return (
+        record.get("runtime_session_id")
+        or record.get("session_id")
+        or record.get("source_session_id")
+        or record.get("aura_launch_id")
+    )
+
+
+def _packet_registry_match(record: dict, manifest: Path, session_key: str | None) -> dict | None:
+    if not record.get("flex_project_packet_delivered"):
+        return None
+    if str(record.get("flex_project_packet_manifest") or "") != str(manifest):
+        return None
+    delivered_key = record.get("flex_project_packet_session_key")
+    if session_key and delivered_key and str(delivered_key) != str(session_key):
+        return None
+    return {
+        "source": "registry",
+        "delivered_at": record.get("flex_project_packet_delivered_at"),
+        "session_key": delivered_key,
+    }
+
+
+def _packet_capture_match(terminal, target: str | None, manifest: Path, *, lines: int) -> dict | None:
+    if not target or not hasattr(terminal, "capture_output"):
+        return None
+    try:
+        capture = terminal.capture_output(target, lines)
+    except Exception:
+        return None
+    text = "\n".join(str(line) for line in capture or [])
+    if FLEX_PACKET_MARKER not in text:
+        return None
+    if str(manifest) not in text:
+        return {
+            "source": "terminal-capture",
+            "warning": "packet marker found without matching manifest path",
+            "capture_lines": len(capture or []),
+        }
+    return {
+        "source": "terminal-capture",
+        "capture_lines": len(capture or []),
+    }
+
+
+def _codex_jsonl_candidates(record: dict) -> list[Path]:
+    candidates = []
+    evidence = record.get("runtime_session_evidence") or {}
+    jsonl = evidence.get("jsonl") or record.get("jsonl")
+    if jsonl:
+        path = Path(str(jsonl)).expanduser()
+        if path.is_file():
+            candidates.append(path)
+
+    session_id = record.get("runtime_session_id") or record.get("session_id")
+    root = Path.home() / ".codex" / "sessions"
+    if not session_id or not root.exists():
+        return candidates
+    try:
+        result = subprocess.run(
+            ["rg", "-l", str(session_id), str(root), "-g", "*.jsonl"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return candidates
+    for line in result.stdout.splitlines():
+        path = Path(line.strip())
+        if path.is_file() and path not in candidates:
+            candidates.append(path)
+    return candidates
+
+
+def _packet_codex_jsonl_match(record: dict, manifest: Path) -> dict | None:
+    if record.get("runtime") != "codex":
+        return None
+    checked = 0
+    for path in _codex_jsonl_candidates(record):
+        checked += 1
+        try:
+            with path.open(encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if FLEX_PACKET_MARKER in line and str(manifest) in line:
+                        return {"source": "codex-jsonl", "jsonl": str(path), "checked": checked}
+        except OSError:
+            continue
+    if checked:
+        return {"source": "codex-jsonl", "checked": checked, "found": False}
+    return None
+
+
+def _packet_already_present(record: dict, terminal, target: str | None, manifest: Path, *, lines: int) -> dict | None:
+    session_key = _packet_session_key(record)
+    registry_match = _packet_registry_match(record, manifest, session_key)
+    if registry_match:
+        return registry_match
+    capture_match = _packet_capture_match(terminal, target, manifest, lines=lines)
+    if capture_match:
+        return capture_match
+    jsonl_match = _packet_codex_jsonl_match(record, manifest)
+    if jsonl_match and jsonl_match.get("found") is not False:
+        return jsonl_match
+    return None
+
+
+def _mark_flex_packet(record: dict, registry, *, manifest: Path, root: Path, source: str, sent: bool) -> dict:
+    from lib import delivery
+
+    session_key = _packet_session_key(record)
+    now = delivery.now_iso()
+    delivered = bool(sent) or bool(record.get("flex_project_packet_delivered"))
+    updated = registry.upsert_agent({
+        **record,
+        "flex_project_manifest": str(manifest),
+        "flex_project_root": str(root),
+        "flex_project_packet_delivered": delivered,
+        "flex_project_packet_delivered_at": now if sent else record.get("flex_project_packet_delivered_at"),
+        "flex_project_packet_source": source,
+        "flex_project_packet_manifest": str(manifest),
+        "flex_project_packet_session_key": session_key,
+    })
+    return updated
+
+
+def _inject_flex(args, registry, terminal) -> dict:
+    record = registry.get_agent(args.target)
+    if not record:
+        return {"ok": False, "error": f"seat not found: {args.target}"}
+    if registry.is_hidden_agent(record):
+        return {"ok": False, "error": "target is hidden/internal; refusing Flex packet injection", "target": args.target}
+
+    fleet = record.get("fleet")
+    if fleet and hasattr(terminal, "configure_session"):
+        terminal.configure_session(fleet)
+
+    target = record.get("pane_ref") or record.get("terminal_ref") or record.get("backend_ref") or args.target
+    if not _target_exists(terminal, target):
+        return {"ok": False, "error": f"terminal target not found: {target}", "target": args.target}
+
+    manifest, root = _flex_project_for_record(record)
+    if not manifest or not root:
+        return {
+            "ok": False,
+            "error": "no Flex project manifest found for seat",
+            "target": args.target,
+            "cwd": record.get("cwd") or record.get("workdir") or record.get("runtime_session_cwd"),
+        }
+
+    from commands import spawn
+    from lib import delivery
+
+    packet = spawn._render_flex_project_launch_packet(manifest, root)
+    if not packet:
+        return {"ok": False, "error": "failed to render Flex project packet", "manifest": str(manifest), "root": str(root)}
+
+    present = None if getattr(args, "force", False) else _packet_already_present(
+        record,
+        terminal,
+        target,
+        manifest,
+        lines=max(1, int(getattr(args, "capture_lines", 5000) or 5000)),
+    )
+    if present:
+        _mark_flex_packet(record, registry, manifest=manifest, root=root, source=present.get("source", "existing"), sent=False)
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "flex-project-packet-already-present",
+            "target": args.target,
+            "terminal_ref": target,
+            "manifest": str(manifest),
+            "root": str(root),
+            "evidence": present,
+        }
+
+    if getattr(args, "dry_run", False):
+        return {
+            "ok": True,
+            "dry_run": True,
+            "would_send": True,
+            "target": args.target,
+            "terminal_ref": target,
+            "manifest": str(manifest),
+            "root": str(root),
+            "packet_preview": packet[:240],
+        }
+
+    result = terminal.send_text(target, packet, submit=True)
+    if not result.get("ok"):
+        return {
+            "ok": False,
+            "error": result.get("error", "tmux send failed"),
+            "target": args.target,
+            "terminal_ref": target,
+            "manifest": str(manifest),
+        }
+
+    updated = _mark_flex_packet(record, registry, manifest=manifest, root=root, source="seat.inject-flex", sent=True)
+    dedupe_key = f"flex-project-packet:{registry.seat_ref(record.get('fleet'), record.get('name'))}:{manifest}:{_packet_session_key(record) or ''}"
+    delivery_record = delivery.new_delivery_record(
+        delivery_type="flex_project_packet",
+        sender="aura",
+        target=registry.seat_ref(record.get("fleet"), record.get("name")),
+        payload_hash=delivery.body_hash(packet),
+        backend="tmux",
+        backend_ref=target,
+        dedupe_key=dedupe_key,
+        state="delivered",
+        terminal_ref=result.get("target"),
+        submitted=result.get("submitted", True),
+        manifest=str(manifest),
+        root=str(root),
+    )
+    delivery.append_attempt(delivery_record, state="delivered", evidence={"terminal_ref": result.get("target")})
+    delivery.append_record(delivery_record)
+
+    return {
+        "ok": True,
+        "sent": True,
+        "target": args.target,
+        "terminal_ref": result.get("target") or target,
+        "manifest": str(manifest),
+        "root": str(root),
+        "registry_updated": True,
+        "flex_project_packet_delivered_at": updated.get("flex_project_packet_delivered_at"),
+    }
+
+
 def _target_exists(terminal, target: str | None) -> bool:
     if not target:
         return False
@@ -404,6 +671,10 @@ def run(args):
         from lib import terminal
 
         return _sweep(args, registry, terminal)
+    if action == "inject-flex":
+        from lib import terminal
+
+        return _inject_flex(args, registry, terminal)
     if action == "rehome":
         try:
             metadata = _load_role_metadata(getattr(args, "role_home", None), getattr(args, "manifest", None))

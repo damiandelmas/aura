@@ -371,6 +371,126 @@ def test_spawn_injects_flex_project_packet_from_unit_manifest(monkeypatch, tmp_p
     assert f"root={unit}" in text
     assert "Use `flex context`, `flex sessions`, and `flex memory` from this unit." in text
     assert text.endswith("[/FLEX PROJECT RETRIEVAL]\n\nBegin.")
+    assert result["flex_project_packet_delivered"] is True
+    assert result["flex_project_packet_source"] == "spawn.prompt"
+    assert result["flex_project_packet_manifest"] == str(flex_dir / "project.yaml")
+
+
+def test_seat_inject_flex_sends_missing_project_packet(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
+
+    unit = tmp_path / "unit"
+    main = unit / "main"
+    flex_dir = unit / ".flex"
+    main.mkdir(parents=True)
+    flex_dir.mkdir(parents=True)
+    (flex_dir / "project.yaml").write_text("project:\n  name: demo-unit\n", encoding="utf-8")
+    (flex_dir / "agent-guidance.md").write_text("Use `flex context` from this unit.\n", encoding="utf-8")
+
+    from commands import seat
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "engineer",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "cwd": str(main),
+        "pane_ref": "tmux:unitfleet:%1",
+        "terminal_ref": "unitfleet:engineer",
+    })
+
+    sent = []
+
+    class FakeTerminal:
+        @staticmethod
+        def configure_session(name):
+            return name
+
+        @staticmethod
+        def target_exists(target):
+            return target == "tmux:unitfleet:%1"
+
+        @staticmethod
+        def capture_output(target, lines=5000):
+            return ["ready"]
+
+        @staticmethod
+        def send_text(target, text, submit=True):
+            sent.append((target, text, submit))
+            return {"ok": True, "target": target, "submitted": submit}
+
+    result = seat._inject_flex(
+        argparse.Namespace(target="unitfleet:engineer", force=False, dry_run=False, capture_lines=100),
+        registry,
+        FakeTerminal,
+    )
+
+    assert result["ok"] is True
+    assert result["sent"] is True
+    assert sent[0][0] == "tmux:unitfleet:%1"
+    assert "[FLEX PROJECT RETRIEVAL]" in sent[0][1]
+    assert "project=demo-unit" in sent[0][1]
+    updated = registry.get_agent("engineer", fleet="unitfleet")
+    assert updated["flex_project_manifest"] == str(flex_dir / "project.yaml")
+    assert updated["flex_project_packet_delivered"] is True
+
+
+def test_seat_inject_flex_skips_existing_project_packet(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
+
+    unit = tmp_path / "unit"
+    main = unit / "main"
+    flex_dir = unit / ".flex"
+    main.mkdir(parents=True)
+    flex_dir.mkdir(parents=True)
+    manifest = flex_dir / "project.yaml"
+    manifest.write_text("project:\n  name: demo-unit\n", encoding="utf-8")
+    (flex_dir / "agent-guidance.md").write_text("Use `flex context` from this unit.\n", encoding="utf-8")
+
+    from commands import seat
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "engineer",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "cwd": str(main),
+        "pane_ref": "tmux:unitfleet:%1",
+    })
+
+    class FakeTerminal:
+        @staticmethod
+        def configure_session(name):
+            return name
+
+        @staticmethod
+        def target_exists(target):
+            return True
+
+        @staticmethod
+        def capture_output(target, lines=5000):
+            return [
+                "[FLEX PROJECT RETRIEVAL]",
+                f"manifest={manifest}",
+                "[/FLEX PROJECT RETRIEVAL]",
+            ]
+
+        @staticmethod
+        def send_text(target, text, submit=True):
+            raise AssertionError("packet should not be sent twice")
+
+    result = seat._inject_flex(
+        argparse.Namespace(target="unitfleet:engineer", force=False, dry_run=False, capture_lines=100),
+        registry,
+        FakeTerminal,
+    )
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["reason"] == "flex-project-packet-already-present"
+    assert result["evidence"]["source"] == "terminal-capture"
 
 
 def _write_role_home(tmp_path):
