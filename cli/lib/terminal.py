@@ -15,6 +15,7 @@ from lib import tmux as backend
 # Export all functions from backend
 ensure_session = backend.ensure_session
 create_window = backend.create_window
+respawn_pane = backend.respawn_pane
 send_keys = backend.send_keys
 send_text = backend.send_text
 capture_output = backend.capture_output

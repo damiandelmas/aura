@@ -171,6 +171,43 @@ def create_window(
     }
 
 
+def respawn_pane(
+    target: str,
+    workdir: str | None = None,
+    command: str | None = None,
+    env: dict[str, str] | None = None,
+    unset_env: list[str] | None = None,
+):
+    """Replace the process in an existing pane while preserving the pane id."""
+    if not target_exists(target):
+        return {"ok": False, "error": f"target does not exist: {target}"}
+    if not command:
+        return {"ok": False, "error": "command is required"}
+    args = ["respawn-pane", "-k", "-t", _tmux_target(target)]
+    if workdir:
+        args.extend(["-c", workdir])
+    env_parts = []
+    if unset_env:
+        env_parts.append("env")
+        for key in unset_env:
+            env_parts.extend(["-u", shlex.quote(str(key))])
+    if env:
+        env_parts.extend(f"{key}={shlex.quote(str(value))}" for key, value in env.items())
+    env_prefix = " ".join(env_parts) + " " if env_parts else ""
+    args.append(env_prefix + command)
+    result = _run_tmux(args)
+    if result.returncode != 0:
+        return {"ok": False, "error": result.stderr.strip() or "tmux respawn-pane failed"}
+    pane = pane_id(target)
+    return {
+        "ok": True,
+        "target": _backend_ref(target),
+        "pane_id": pane,
+        "pane_ref": f"{_split_ref(target)[0]}:{pane}" if pane else None,
+        "respawned_viewport": True,
+    }
+
+
 def _window(name: str):
     """Return a named window in the current fleet session, or None."""
     sess = _session()

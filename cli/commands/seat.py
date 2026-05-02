@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import time
+import uuid
 from pathlib import Path
 
 FLEX_PACKET_MARKER = "[FLEX PROJECT RETRIEVAL]"
@@ -574,6 +577,482 @@ def _target_exists(terminal, target: str | None) -> bool:
     return bool(terminal.window_exists(target))
 
 
+def _latest_report_for_record(record: dict) -> dict | None:
+    from lib import reports
+
+    fleet = record.get("fleet")
+    name = record.get("name") or record.get("seat")
+    rows = reports.iter_reports()
+    for row in reversed(rows):
+        if row.get("seat") != name:
+            continue
+        if fleet and row.get("fleet") != fleet:
+            continue
+        return row
+    return None
+
+
+def _restart_handoff_gate(record: dict, *, force: bool) -> dict:
+    latest = _latest_report_for_record(record)
+    acceptable = {"complete", "parked", "blocked", "handoff", "failed"}
+    if latest and latest.get("state") in acceptable:
+        return {"ok": True, "latest_report": latest}
+    if force:
+        reason = "working-report" if latest else "missing-report"
+        return {
+            "ok": True,
+            "forced": True,
+            "warning": f"restart forced despite {reason}",
+            "latest_report": latest,
+        }
+    return {
+        "ok": False,
+        "phase": "handoff_missing",
+        "error": "latest report is missing or not at a restart-safe boundary; report first or pass --force",
+        "latest_report": latest,
+    }
+
+
+def _restart_role_metadata(args, record: dict) -> tuple[dict, str | None, str | None]:
+    manifest_arg = getattr(args, "manifest", None)
+    role_home_arg = getattr(args, "role_home", None)
+    if manifest_arg and role_home_arg:
+        raise ValueError("use either --manifest or --role-home, not both")
+    if manifest_arg or role_home_arg:
+        from commands import spawn
+
+        manifest = spawn._load_role_manifest(manifest_arg, role_home_arg)
+        if manifest.get("seat") != record.get("name"):
+            raise ValueError(f"manifest seat mismatch: restart target={record.get('name')} manifest={manifest.get('seat')}")
+        if manifest.get("fleet") != record.get("fleet"):
+            raise ValueError(f"manifest fleet mismatch: restart target={record.get('fleet')} manifest={manifest.get('fleet')}")
+        files = manifest.get("files") or {}
+        meta = {
+            "desks_role_home": str(manifest["role_home"]),
+            "desks_role_id": manifest["role_id"],
+            "desks_product": manifest["product"],
+            "desks_unit": manifest["unit"],
+            "desks_manifest": str(manifest["manifest_path"]),
+            "desks_bootstrap": str(files.get("bootstrap")) if files.get("bootstrap") else None,
+            "desks_compression": str(files.get("compression")) if files.get("compression") else None,
+            "desks_memory": str(files.get("memory")) if files.get("memory") else None,
+            "flex_project_manifest": str(manifest["flex_project_manifest"]) if manifest.get("flex_project_manifest") else None,
+            "flex_project_root": str(manifest["flex_project_root"]) if manifest.get("flex_project_root") else None,
+        }
+        prompt = "\n".join([
+            f"Read {files.get('bootstrap')} and follow it.",
+            f"Use {manifest['role_home']} as your Desks role home.",
+        ])
+        return {k: v for k, v in meta.items() if v}, str(manifest["workspace_root"]), prompt
+
+    meta = {
+        key: record.get(key)
+        for key in (
+            "desks_role_home",
+            "desks_role_id",
+            "desks_product",
+            "desks_unit",
+            "desks_manifest",
+            "desks_bootstrap",
+            "desks_compression",
+            "desks_memory",
+            "flex_project_manifest",
+            "flex_project_root",
+        )
+        if record.get(key)
+    }
+    return meta, None, None
+
+
+def _restart_plan(args, record: dict) -> dict:
+    runtime = getattr(args, "runtime", None) or record.get("runtime")
+    command = record.get("command")
+    cwd = getattr(args, "cwd", None) or record.get("cwd") or record.get("workdir") or record.get("runtime_session_cwd")
+    if not runtime:
+        return {"ok": False, "phase": "build_plan", "error": "seat has no runtime; cannot reconstruct restart command"}
+    if runtime == "command" and not command:
+        return {"ok": False, "phase": "build_plan", "error": "command runtime has no recorded command; refusing restart"}
+    if not command:
+        try:
+            from lib import runtimes
+
+            resolved, spec = runtimes.resolve_runtime(runtime)
+            runtime = resolved
+            command = runtimes.build_command(
+                runtime,
+                spec,
+                name=record.get("name"),
+                profile=record.get("profile"),
+                model=record.get("model"),
+            )
+        except Exception as exc:
+            return {"ok": False, "phase": "build_plan", "error": f"cannot reconstruct launch command: {exc}"}
+    if not cwd:
+        return {"ok": False, "phase": "build_plan", "error": "seat has no cwd/workdir; refusing restart"}
+    cwd_path = Path(str(cwd)).expanduser()
+    if not cwd_path.is_absolute():
+        cwd_path = Path.cwd() / cwd_path
+    try:
+        cwd_path = cwd_path.resolve()
+    except OSError:
+        pass
+    if not cwd_path.is_dir():
+        return {"ok": False, "phase": "build_plan", "error": f"cwd is not a directory: {cwd_path}"}
+
+    try:
+        role_meta, role_cwd, role_prompt = _restart_role_metadata(args, record)
+    except Exception as exc:
+        return {"ok": False, "phase": "build_plan", "error": f"failed to load role metadata: {exc}"}
+    if role_cwd and not getattr(args, "cwd", None):
+        cwd_path = Path(role_cwd)
+    prompt = getattr(args, "prompt", None) or role_prompt
+    return {
+        "ok": True,
+        "runtime": runtime,
+        "command": command,
+        "cwd": str(cwd_path),
+        "role_meta": role_meta,
+        "prompt": prompt,
+    }
+
+
+def _stop_restart_target(terminal, target: str, *, force: bool) -> dict:
+    before = terminal.pane_pid(target) if hasattr(terminal, "pane_pid") else None
+    try:
+        terminal.kill_window(target)
+    except Exception as exc:
+        return {"ok": False, "phase": "stop_failed", "error": str(exc), "old_pid": before}
+    deadline = time.time() + (0.5 if force else 2.0)
+    while time.time() < deadline:
+        if not _target_exists(terminal, target):
+            return {"ok": True, "old_pid": before, "stopped": True}
+        time.sleep(0.1)
+    if _target_exists(terminal, target):
+        return {"ok": False, "phase": "stop_failed", "error": f"old terminal target still exists: {target}", "old_pid": before}
+    return {"ok": True, "old_pid": before, "stopped": True}
+
+
+def _launch_restart_target(terminal, target: str, name: str, plan: dict, launch_env: dict, unset_env: list[str]) -> dict:
+    if hasattr(terminal, "respawn_pane"):
+        return terminal.respawn_pane(
+            target,
+            workdir=plan["cwd"],
+            command=plan["command"],
+            env=launch_env,
+            unset_env=unset_env,
+        )
+    stop = _stop_restart_target(terminal, target, force=True)
+    if not stop.get("ok"):
+        return stop
+    launch = terminal.create_window(
+        name,
+        plan["cwd"],
+        detached=True,
+        command=plan["command"],
+        env=launch_env,
+        unset_env=unset_env,
+    )
+    if launch.get("ok"):
+        launch["fallback_recreated_viewport"] = True
+        launch["old_pid"] = stop.get("old_pid")
+    return launch
+
+
+def _session_fields(session: dict) -> dict:
+    fields = {}
+    for key in (
+        "session_id",
+        "runtime_session_id",
+        "runtime_session_source",
+        "runtime_session_confidence",
+        "runtime_session_evidence",
+        "runtime_session_env",
+        "runtime_session_cwd",
+        "runtime_session_created_at_ms",
+        "runtime_session_updated_at_ms",
+        "runtime_session_pid",
+    ):
+        if session.get(key) is not None:
+            fields[key] = session.get(key)
+    return fields
+
+
+def _restart(args, registry, terminal) -> dict:
+    record = registry.get_agent(args.target)
+    if not record:
+        return {"ok": False, "schema": "aura.seat_restart.v1", "phase": "resolve_failed", "target": args.target, "error": "seat not found"}
+    if registry.is_hidden_agent(record):
+        return {"ok": False, "schema": "aura.seat_restart.v1", "phase": "resolve_failed", "target": args.target, "error": "target is hidden/internal; refusing restart"}
+
+    fleet = record.get("fleet")
+    name = record.get("name") or record.get("seat")
+    seat_ref = registry.seat_ref(fleet, name)
+    if fleet and hasattr(terminal, "configure_session"):
+        terminal.configure_session(fleet)
+
+    target = record.get("pane_ref") or record.get("terminal_ref") or record.get("backend_ref")
+    if not _target_exists(terminal, target):
+        return {
+            "ok": False,
+            "schema": "aura.seat_restart.v1",
+            "phase": "resolve_failed",
+            "target": args.target,
+            "seat_ref": seat_ref,
+            "error": f"terminal target not found: {target}",
+        }
+
+    plan = _restart_plan(args, record)
+    if not plan.get("ok"):
+        return {"ok": False, "schema": "aura.seat_restart.v1", "target": args.target, "seat_ref": seat_ref, **plan}
+
+    gate = _restart_handoff_gate(record, force=bool(getattr(args, "force", False)))
+    if not gate.get("ok"):
+        return {"ok": False, "schema": "aura.seat_restart.v1", "target": args.target, "seat_ref": seat_ref, **gate}
+
+    old_pid = terminal.pane_pid(target) if hasattr(terminal, "pane_pid") else None
+    old = {
+        "runtime_session_id": record.get("runtime_session_id") or record.get("session_id"),
+        "pid": old_pid,
+        "pane_ref": record.get("pane_ref"),
+        "terminal_ref": record.get("terminal_ref"),
+        "aura_launch_id": record.get("aura_launch_id"),
+    }
+    restart_id = f"aura-seat-restart-{uuid.uuid4().hex[:16]}"
+    dry_run = bool(getattr(args, "dry_run", False))
+    if dry_run:
+        return {
+            "ok": True,
+            "schema": "aura.seat_restart.v1",
+            "dry_run": True,
+            "target": args.target,
+            "seat_ref": seat_ref,
+            "same_viewport": True,
+            "old": old,
+            "plan": {k: v for k, v in plan.items() if k not in {"ok", "role_meta", "prompt"}},
+            "warnings": [gate["warning"]] if gate.get("warning") else [],
+        }
+
+    launch_id = f"aura-launch-{uuid.uuid4().hex[:16]}"
+    launch_env = {
+        "AURA_AGENT_NAME": name,
+        "AURA_SEAT": name,
+        "AURA_FLEET": fleet,
+        "AURA_RUNTIME": plan["runtime"],
+        "AURA_LAUNCH_ID": launch_id,
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        "FORCE_COLOR": "1",
+        "CLICOLOR_FORCE": "1",
+    }
+    role_meta = plan.get("role_meta") or {}
+    if role_meta:
+        launch_env.update({
+            "AURA_DESKS_ROLE_HOME": role_meta.get("desks_role_home", ""),
+            "AURA_DESKS_ROLE_ID": role_meta.get("desks_role_id", ""),
+            "AURA_DESKS_PRODUCT": role_meta.get("desks_product", ""),
+            "AURA_DESKS_UNIT": role_meta.get("desks_unit", ""),
+            "AURA_DESKS_MANIFEST": role_meta.get("desks_manifest", ""),
+            "DESKS_ROLE_HOME": role_meta.get("desks_role_home", ""),
+            "DESKS_ROLE_ID": role_meta.get("desks_role_id", ""),
+            "DESKS_PRODUCT": role_meta.get("desks_product", ""),
+            "DESKS_UNIT": role_meta.get("desks_unit", ""),
+            "DESKS_MANIFEST": role_meta.get("desks_manifest", ""),
+        })
+    if role_meta.get("flex_project_manifest"):
+        launch_env["FLEX_PROJECT_MANIFEST"] = role_meta["flex_project_manifest"]
+    if role_meta.get("flex_project_root"):
+        launch_env["FLEX_PROJECT_ROOT"] = role_meta["flex_project_root"]
+
+    unset_env = [
+        "NO_COLOR",
+        "AURA_RUNTIME_SESSION_ID",
+        "AURA_SESSION_ID",
+        "CODEX_THREAD_ID",
+        "CLAUDE_SESSION_ID",
+    ]
+    try:
+        launch = _launch_restart_target(terminal, target, name, plan, launch_env, unset_env)
+    except TypeError:
+        launch = {"ok": False, "error": "terminal backend does not support direct command relaunch"}
+    if not launch.get("ok"):
+        failure_record = registry.upsert_agent({
+            **record,
+            "name": name,
+            "fleet": fleet,
+            "status": "restart_failed",
+            "restart_last_failure": {
+                "restart_id": restart_id,
+                "phase": "relaunch_failed",
+                "error": launch.get("error", "launch failed"),
+                "old": old,
+            },
+        })
+        return {
+            "ok": False,
+            "schema": "aura.seat_restart.v1",
+            "phase": "relaunch_failed",
+            "target": args.target,
+            "seat_ref": seat_ref,
+            "old": old,
+            "error": launch.get("error", "launch failed"),
+            "record_status": failure_record.get("status"),
+            "hint": "the old process was stopped but relaunch failed; inspect the tmux fleet and restart or repair manually",
+        }
+
+    new_pane_ref = f"tmux:{fleet}:{launch.get('pane_id')}" if launch.get("pane_id") else None
+    if launch.get("respawned_viewport"):
+        terminal_ref = old.get("terminal_ref") or f"{fleet}:{name}"
+    else:
+        terminal_ref = launch.get("target") or f"{fleet}:{name}"
+    prompt_sent = False
+    if plan.get("prompt") and hasattr(terminal, "send_text"):
+        from commands import spawn
+
+        prompt_result = terminal.send_text(
+            new_pane_ref or terminal_ref,
+            spawn._augment_runtime_prompt(plan["runtime"], plan["prompt"], fleet=fleet, seat=name, launch_id=launch_id),
+            submit=True,
+        )
+        prompt_sent = bool(prompt_result.get("ok"))
+
+    process_meta = {}
+    if hasattr(terminal, "pane_pid"):
+        try:
+            from lib import runtime_session
+
+            process_meta = runtime_session.process_metadata(terminal.pane_pid(new_pane_ref or terminal_ref))
+        except Exception:
+            process_meta = {}
+
+    pending = {
+        key: None
+        for key in (
+            "session_id",
+            "runtime_session_id",
+            "runtime_session_source",
+            "runtime_session_confidence",
+            "runtime_session_evidence",
+            "runtime_session_env",
+            "runtime_session_cwd",
+            "runtime_session_created_at_ms",
+            "runtime_session_updated_at_ms",
+            "runtime_session_pid",
+        )
+    }
+    updated = registry.upsert_agent({
+        **record,
+        **pending,
+        **role_meta,
+        **process_meta,
+        "name": name,
+        "fleet": fleet,
+        "seat": name,
+        "seat_ref": seat_ref,
+        "runtime": plan["runtime"],
+        "command": plan["command"],
+        "cwd": plan["cwd"],
+        "workdir": plan["cwd"],
+        "aura_launch_id": launch_id,
+        "previous_aura_launch_id": old.get("aura_launch_id"),
+        "previous_runtime_session_id": old.get("runtime_session_id"),
+        "restart_from_session_id": old.get("runtime_session_id"),
+        "restart_id": restart_id,
+        "restart_at": registry.now_iso(),
+        "restart_count": int(record.get("restart_count") or 0) + 1,
+        "terminal_ref": terminal_ref,
+        "backend_ref": terminal_ref,
+        "pane_ref": new_pane_ref,
+        "status": "starting",
+        "registered": True,
+        "prompt_sent": prompt_sent or record.get("prompt_sent"),
+    })
+
+    session_observation = {}
+    try:
+        from commands import spawn
+
+        session_observation = spawn._observe_spawn_session(
+            runtime=plan["runtime"],
+            terminal=terminal,
+            target=new_pane_ref or terminal_ref,
+            seat=name,
+            fleet=fleet,
+            launch_id=launch_id,
+            workdir=plan["cwd"],
+            terminal_ref=terminal_ref,
+            pane_ref=new_pane_ref,
+            registered=updated,
+            existing_session={},
+            timeout=float(os.environ.get("AURA_RESTART_SESSION_OBSERVE_TIMEOUT", "0.5")),
+        )
+        if session_observation.get("runtime_session_id"):
+            updated = registry.upsert_agent({**updated, **_session_fields(session_observation)})
+    except Exception as exc:
+        session_observation = {"status": "error", "reason": "session-discovery-error", "error": str(exc)}
+
+    new_pid = terminal.pane_pid(new_pane_ref or terminal_ref) if hasattr(terminal, "pane_pid") else None
+    new = {
+        "runtime_session_id": updated.get("runtime_session_id"),
+        "pid": new_pid,
+        "pane_ref": new_pane_ref,
+        "terminal_ref": terminal_ref,
+        "aura_launch_id": launch_id,
+    }
+    same_viewport = bool(new_pane_ref and new_pane_ref == old.get("pane_ref"))
+    warnings = []
+    if gate.get("warning"):
+        warnings.append(gate["warning"])
+    if not new.get("runtime_session_id"):
+        warnings.append("session_observation_pending")
+    if launch.get("fallback_recreated_viewport"):
+        warnings.append("viewport_recreated_fallback")
+
+    lifecycle_event = {}
+    try:
+        from lib import session_ledger
+
+        lifecycle_event = session_ledger.append_record({
+            "event": "seat_restart",
+            "kind": "aura.seat.restarted",
+            "restart_id": restart_id,
+            "seat": name,
+            "name": name,
+            "fleet": fleet,
+            "seat_ref": seat_ref,
+            "runtime": plan["runtime"],
+            "command": plan["command"],
+            "cwd": plan["cwd"],
+            "old_runtime_session_id": old.get("runtime_session_id"),
+            "new_runtime_session_id": new.get("runtime_session_id"),
+            "old_pid": old.get("pid"),
+            "new_pid": new.get("pid"),
+            "old_pane_ref": old.get("pane_ref"),
+            "new_pane_ref": new.get("pane_ref"),
+            "terminal_ref": terminal_ref,
+            "same_viewport": same_viewport,
+            "actor": "cli",
+            "forced": bool(getattr(args, "force", False)),
+            "aura_launch_id": launch_id,
+            "previous_aura_launch_id": old.get("aura_launch_id"),
+        })
+    except Exception:
+        lifecycle_event = {}
+
+    return {
+        "ok": True,
+        "schema": "aura.seat_restart.v1",
+        "target": args.target,
+        "seat_ref": seat_ref,
+        "same_viewport": same_viewport,
+        "old": old,
+        "new": new,
+        "lineage_event_id": lifecycle_event.get("timestamp") or restart_id,
+        "restart_id": restart_id,
+        "session_observation": session_observation,
+        "warnings": warnings,
+    }
+
+
 def _pane_exists_anywhere(pane_ref: str | None) -> bool:
     if not pane_ref:
         return False
@@ -675,6 +1154,10 @@ def run(args):
         from lib import terminal
 
         return _inject_flex(args, registry, terminal)
+    if action == "restart":
+        from lib import terminal
+
+        return _restart(args, registry, terminal)
     if action == "rehome":
         try:
             metadata = _load_role_metadata(getattr(args, "role_home", None), getattr(args, "manifest", None))
