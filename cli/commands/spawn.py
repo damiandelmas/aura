@@ -360,6 +360,14 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "CLICOLOR_FORCE": "1",
     }
     role_meta = getattr(args, "_role_manifest_meta", None) or {}
+    flex_manifest, flex_root = _resolve_launch_flex_project(workdir_path, role_meta)
+    flex_meta = {}
+    if flex_manifest and flex_root:
+        flex_meta = {
+            "flex_project_manifest": str(flex_manifest),
+            "flex_project_root": str(flex_root),
+        }
+
     if role_meta:
         launch_env.update({
             "AURA_DESKS_ROLE_HOME": role_meta.get("desks_role_home", ""),
@@ -373,10 +381,10 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "DESKS_UNIT": role_meta.get("desks_unit", ""),
             "DESKS_MANIFEST": role_meta.get("desks_manifest", ""),
         })
-        if role_meta.get("flex_project_manifest"):
-            launch_env["FLEX_PROJECT_MANIFEST"] = role_meta["flex_project_manifest"]
-        if role_meta.get("flex_project_root"):
-            launch_env["FLEX_PROJECT_ROOT"] = role_meta["flex_project_root"]
+    if flex_meta.get("flex_project_manifest"):
+        launch_env["FLEX_PROJECT_MANIFEST"] = flex_meta["flex_project_manifest"]
+    if flex_meta.get("flex_project_root"):
+        launch_env["FLEX_PROJECT_ROOT"] = flex_meta["flex_project_root"]
     try:
         launch = terminal.create_window(
             args.name,
@@ -444,6 +452,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "transport": "tmux",
         "status": "starting",
         "registered": True,
+        **flex_meta,
         **role_meta,
         **process_meta,
         **session_meta,
@@ -470,6 +479,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "terminal_ref": launch.get("target"),
             "pane_ref": pane_ref,
             "status": "starting",
+            **flex_meta,
             **role_meta,
             **process_meta,
             **session_meta,
@@ -500,6 +510,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "registered": True,
         "fleet": fleet,
         "trace_cell": registered.get("trace_cell"),
+        **flex_meta,
         **role_meta,
         **process_meta,
         **session_meta,
@@ -508,9 +519,17 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     if prompt_text:
         time.sleep(1)
         prompt_target = pane_ref or launch.get("target") or args.name
+        flex_packet = _render_flex_project_launch_packet(flex_manifest, flex_root)
         prompt_result = terminal.send_text(
             args.name,
-            _augment_runtime_prompt(runtime, prompt_text, fleet=fleet, seat=args.name, launch_id=launch_id),
+            _augment_runtime_prompt(
+                runtime,
+                prompt_text,
+                fleet=fleet,
+                seat=args.name,
+                launch_id=launch_id,
+                flex_packet=flex_packet,
+            ),
             submit=True,
         )
         result["prompt_sent"] = bool(prompt_result.get("ok"))
@@ -767,18 +786,90 @@ def _resolve_flex_project(raw: dict, workspace_root: Path) -> tuple[Path | None,
     return None, None
 
 
-def _augment_runtime_prompt(runtime: str, prompt_text: str, *, fleet: str, seat: str, launch_id: str) -> str:
+def _resolve_launch_flex_project(workdir_path: Path, role_meta: dict | None = None) -> tuple[Path | None, Path | None]:
+    role_meta = role_meta or {}
+    manifest_value = role_meta.get("flex_project_manifest")
+    root_value = role_meta.get("flex_project_root")
+    if manifest_value:
+        manifest = Path(str(manifest_value)).expanduser().resolve()
+        root = Path(str(root_value)).expanduser().resolve() if root_value else manifest.parent.parent.resolve()
+        if manifest.is_file():
+            return manifest, root
+    if root_value:
+        root = Path(str(root_value)).expanduser().resolve()
+        manifest = root / ".flex" / "project.yaml"
+        if manifest.is_file():
+            return manifest.resolve(), root
+
+    try:
+        start = workdir_path.expanduser().resolve()
+    except OSError:
+        start = workdir_path.expanduser()
+    for candidate in [start, *start.parents]:
+        manifest = candidate / ".flex" / "project.yaml"
+        if manifest.is_file():
+            return manifest.resolve(), candidate.resolve()
+    return None, None
+
+
+def _render_flex_project_launch_packet(manifest: Path | None, root: Path | None) -> str | None:
+    if not manifest or not root or not manifest.is_file():
+        return None
+    project_name = ""
+    try:
+        import yaml
+
+        raw = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+        if isinstance(raw, dict):
+            project = raw.get("project") or {}
+            if isinstance(project, dict):
+                project_name = str(project.get("name") or "")
+    except Exception:
+        project_name = ""
+
+    guidance_path = root / ".flex" / "agent-guidance.md"
+    guidance = guidance_path.read_text(encoding="utf-8").strip() if guidance_path.is_file() else ""
+    if not guidance:
+        guidance = (
+            "Use project-local Flex commands when the user asks to search project context, "
+            "project sessions, or this agent's memory."
+        )
+
+    lines = [
+        "[FLEX PROJECT RETRIEVAL]",
+        f"project={project_name or root.name}",
+        f"root={root}",
+        f"manifest={manifest}",
+        "",
+        guidance,
+        "[/FLEX PROJECT RETRIEVAL]",
+    ]
+    return "\n".join(lines)
+
+
+def _augment_runtime_prompt(
+    runtime: str,
+    prompt_text: str,
+    *,
+    fleet: str,
+    seat: str,
+    launch_id: str,
+    flex_packet: str | None = None,
+) -> str:
     if runtime != "codex":
         return prompt_text
-    return "\n".join([
+    lines = [
         "[AURA SEAT CONTEXT]",
         f"fleet={fleet}",
         f"seat={seat}",
         f"launch_id={launch_id}",
         "[/AURA SEAT CONTEXT]",
         "",
-        prompt_text,
-    ])
+    ]
+    if flex_packet:
+        lines.extend([flex_packet, ""])
+    lines.append(prompt_text)
+    return "\n".join(lines)
 
 
 def _confidence_at_least(value: str | None, minimum: str) -> bool:

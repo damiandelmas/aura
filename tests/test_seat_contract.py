@@ -307,6 +307,72 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
     assert rows[-1]["work_file"] == str(work_file)
 
 
+def test_spawn_injects_flex_project_packet_from_unit_manifest(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+
+    unit = tmp_path / "unit"
+    main = unit / "main"
+    flex_dir = unit / ".flex"
+    flex_dir.mkdir(parents=True)
+    main.mkdir()
+    (flex_dir / "project.yaml").write_text(
+        "version: 1\nproject:\n  name: demo-unit\ncommands: {}\n",
+        encoding="utf-8",
+    )
+    (flex_dir / "agent-guidance.md").write_text(
+        "Use `flex context`, `flex sessions`, and `flex memory` from this unit.\n",
+        encoding="utf-8",
+    )
+
+    sent = []
+    created = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+        BACKEND_NAME = "tmux"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((name, workdir, detached, command, env, unset_env))
+            return {"ok": True}
+
+        @staticmethod
+        def send_text(name, text, submit=True, submit_key="Enter"):
+            sent.append((name, text, submit, submit_key))
+            return {"ok": True, "target": f"unitfleet:{name}", "text": text}
+
+    args = argparse.Namespace(
+        name="codex-seat",
+        runtime="codex",
+        launch_command="printf ready",
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt="Begin.",
+        work=None,
+        cwd=str(main),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["flex_project_manifest"] == str(flex_dir / "project.yaml")
+    assert result["flex_project_root"] == str(unit)
+    env = created[0][4]
+    assert env["FLEX_PROJECT_MANIFEST"] == str(flex_dir / "project.yaml")
+    assert env["FLEX_PROJECT_ROOT"] == str(unit)
+    text = sent[0][1]
+    assert "[FLEX PROJECT RETRIEVAL]" in text
+    assert "project=demo-unit" in text
+    assert f"root={unit}" in text
+    assert "Use `flex context`, `flex sessions`, and `flex memory` from this unit." in text
+    assert text.endswith("[/FLEX PROJECT RETRIEVAL]\n\nBegin.")
+
+
 def _write_role_home(tmp_path):
     role_home = tmp_path / "unit" / ".desks" / "roles" / "specialist-cell"
     role_home.mkdir(parents=True)
