@@ -180,7 +180,7 @@ def upsert_agent(record: dict[str, Any]) -> dict[str, Any]:
         "seat": record.get("seat") or previous.get("seat") or name,
         "fleet": fleet,
         "fleet_id": record.get("fleet_id") or previous.get("fleet_id") or (fleet_record or {}).get("fleet_id"),
-        "seat_ref": record.get("seat_ref") or previous.get("seat_ref") or _key(fleet, name),
+        "seat_ref": _key(fleet, name),
         "transport": record.get("transport") or previous.get("transport") or "tmux",
         "delivery_mode": record.get("delivery_mode") or previous.get("delivery_mode") or "immediate",
         "status": record.get("status") or previous.get("status") or "starting",
