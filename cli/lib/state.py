@@ -30,6 +30,13 @@ def seat_aliases_path() -> Path:
     return state_root() / "registry" / "seat-aliases.json"
 
 
+def fleet_registry_path() -> Path:
+    configured = os.environ.get("AURA_FLEETS_PATH")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return state_root() / "registry" / "fleets.json"
+
+
 def delivery_log_path() -> Path:
     configured = os.environ.get("AURA_DELIVERY_LOG")
     if configured:

@@ -20,7 +20,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, send, queue as queue_cmd, seat as seat_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd
+from commands import spawn, send, queue as queue_cmd, seat as seat_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd
 from lib.output import output
 
 
@@ -54,6 +54,8 @@ def main():
                          help="Spawn from a Desks role home directory containing role.json")
     p_spawn.add_argument("--fleet", "-f", metavar="NAME",
                          help="Fleet name (groups agents in one tmux session)")
+    p_spawn.add_argument("--fleet-id", metavar="FLEET_ID",
+                         help="Stable Aura fleet id; resolves to the fleet's current name")
     p_spawn.add_argument("--knowledge", "-k", metavar="SESSION",
                          help="Nexus session to inherit knowledge from")
     p_spawn.add_argument("--memory", "-m", metavar="SESSION_ID",
@@ -404,7 +406,7 @@ def main():
     p_sessions.add_argument(
         "sessions_action",
         nargs="?",
-        choices=["restore-plan", "self", "bind-current", "bind-nonce", "seat-history", "fleets"],
+        choices=["restore-plan", "self", "bind-current", "bind-nonce", "seat-history", "fleets", "fleet-history"],
                             help="Optional sessions action")
     p_sessions.add_argument("nonce", nargs="?",
                             help="For bind-nonce, unique marker written into the target Codex session; for seat-history, target seat ref")
@@ -430,6 +432,15 @@ def main():
                             help="For seat-history, do not follow rehome/alias chains")
     p_sessions.add_argument("--runtime", choices=["codex", "claude-code", "claude", "hermes", "omx", "opencode", "openclaw", "shell", "command"],
                             help="For sessions self, override runtime inference")
+
+    # fleets
+    p_fleets = subparsers.add_parser("fleets", help="Resolve and inspect stable fleet identities")
+    fleets_sub = p_fleets.add_subparsers(dest="fleets_action", required=True)
+    fleets_sub.add_parser("list", help="List known fleet identities")
+    p_fleets_resolve = fleets_sub.add_parser("resolve", help="Resolve fleet id, current name, or alias")
+    p_fleets_resolve.add_argument("target")
+    p_fleets_history = fleets_sub.add_parser("history", help="Per-fleet history and restore plan")
+    p_fleets_history.add_argument("target")
 
     # resolve
     p_resolve = subparsers.add_parser("resolve", help="Resolve agent name or tmux group → session_id + window + status")
@@ -653,6 +664,8 @@ def main():
             result = list_cmd.run(args)
         elif args.command == "sessions":
             result = sessions_cmd.run(args)
+        elif args.command == "fleets":
+            result = fleets_cmd.run(args)
         elif args.command == "resolve":
             result = resolve.run(args)
         elif args.command == "sleep":

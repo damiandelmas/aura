@@ -20,6 +20,7 @@ class RestartTerminal:
     next_pane = "%2"
     next_pid = 222
     launch_ok = True
+    captures = []
 
     @classmethod
     def reset(cls):
@@ -31,6 +32,7 @@ class RestartTerminal:
         cls.next_pane = "%2"
         cls.next_pid = 222
         cls.launch_ok = True
+        cls.captures = []
 
     @staticmethod
     def configure_session(name):
@@ -72,6 +74,17 @@ class RestartTerminal:
     def send_text(target, text, submit=True):
         RestartTerminal.sent.append((target, text, submit))
         return {"ok": True, "target": target, "submitted": submit}
+
+    @staticmethod
+    def capture_output(target, lines=80):
+        if RestartTerminal.captures:
+            return RestartTerminal.captures.pop(0)
+        return ["› ready"]
+
+    @staticmethod
+    def send_keys(target, text, enter=False):
+        RestartTerminal.sent.append((target, text, enter))
+        return {"ok": True, "target": target}
 
 
 def _args(**overrides):
@@ -182,7 +195,48 @@ def test_restart_uses_native_resume_for_codex(monkeypatch, tmp_path):
     result = seat._restart(_args(prompt="fresh start"), registry, RestartTerminal)
 
     assert result["ok"] is True
-    assert RestartTerminal.respawned[0][2] == "codex --dangerously-bypass-approvals-and-sandbox resume old-session"
+    assert RestartTerminal.respawned[0][2] == f"codex --cd {tmp_path} --dangerously-bypass-approvals-and-sandbox resume old-session"
+
+
+def test_restart_resolves_codex_cwd_choice_in_same_viewport(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import seat
+    from lib import registry
+
+    session_dir = tmp_path / "legacy-role-home"
+    current_dir = tmp_path / "unit-root"
+    session_dir.mkdir()
+    current_dir.mkdir()
+    prompt = [
+        "Choose working directory to resume this session",
+        "",
+        f"  1. Use session directory ({session_dir})",
+        f"  2. Use current directory ({current_dir})",
+        "",
+        "  Press enter to continue",
+    ]
+
+    RestartTerminal.reset()
+    RestartTerminal.captures = [prompt, ["› ready"]]
+    registry.upsert_agent(_record(
+        current_dir,
+        runtime="codex",
+        command="codex --dangerously-bypass-approvals-and-sandbox",
+        cwd=str(current_dir),
+    ))
+
+    result = seat._restart(_args(), registry, RestartTerminal)
+
+    assert result["ok"] is True
+    assert result["same_viewport"] is True
+    assert result["cwd_choice"]["ok"] is True
+    assert result["cwd_choice"]["selected_number"] == "2"
+    assert result["cwd_choice"]["verified"] is True
+    assert ("tmux:unitfleet:%1", "2", True) in RestartTerminal.sent
+    updated = registry.get_agent("engineer", fleet="unitfleet")
+    assert updated["cwd_choice"]["selected_path"] == str(current_dir)
 
 
 def test_restart_dry_run_does_not_mutate_registry_or_terminal(monkeypatch, tmp_path):

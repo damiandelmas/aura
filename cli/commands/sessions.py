@@ -26,6 +26,10 @@ def run(args):
         return _restore_plan(args)
     if getattr(args, "sessions_action", None) == "fleets":
         return _fleets(args)
+    if getattr(args, "sessions_action", None) == "fleet-history":
+        from commands import fleets as fleets_cmd
+
+        return fleets_cmd.fleet_history(getattr(args, "nonce", None) or getattr(args, "target", None) or getattr(args, "fleet", None))
 
     rows = list_cmd.run(argparse.Namespace(
         fleet=getattr(args, "fleet", None),
@@ -43,12 +47,21 @@ def run(args):
         row = runtime_session.mark_binding(dict(row))
         seat = row.get("seat") or row.get("name") or row.get("agent")
         fleet = row.get("fleet")
+        fleet_id = row.get("fleet_id")
+        if fleet and not fleet_id:
+            try:
+                from lib import fleets as fleets_lib
+
+                fleet_id = (fleets_lib.ensure_fleet(fleet) or {}).get("fleet_id")
+            except Exception:
+                fleet_id = None
         target = f"{fleet}:{seat}" if fleet and seat else None
         capability = runtimes.capabilities(row.get("runtime"))
         restore = session_ledger.restore_status(row, capability)
         mapped.append({
             "seat": seat,
             "fleet": fleet,
+            "fleet_id": fleet_id,
             "target": target,
             "seat_ref": row.get("seat_ref") or target,
             "runtime": row.get("runtime"),
@@ -92,7 +105,7 @@ def run(args):
 
 def _fleets(args) -> dict:
     """Roster of fleets: per-fleet live seat count, registry seat count, last lifecycle event."""
-    from lib import registry as registry_lib, runtime_session, session_ledger
+    from lib import fleets as fleets_lib, registry as registry_lib, runtime_session, session_ledger
 
     rows = list_cmd.run(argparse.Namespace(
         fleet=None,
@@ -110,8 +123,11 @@ def _fleets(args) -> dict:
         raw_by_target[target] = v
 
     def _new_bucket(fleet: str) -> dict:
+        fleet_record = fleets_lib.ensure_fleet(fleet)
         return {
+            "fleet_id": (fleet_record or {}).get("fleet_id"),
             "fleet": fleet,
+            "tmux_session": (fleet_record or {}).get("tmux_session") or fleet,
             "registry_seats": 0,
             "live_seats": 0,
             "bound_seats": 0,
@@ -147,16 +163,7 @@ def _fleets(args) -> dict:
                 fleet = ref.split(":", 1)[0]
         if not fleet:
             continue
-        bucket = by_fleet.setdefault(fleet, {
-            "fleet": fleet,
-            "registry_seats": 0,
-            "live_seats": 0,
-            "bound_seats": 0,
-            "adopted_seats": 0,
-            "last_event": None,
-            "last_event_at": None,
-            "last_event_target": None,
-        })
+        bucket = by_fleet.setdefault(fleet, _new_bucket(fleet))
         ts = record.get("timestamp")
         if ts and (bucket["last_event_at"] is None or ts > bucket["last_event_at"]):
             bucket["last_event_at"] = ts

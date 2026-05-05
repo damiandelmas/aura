@@ -424,7 +424,7 @@ def test_spawn_codex_resume_session_builds_autonomous_resume_command(monkeypatch
     result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
 
     assert result["ok"] is True
-    assert created[0][1] == f"codex --dangerously-bypass-approvals-and-sandbox resume {session_id}"
+    assert created[0][1] == f"codex --cd {unit} --dangerously-bypass-approvals-and-sandbox resume {session_id}"
     assert result["source_session_id"] == session_id
     assert result["session_id"] == session_id
     assert result["runtime_session_id"] == session_id
@@ -432,6 +432,7 @@ def test_spawn_codex_resume_session_builds_autonomous_resume_command(monkeypatch
     assert result["runtime_session_confidence"] == "exact"
     assert result["runtime_session_mode"] == "native-resume"
     assert result["isolation"] == "shared-native-thread"
+    assert result["backend_ref"] == "unitfleet:outreach"
     assert result["session_observation"]["status"] == "already-bound"
 
 
@@ -496,7 +497,124 @@ def test_spawn_codex_resume_resolves_cwd_choice_to_requested_cwd(monkeypatch, tm
     assert result["cwd_choice"]["ok"] is True
     assert result["cwd_choice"]["selected_number"] == "2"
     assert result["cwd_choice"]["selected_path"] == str(current_dir)
+    assert result["cwd_choice"]["selection_policy"] == "codex-current-directory"
     assert result["cwd_choice"]["verified"] is True
+    assert keys == [("tmux:unitfleet:%43", "2", True)]
+
+
+def test_codex_cwd_choice_prefers_current_directory_over_session_directory(tmp_path):
+    from commands import spawn
+
+    session_dir = tmp_path / "legacy-role-home"
+    current_dir = tmp_path / "unit-root"
+    session_dir.mkdir()
+    current_dir.mkdir()
+
+    result = spawn._codex_cwd_choice_from_capture(
+        [
+            "Choose working directory to resume this session",
+            f"  1. Use session directory ({session_dir})",
+            f"  2. Use current directory ({current_dir})",
+            "  Press enter to continue",
+        ],
+        desired_cwd=None,
+    )
+
+    assert result["detected"] is True
+    assert result["selection_policy"] == "codex-current-directory"
+    assert result["selected"]["number"] == "2"
+    assert result["selected"]["label"] == "Use current directory"
+    assert result["selected"]["path"] == str(current_dir)
+
+
+def test_codex_cwd_choice_still_prefers_current_directory_when_desired_cwd_is_legacy(tmp_path):
+    from commands import spawn
+
+    session_dir = tmp_path / "legacy-role-home"
+    current_dir = tmp_path / "unit-root"
+    session_dir.mkdir()
+    current_dir.mkdir()
+
+    result = spawn._codex_cwd_choice_from_capture(
+        [
+            "Choose working directory to resume this session",
+            f"  1. Use session directory ({session_dir})",
+            f"  2. Use current directory ({current_dir})",
+            "  Press enter to continue",
+        ],
+        desired_cwd=str(session_dir),
+    )
+
+    assert result["selected"]["number"] == "2"
+    assert result["selected"]["path"] == str(current_dir)
+
+
+def test_spawn_codex_resume_polls_cwd_choice_before_resending(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+
+    session_dir = tmp_path / "session"
+    current_dir = tmp_path / "desks"
+    session_dir.mkdir()
+    current_dir.mkdir()
+    prompt = [
+        "Choose working directory to resume this session",
+        "",
+        f"  1. Use session directory ({session_dir})",
+        f"  2. Use current directory ({current_dir})",
+        "",
+        "  Press enter to continue",
+    ]
+    keys = []
+    captures = [prompt, prompt, ["› ready"]]
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            return {"ok": True, "target": "unitfleet:substrate", "pane_id": "%43"}
+
+        @staticmethod
+        def capture_output(target, lines=80):
+            return captures.pop(0)
+
+        @staticmethod
+        def send_keys(target, text, enter=False):
+            keys.append((target, text, enter))
+            return {"ok": True, "target": target}
+
+    args = argparse.Namespace(
+        name="substrate",
+        runtime="codex",
+        resume_session="019ddfa4-1b45-7eb0-9620-965f2ebb2482",
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(current_dir),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["cwd_choice"]["ok"] is True
+    assert result["cwd_choice"]["verified"] is True
+    assert result["cwd_choice"]["send_attempts"] == [
+        {
+            "ok": True,
+            "target": "tmux:unitfleet:%43",
+            "verified": True,
+            "verify_checks": [
+                {"verified": False, "prompt_present": True},
+                {"verified": True, "prompt_present": False},
+            ],
+        },
+    ]
     assert keys == [("tmux:unitfleet:%43", "2", True)]
 
 

@@ -47,6 +47,7 @@ SNAPSHOT_FIELDS = (
     "name",
     "seat",
     "fleet",
+    "fleet_id",
     "seat_ref",
     "runtime",
     "command",
@@ -133,7 +134,16 @@ def append_seat_event(
     after_snap = snapshot_seat(after)
     seat = seat or _first_present(after_snap, before_snap, key="seat") or _first_present(after_snap, before_snap, key="name")
     fleet = fleet or _first_present(after_snap, before_snap, key="fleet")
+    fleet_id = _first_present(after_snap, before_snap, key="fleet_id")
     runtime = runtime or _first_present(after_snap, before_snap, key="runtime")
+    if fleet and not fleet_id:
+        try:
+            from lib import fleets
+
+            fleet_record = fleets.ensure_fleet(fleet)
+            fleet_id = (fleet_record or {}).get("fleet_id")
+        except Exception:
+            fleet_id = None
     cwd = _first_present(after_snap, before_snap, key="cwd")
     session_id = _first_present(after_snap, before_snap, key="session_id") or _first_present(after_snap, before_snap, key="runtime_session_id")
     runtime_session_id = _first_present(after_snap, before_snap, key="runtime_session_id") or session_id
@@ -147,6 +157,7 @@ def append_seat_event(
         "seat": seat,
         "name": seat,
         "fleet": fleet,
+        "fleet_id": fleet_id,
         "seat_ref": seat_ref(fleet, seat),
         "runtime": runtime,
         "cwd": cwd,

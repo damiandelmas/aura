@@ -162,6 +162,13 @@ def upsert_agent(record: dict[str, Any]) -> dict[str, Any]:
     name = record["name"]
     fleet = record.get("fleet") or current_fleet()
     runtime = record.get("runtime")
+    fleet_record = None
+    try:
+        from lib import fleets
+
+        fleet_record = fleets.ensure_fleet(fleet, tmux_session=record.get("physical_fleet") or fleet)
+    except Exception:
+        fleet_record = None
     data = read_registry()
     key = _key(fleet, name)
     previous = data.get(key, {})
@@ -171,6 +178,7 @@ def upsert_agent(record: dict[str, Any]) -> dict[str, Any]:
         **record,
         "name": name,
         "fleet": fleet,
+        "fleet_id": record.get("fleet_id") or previous.get("fleet_id") or (fleet_record or {}).get("fleet_id"),
         "transport": record.get("transport") or previous.get("transport") or "tmux",
         "delivery_mode": record.get("delivery_mode") or previous.get("delivery_mode") or "immediate",
         "status": record.get("status") or previous.get("status") or "starting",

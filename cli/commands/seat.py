@@ -709,7 +709,7 @@ def _restart_plan(args, record: dict) -> dict:
         runtime_capabilities = {"supports_resume": False}
     if resume_session_id and runtime_capabilities.get("supports_resume"):
         try:
-            command = runtimes.build_resume_command(runtime, str(resume_session_id))
+            command = runtimes.build_resume_command(runtime, str(resume_session_id), cwd=str(cwd_path))
         except Exception:
             # Fall back to the recorded launch command if the runtime cannot
             # build a native resume command for this seat.
@@ -986,6 +986,25 @@ def _restart(args, registry, terminal) -> dict:
         "prompt_sent": prompt_sent or record.get("prompt_sent"),
     })
 
+    cwd_choice = None
+    try:
+        from commands import spawn
+
+        cwd_choice = spawn._resolve_codex_cwd_choice(
+            runtime=plan["runtime"],
+            resume_session=plan.get("resume_session_id"),
+            terminal=terminal,
+            target=new_pane_ref or terminal_ref,
+            desired_cwd=plan["cwd"],
+        )
+        if cwd_choice and cwd_choice.get("detected") and cwd_choice.get("selected_path"):
+            updated = registry.upsert_agent({
+                **updated,
+                "cwd_choice": cwd_choice,
+            })
+    except Exception as exc:
+        cwd_choice = {"detected": False, "ok": False, "reason": "cwd-choice-error", "error": str(exc)}
+
     session_observation = {}
     try:
         from commands import spawn
@@ -1078,6 +1097,7 @@ def _restart(args, registry, terminal) -> dict:
                 "same_viewport": same_viewport,
                 "forced": bool(getattr(args, "force", False)),
                 "session_observation": session_observation,
+                "cwd_choice": cwd_choice,
             },
             source_command="aura seat restart",
             restart_id=restart_id,
@@ -1103,6 +1123,7 @@ def _restart(args, registry, terminal) -> dict:
         "seat_history_event_id": lifecycle_event.get("event_id") or restart_id,
         "restart_id": restart_id,
         "session_observation": session_observation,
+        "cwd_choice": cwd_choice,
         "warnings": warnings,
     }
 

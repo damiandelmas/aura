@@ -119,12 +119,15 @@ def build_command(runtime: str, spec: dict, *, name: str, profile: str | None = 
     return command
 
 
-def build_resume_command(runtime: str, session_id: str) -> str:
+def build_resume_command(runtime: str, session_id: str, *, cwd: str | None = None) -> str:
     resolved, spec = resolve_runtime(runtime)
     resume_template = (spec.get("capabilities") or {}).get("resume_command")
     if not resume_template:
         raise ValueError(f"runtime does not support native resume: {resolved}")
-    return resume_template.format(session_id=shlex.quote(session_id))
+    command = resume_template.format(session_id=shlex.quote(session_id))
+    if resolved == "codex" and cwd:
+        return command.replace("codex ", f"codex --cd {shlex.quote(cwd)} ", 1)
+    return command
 
 
 def graceful_exit(runtime: str | None, default: str = "/exit") -> str:

@@ -81,7 +81,16 @@ def run(args):
 
     # Determine fleet name BEFORE importing terminal (it reads env at import time)
     # Priority: --fleet flag > caller-derived default.
-    fleet = getattr(args, 'fleet', None) or _infer_fleet_from_caller()
+    fleet_id = getattr(args, 'fleet_id', None)
+    fleet = getattr(args, 'fleet', None)
+    if fleet_id:
+        from lib import fleets as fleets_lib
+
+        resolved_fleet, fleet_record = fleets_lib.resolve_name_or_id(fleet_id)
+        if not fleet_record:
+            return {"ok": False, "error": f"unknown fleet id: {fleet_id}", "fleet_id": fleet_id}
+        fleet = fleet or resolved_fleet
+    fleet = fleet or _infer_fleet_from_caller()
     if fleet:
         os.environ["AURA_FLEET"] = fleet
         os.environ["AURA_PROJECT"] = fleet
@@ -315,11 +324,13 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     runtime, spec = runtimes.resolve_runtime(requested_runtime)
     resume_session = getattr(args, 'resume_session', None)
     launch_command = getattr(args, 'launch_command', None)
+    workdir_path = workspace_state.resolve_workdir(getattr(args, 'cwd', None))
+    workdir = str(workdir_path)
     if resume_session:
         if launch_command:
             return result_fn({"ok": False, "error": "use either --resume-session or --command, not both", "name": args.name})
         try:
-            launch_command = runtimes.build_resume_command(runtime, resume_session)
+            launch_command = runtimes.build_resume_command(runtime, resume_session, cwd=workdir)
         except ValueError as exc:
             return result_fn({"ok": False, "error": str(exc), "name": args.name})
     profile = getattr(args, 'profile', None) or args.name
@@ -331,8 +342,6 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         model=getattr(args, 'model', None),
         command_override=launch_command,
     )
-    workdir_path = workspace_state.resolve_workdir(getattr(args, 'cwd', None))
-    workdir = str(workdir_path)
     context_path = workspace_state.infer_context_file(
         workdir_path,
         spec,
@@ -459,7 +468,9 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "runtime_session_mode": "native-resume" if resume_session else None,
         "isolation": "shared-native-thread" if resume_session and runtime == "codex" else None,
         "terminal_ref": launch.get("target"),
+        "backend_ref": launch.get("target"),
         "pane_ref": pane_ref,
+        "physical_fleet": fleet,
         "transport": "tmux",
         "status": "starting",
         "registered": True,
@@ -549,6 +560,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "runtime_session_mode": "native-resume" if resume_session else None,
         "isolation": "shared-native-thread" if resume_session and runtime == "codex" else None,
         "terminal_ref": launch.get("target"),
+        "backend_ref": launch.get("target"),
         "pane_ref": pane_ref,
         "status": "starting",
         "registered": True,
@@ -1049,20 +1061,32 @@ def _codex_cwd_choice_from_capture(capture: list[str], desired_cwd: str | None) 
             "path": path,
         })
     selected = None
+    current_option = next((
+        option for option in options
+        if "current directory" in option.get("label", "").lower()
+    ), None)
     if desired_cwd:
         try:
             desired = str(Path(desired_cwd).expanduser().resolve())
         except OSError:
             desired = str(desired_cwd)
-        selected = next((option for option in options if option.get("path") == desired), None)
+        if current_option and current_option.get("path") == desired:
+            selected = current_option
+        elif current_option:
+            selected = current_option
+        else:
+            selected = next((option for option in options if option.get("path") == desired), None)
+    if not selected and current_option:
+        selected = current_option
     if not selected:
-        selected = next((option for option in options if "session directory" in option.get("label", "").lower()), None)
+        selected = next((option for option in options if option.get("number") == "2"), None)
     if not selected and options:
         selected = options[0]
     return {
         "detected": True,
         "options": options,
         "selected": selected,
+        "selection_policy": "codex-current-directory",
     }
 
 
@@ -1081,10 +1105,33 @@ def _resolve_codex_cwd_choice(*, runtime: str, resume_session: str | None, termi
             return {**choice, "ok": False, "reason": "no-selectable-option"}
         if not hasattr(terminal, "send_keys"):
             return {**choice, "ok": False, "reason": "terminal-send-keys-unavailable"}
-        result = terminal.send_keys(target, selected["number"], enter=True) or {}
-        time.sleep(0.75)
-        verify_capture = terminal.capture_output(target, 80)
-        verified = _codex_cwd_choice_from_capture(verify_capture, desired_cwd) is None
+        send_attempts = []
+        max_send_attempts = int(os.environ.get("AURA_CODEX_CWD_CHOICE_SEND_ATTEMPTS", "4"))
+        verify_attempts = int(os.environ.get("AURA_CODEX_CWD_CHOICE_VERIFY_ATTEMPTS", "4"))
+        verified = False
+        result = {}
+        for send_index in range(max(1, max_send_attempts)):
+            result = terminal.send_keys(target, selected["number"], enter=True) or {}
+            verify_checks = []
+            for verify_index in range(max(1, verify_attempts)):
+                time.sleep(0.75 if verify_index == 0 else 0.75)
+                verify_capture = terminal.capture_output(target, 80)
+                prompt_present = _codex_cwd_choice_from_capture(verify_capture, desired_cwd) is not None
+                verified = not prompt_present
+                verify_checks.append({
+                    "verified": verified,
+                    "prompt_present": prompt_present,
+                })
+                if verified:
+                    break
+            send_attempts.append({
+                "ok": bool(result.get("ok")),
+                "target": result.get("target"),
+                "verified": verified,
+                "verify_checks": verify_checks,
+            })
+            if verified:
+                break
         return {
             **choice,
             "ok": bool(result.get("ok")) and verified,
@@ -1092,6 +1139,7 @@ def _resolve_codex_cwd_choice(*, runtime: str, resume_session: str | None, termi
             "selected_path": selected.get("path"),
             "selected_label": selected.get("label"),
             "send_result": result,
+            "send_attempts": send_attempts,
             "verified": verified,
         }
     return {"detected": False, "ok": True}
