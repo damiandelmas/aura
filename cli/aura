@@ -485,9 +485,19 @@ def main():
     p_report.add_argument("--blocker", action="append", default=[],
                           help="Current blocker; repeat for multiple blockers")
     p_report.add_argument("--limit", "-n", type=int, default=20,
-                          help="Number of reports for list (default: 20)")
+                          help="Number of reports for list/latest (default: 20)")
     p_report.add_argument("--ack", action="store_true",
                           help="Print a compact acknowledgement; report writes are quiet by default")
+    p_report.add_argument("--target",
+                          help="For list/latest, reporting seat to filter")
+    p_report.add_argument("--state", action="append", choices=["working", "blocked", "needs_decision", "handoff", "complete", "parked", "failed"],
+                          help="For list/latest, include only this report state; repeatable")
+    p_report.add_argument("--fleet",
+                          help="For list/latest, include only reports from this fleet")
+    p_report.add_argument("--seat",
+                          help="For list/latest, include only reports from this seat")
+    p_report.add_argument("--cwd-prefix",
+                          help="For list/latest, include only reports whose cwd starts with this path")
 
     # view — bounded mesh worldview
     p_view = subparsers.add_parser("view", help="Show current bounded mesh view")

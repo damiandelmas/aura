@@ -140,6 +140,47 @@ def test_report_list_and_latest_read_global_ledger(tmp_path):
     assert latest["record"]["blockers"] == ["needs decision"]
 
 
+def test_report_list_and_latest_can_filter_by_target_state_and_cwd(tmp_path):
+    base_env = {
+        **os.environ,
+        "AURA_STATE_DIR": str(tmp_path / ".aura"),
+        "AURA_RUNTIME": "codex",
+        "CODEX_THREAD_ID": "019ddf5f-b386-7ef0-9f43-8329ab2019c7",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+    env_a = {**base_env, "AURA_FLEET": "fleet-a", "AURA_SEAT": "worker-a"}
+    env_b = {**base_env, "AURA_FLEET": "fleet-b", "AURA_SEAT": "worker-b"}
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+
+    run_aura_raw(["report", "working", "--work", "A first"], env_a, cwd=repo_a)
+    run_aura_raw(["report", "complete", "--work", "B done"], env_b, cwd=repo_b)
+    run_aura_raw(["report", "complete", "--work", "A done"], env_a, cwd=repo_a)
+
+    listed = run_aura([
+        "report",
+        "list",
+        "--target",
+        "fleet-a:worker-a",
+        "--state",
+        "complete",
+        "--cwd-prefix",
+        str(repo_a),
+    ], base_env)
+    assert listed["ok"] is True
+    assert listed["count"] == 1
+    assert listed["rows"][0]["work"] == "A done"
+    assert listed["rows"][0]["fleet"] == "fleet-a"
+    assert listed["rows"][0]["seat"] == "worker-a"
+
+    latest = run_aura(["report", "latest", "--fleet", "fleet-b"], base_env)
+    assert latest["ok"] is True
+    assert latest["record"]["work"] == "B done"
+
+
 def test_report_releases_queued_messages_for_reporting_seat(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")

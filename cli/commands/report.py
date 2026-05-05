@@ -5,11 +5,48 @@ from __future__ import annotations
 from lib import reports
 
 
+def _report_filters(args) -> dict:
+    states = set(getattr(args, "state", None) or [])
+    target = getattr(args, "target", None)
+    fleet = getattr(args, "fleet", None)
+    seat = getattr(args, "seat", None)
+    if target and ":" in target:
+        target_fleet, target_seat = target.split(":", 1)
+        fleet = fleet or target_fleet
+        seat = seat or target_seat
+    elif target:
+        seat = seat or target
+    return {
+        "states": states or None,
+        "fleet": fleet,
+        "seat": seat,
+        "cwd_prefix": getattr(args, "cwd_prefix", None),
+    }
+
+
+def _matches_report(row: dict, filters: dict) -> bool:
+    states = filters.get("states")
+    if states and row.get("state") not in states:
+        return False
+    if filters.get("fleet") and row.get("fleet") != filters["fleet"]:
+        return False
+    if filters.get("seat") and row.get("seat") != filters["seat"]:
+        return False
+    if filters.get("cwd_prefix") and not str(row.get("cwd") or "").startswith(filters["cwd_prefix"]):
+        return False
+    return True
+
+
+def _filtered_reports(args) -> list[dict]:
+    filters = _report_filters(args)
+    return [row for row in reports.iter_reports() if _matches_report(row, filters)]
+
+
 def run(args):
     action = getattr(args, "report_action", None)
     if action == "list":
         limit = getattr(args, "limit", None) or 20
-        rows = reports.iter_reports(limit=limit)
+        rows = _filtered_reports(args)[-int(limit):]
         return {
             "ok": True,
             "schema": "aura.report_list.v1",
@@ -18,7 +55,8 @@ def run(args):
             "rows": rows,
         }
     if action == "latest":
-        row = reports.latest_report()
+        rows = _filtered_reports(args)
+        row = rows[-1] if rows else None
         return {
             "ok": bool(row),
             "schema": "aura.report_latest.v1",
