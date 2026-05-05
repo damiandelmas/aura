@@ -307,7 +307,7 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
     assert rows[-1]["work_file"] == str(work_file)
 
 
-def test_spawn_injects_flex_project_packet_from_unit_manifest(monkeypatch, tmp_path):
+def test_spawn_sets_flex_project_env_without_launch_packet(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
 
@@ -320,10 +320,6 @@ def test_spawn_injects_flex_project_packet_from_unit_manifest(monkeypatch, tmp_p
     main.mkdir()
     (flex_dir / "project.yaml").write_text(
         "version: 1\nproject:\n  name: demo-unit\ncommands: {}\n",
-        encoding="utf-8",
-    )
-    (flex_dir / "agent-guidance.md").write_text(
-        "Use `flex context`, `flex sessions`, and `flex memory` from this unit.\n",
         encoding="utf-8",
     )
 
@@ -366,17 +362,12 @@ def test_spawn_injects_flex_project_packet_from_unit_manifest(monkeypatch, tmp_p
     assert env["FLEX_PROJECT_MANIFEST"] == str(flex_dir / "project.yaml")
     assert env["FLEX_PROJECT_ROOT"] == str(unit)
     text = sent[0][1]
-    assert "[FLEX PROJECT RETRIEVAL]" in text
-    assert "project=demo-unit" in text
-    assert f"root={unit}" in text
-    assert "Use `flex context`, `flex sessions`, and `flex memory` from this unit." in text
-    assert text.endswith("[/FLEX PROJECT RETRIEVAL]\n\nBegin.")
-    assert result["flex_project_packet_delivered"] is True
-    assert result["flex_project_packet_source"] == "spawn.prompt"
-    assert result["flex_project_packet_manifest"] == str(flex_dir / "project.yaml")
+    assert "[FLEX PROJECT RETRIEVAL]" not in text
+    assert text.endswith("Begin.")
+    assert "flex_project_packet_delivered" not in result
 
 
-def test_seat_inject_flex_sends_missing_project_packet(monkeypatch, tmp_path):
+def test_seat_inject_flex_skips_when_project_packet_disabled(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
 
@@ -386,7 +377,6 @@ def test_seat_inject_flex_sends_missing_project_packet(monkeypatch, tmp_path):
     main.mkdir(parents=True)
     flex_dir.mkdir(parents=True)
     (flex_dir / "project.yaml").write_text("project:\n  name: demo-unit\n", encoding="utf-8")
-    (flex_dir / "agent-guidance.md").write_text("Use `flex context` from this unit.\n", encoding="utf-8")
 
     from commands import seat
     from lib import registry
@@ -427,16 +417,12 @@ def test_seat_inject_flex_sends_missing_project_packet(monkeypatch, tmp_path):
     )
 
     assert result["ok"] is True
-    assert result["sent"] is True
-    assert sent[0][0] == "tmux:unitfleet:%1"
-    assert "[FLEX PROJECT RETRIEVAL]" in sent[0][1]
-    assert "project=demo-unit" in sent[0][1]
-    updated = registry.get_agent("engineer", fleet="unitfleet")
-    assert updated["flex_project_manifest"] == str(flex_dir / "project.yaml")
-    assert updated["flex_project_packet_delivered"] is True
+    assert result["skipped"] is True
+    assert result["reason"] == "flex-project-packet-disabled"
+    assert sent == []
 
 
-def test_seat_inject_flex_skips_existing_project_packet(monkeypatch, tmp_path):
+def test_seat_inject_flex_disabled_even_with_existing_project_packet(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
 
@@ -447,7 +433,6 @@ def test_seat_inject_flex_skips_existing_project_packet(monkeypatch, tmp_path):
     flex_dir.mkdir(parents=True)
     manifest = flex_dir / "project.yaml"
     manifest.write_text("project:\n  name: demo-unit\n", encoding="utf-8")
-    (flex_dir / "agent-guidance.md").write_text("Use `flex context` from this unit.\n", encoding="utf-8")
 
     from commands import seat
     from lib import registry
@@ -489,8 +474,7 @@ def test_seat_inject_flex_skips_existing_project_packet(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert result["skipped"] is True
-    assert result["reason"] == "flex-project-packet-already-present"
-    assert result["evidence"]["source"] == "terminal-capture"
+    assert result["reason"] == "flex-project-packet-disabled"
 
 
 def _write_role_home(tmp_path):
@@ -558,6 +542,40 @@ def test_spawn_manifest_applies_desks_role_defaults(tmp_path):
     assert args._role_manifest_meta["desks_bootstrap"] == str(role_home / "BOOTSTRAP.md")
 
 
+def test_spawn_manifest_resume_keeps_metadata_without_bootstrap_prompt(tmp_path):
+    from commands import spawn
+
+    role_home = _write_role_home(tmp_path)
+    session_id = "019dec35-4cd3-7550-83d3-53d50e837e5d"
+    args = argparse.Namespace(
+        name="specialist-cell",
+        manifest=str(role_home / "role.json"),
+        role_home=None,
+        fleet="flex-specialists",
+        cwd=None,
+        runtime="codex",
+        profile=None,
+        prompt=None,
+        work=None,
+        context=None,
+        resume_session=session_id,
+    )
+
+    result = spawn._apply_spawn_manifest(args)
+
+    assert result["ok"] is True
+    assert args.name == "specialist-cell"
+    assert args.fleet == "flex-specialists"
+    assert args.cwd == str(tmp_path / "unit")
+    assert args.runtime == "codex"
+    assert args.profile == "specialist-cell"
+    assert args.context == str(role_home / "AGENTS.md")
+    assert args.prompt is None
+    assert args.resume_session == session_id
+    assert args._role_manifest_meta["desks_role_home"] == str(role_home)
+    assert args._role_manifest_meta["desks_bootstrap"] == str(role_home / "BOOTSTRAP.md")
+
+
 def test_spawn_role_home_resolves_manifest(tmp_path):
     from commands import spawn
 
@@ -609,15 +627,15 @@ def test_spawn_manifest_infers_flex_project_env_from_workspace_context(tmp_path)
     assert args._role_manifest_meta["flex_project_root"] == str(project_manifest.parent.parent)
 
 
-def test_spawn_manifest_rejects_name_mismatch(tmp_path):
+def test_spawn_manifest_allows_explicit_aura_address_to_differ_from_desks_defaults(tmp_path):
     from commands import spawn
 
     role_home = _write_role_home(tmp_path)
     args = argparse.Namespace(
-        name="wrong-seat",
+        name="debug-1",
         manifest=str(role_home / "role.json"),
         role_home=None,
-        fleet=None,
+        fleet="scratch",
         cwd=None,
         runtime=None,
         profile=None,
@@ -628,8 +646,12 @@ def test_spawn_manifest_rejects_name_mismatch(tmp_path):
 
     result = spawn._apply_spawn_manifest(args)
 
-    assert result["ok"] is False
-    assert "manifest seat mismatch" in result["error"]
+    assert result["ok"] is True
+    assert args.name == "debug-1"
+    assert args.fleet == "scratch"
+    assert args.profile == "specialist-cell"
+    assert args._role_manifest_meta["desks_default_seat"] == "specialist-cell"
+    assert args._role_manifest_meta["desks_default_fleet"] == "flex-specialists"
 
 
 def test_spawn_manifest_rejects_absolute_role_file(tmp_path):
@@ -723,6 +745,8 @@ def test_spawn_manifest_metadata_reaches_registry_and_workspace_record(monkeypat
     assert created[0][4]["DESKS_PRODUCT"] == "flex"
     assert created[0][4]["DESKS_UNIT"] == "engine"
     assert created[0][4]["DESKS_MANIFEST"] == str(role_home / "role.json")
+    assert created[0][4]["DESKS_DEFAULT_SEAT"] == "specialist-cell"
+    assert created[0][4]["DESKS_DEFAULT_FLEET"] == "flex-specialists"
     assert sent[0][1].endswith(f"Read {role_home / 'BOOTSTRAP.md'} and follow it.\nUse {role_home} as your Desks role home.")
 
     agent = registry.get_agent("specialist-cell", fleet="flex-specialists")
@@ -735,6 +759,68 @@ def test_spawn_manifest_metadata_reaches_registry_and_workspace_record(monkeypat
     ]
     assert rows[-1]["desks_role_home"] == str(role_home)
     assert rows[-1]["desks_manifest"] == str(role_home / "role.json")
+
+
+def test_spawn_manifest_resume_does_not_send_bootstrap_prompt(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import spawn
+
+    role_home = _write_role_home(tmp_path)
+    session_id = "019dec35-4cd3-7550-83d3-53d50e837e5d"
+    args = argparse.Namespace(
+        name="specialist-cell",
+        manifest=str(role_home / "role.json"),
+        role_home=None,
+        fleet="flex-specialists",
+        cwd=None,
+        runtime="codex",
+        profile=None,
+        prompt=None,
+        work=None,
+        context=None,
+        resume_session=session_id,
+        launch_command=None,
+        model=None,
+        as_pane=True,
+    )
+    applied = spawn._apply_spawn_manifest(args)
+    assert applied["ok"] is True
+
+    sent = []
+    created = []
+
+    class FakeTerminal:
+        SESSION_NAME = "flex-specialists"
+        BACKEND_NAME = "tmux"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((name, workdir, detached, command, env, unset_env))
+            return {"ok": True, "target": "flex-specialists:specialist-cell", "pane_id": "%56"}
+
+        @staticmethod
+        def send_text(name, text, submit=True, submit_key="Enter"):
+            sent.append((name, text, submit, submit_key))
+            return {"ok": True}
+
+        @staticmethod
+        def pane_pid(_target):
+            return 1234
+
+    monkeypatch.setattr(spawn.uuid, "uuid4", lambda: type("U", (), {"hex": "feedfacecafebeef1234"})())
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["command"] == f"codex --dangerously-bypass-approvals-and-sandbox resume {session_id}"
+    assert result["runtime_session_binding"] == "bound"
+    assert result["runtime_session_id"] == session_id
+    assert result["desks_role_home"] == str(role_home)
+    assert "prompt_sent" not in result
+    assert sent == []
+    assert created[0][4]["DESKS_ROLE_HOME"] == str(role_home)
 
 
 def test_spawn_terminal_exports_inferred_flex_project_env(monkeypatch, tmp_path):
@@ -826,6 +912,9 @@ def test_runtime_session_discovers_codex_thread_from_pane_process(monkeypatch):
     assert result == {
         "runtime_session_id": "019dd2b7-8919-75d2-b472-7c778a93da92",
         "runtime_session_source": "argv:codex-resume",
+        "runtime_session_binding": "bound",
+        "runtime_session_bind_method": "argv-resume",
+        "runtime_session_bind_source": "argv:codex-resume",
         "runtime_session_confidence": "exact",
         "runtime_session_evidence": {
             "reason": "codex-resume-argv",

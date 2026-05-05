@@ -110,7 +110,7 @@ def _record(tmp_path, **overrides):
     return record
 
 
-def test_restart_preserves_seat_and_records_lineage(monkeypatch, tmp_path):
+def test_restart_preserves_seat_and_records_seat_history(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
@@ -158,10 +158,31 @@ def test_restart_preserves_seat_and_records_lineage(monkeypatch, tmp_path):
         json.loads(line)
         for line in (tmp_path / "state" / "registry" / "session-ledger.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    assert rows[-1]["event"] == "seat_restart"
-    assert rows[-1]["kind"] == "aura.seat.restarted"
-    assert rows[-1]["old_runtime_session_id"] == "old-session"
-    assert rows[-1]["new_pane_ref"] == "tmux:unitfleet:%1"
+    assert any(row["event"] == "seat_restart" for row in rows)
+    seat_history = [row for row in rows if row["event"] == "seat_restarted"][-1]
+    assert seat_history["schema"] == "aura.seat_history.v1"
+    assert seat_history["evidence"]["old_runtime_session_id"] == "old-session"
+    assert seat_history["evidence"]["new_pane_ref"] == "tmux:unitfleet:%1"
+
+
+def test_restart_uses_native_resume_for_codex(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import seat
+    from lib import registry
+
+    RestartTerminal.reset()
+    registry.upsert_agent(_record(
+        tmp_path,
+        runtime="codex",
+        command="codex --dangerously-bypass-approvals-and-sandbox",
+    ))
+
+    result = seat._restart(_args(prompt="fresh start"), registry, RestartTerminal)
+
+    assert result["ok"] is True
+    assert RestartTerminal.respawned[0][2] == "codex --dangerously-bypass-approvals-and-sandbox resume old-session"
 
 
 def test_restart_dry_run_does_not_mutate_registry_or_terminal(monkeypatch, tmp_path):
@@ -201,7 +222,7 @@ def test_restart_refuses_unreconstructable_command(monkeypatch, tmp_path):
     assert RestartTerminal.killed == []
 
 
-def test_restart_failed_relaunch_keeps_old_lineage_and_marks_failure(monkeypatch, tmp_path):
+def test_restart_failed_relaunch_keeps_old_seat_history_and_marks_failure(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
 
     from commands import seat

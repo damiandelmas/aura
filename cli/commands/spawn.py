@@ -369,18 +369,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         }
 
     if role_meta:
-        launch_env.update({
-            "AURA_DESKS_ROLE_HOME": role_meta.get("desks_role_home", ""),
-            "AURA_DESKS_ROLE_ID": role_meta.get("desks_role_id", ""),
-            "AURA_DESKS_PRODUCT": role_meta.get("desks_product", ""),
-            "AURA_DESKS_UNIT": role_meta.get("desks_unit", ""),
-            "AURA_DESKS_MANIFEST": role_meta.get("desks_manifest", ""),
-            "DESKS_ROLE_HOME": role_meta.get("desks_role_home", ""),
-            "DESKS_ROLE_ID": role_meta.get("desks_role_id", ""),
-            "DESKS_PRODUCT": role_meta.get("desks_product", ""),
-            "DESKS_UNIT": role_meta.get("desks_unit", ""),
-            "DESKS_MANIFEST": role_meta.get("desks_manifest", ""),
-        })
+        launch_env.update(_desks_launch_env(role_meta))
     if flex_meta.get("flex_project_manifest"):
         launch_env["FLEX_PROJECT_MANIFEST"] = flex_meta["flex_project_manifest"]
     if flex_meta.get("flex_project_root"):
@@ -424,12 +413,34 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "session_id": resume_session,
             "runtime_session_id": resume_session,
             "runtime_session_source": "spawn:resume-session",
+            "runtime_session_binding": "bound",
+            "runtime_session_bind_method": "spawn-resume-session",
+            "runtime_session_bind_source": "spawn:resume-session",
             "runtime_session_confidence": "exact",
             "runtime_session_evidence": {
                 "reason": "aura-spawn-resume-session",
                 "resume_session": resume_session,
             },
         }
+    else:
+        # upsert_agent merges with any previous row for the same fleet:seat.
+        # A fresh spawn must clear old runtime-session evidence from that row.
+        session_meta = {
+            "session_id": None,
+            "runtime_session_id": None,
+            "runtime_session_source": None,
+            "runtime_session_binding": "unbound",
+            "runtime_session_bind_method": None,
+            "runtime_session_bind_source": None,
+            "runtime_session_confidence": None,
+            "runtime_session_evidence": None,
+            "runtime_session_env": None,
+            "runtime_session_cwd": None,
+            "runtime_session_created_at_ms": None,
+            "runtime_session_updated_at_ms": None,
+            "runtime_session_pid": None,
+        }
+    session_clear_keys = [key for key, value in session_meta.items() if value is None]
 
     registered = registry.upsert_agent({
         "name": args.name,
@@ -457,6 +468,28 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         **process_meta,
         **session_meta,
     })
+    if resume_session:
+        try:
+            from lib import desks_sessions
+
+            desks_sessions.append_identity_session(
+                registered.get("desks_identity_id") or role_meta.get("desks_identity_id"),
+                resume_session,
+            )
+        except Exception:
+            pass
+    if session_clear_keys:
+        try:
+            data = registry.read_registry()
+            key = registry._key(fleet, args.name)
+            stored = dict(data.get(key, registered))
+            for clear_key in session_clear_keys:
+                stored.pop(clear_key, None)
+            data[key] = stored
+            registry.write_registry(data)
+            registered = stored
+        except Exception:
+            pass
     try:
         from lib import session_ledger
 
@@ -484,6 +517,17 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             **process_meta,
             **session_meta,
         })
+        session_ledger.append_seat_event(
+            event="seat_spawned",
+            after=registered,
+            evidence={
+                "terminal_ref": launch.get("target"),
+                "pane_ref": pane_ref,
+                "resume_session": resume_session,
+                "prompt_requested": bool(prompt_text),
+            },
+            source_command="aura spawn",
+        )
     except Exception:
         pass
 
@@ -605,6 +649,10 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                     "session_id",
                     "runtime_session_id",
                     "runtime_session_source",
+                    "runtime_session_binding",
+                    "runtime_session_bind_method",
+                    "runtime_session_bind_source",
+                    "runtime_session_bound_at",
                     "runtime_session_confidence",
                     "runtime_session_evidence",
                     "runtime_session_env",
@@ -616,6 +664,26 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 if session_observation.get(key) is not None
             }
             result.update(session_fields)
+            try:
+                from lib import session_ledger
+
+                observed_after = {
+                    **registered,
+                    **session_fields,
+                    "name": args.name,
+                    "fleet": fleet,
+                    "runtime": runtime,
+                    "cwd": workdir,
+                }
+                session_ledger.append_seat_event(
+                    event="session_observed",
+                    before=registered,
+                    after=observed_after,
+                    evidence=session_observation.get("runtime_session_evidence") or session_observation,
+                    source_command="aura spawn",
+                )
+            except Exception:
+                pass
             if result.get("flex_project_packet_delivered") and result.get("runtime_session_id"):
                 result["flex_project_packet_session_key"] = result["runtime_session_id"]
                 registry.upsert_agent({
@@ -633,6 +701,107 @@ def _runtime_home(runtime: str, profile: str | None) -> str | None:
     if runtime == "hermes" and profile:
         return str(Path.home() / ".hermes" / "profiles" / profile)
     return None
+
+
+def _desks_profile_metadata(manifest: dict) -> dict:
+    role_home = manifest["role_home"]
+    identity_path = role_home / "identity.json"
+    if identity_path.is_file() and role_home.parent.name == "identities":
+        try:
+            identity = json.loads(identity_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            identity = {}
+        if isinstance(identity, dict):
+            identity_id = identity.get("identity_id") or role_home.name
+            return {
+                "desks_identity_id": identity_id,
+                "desks_identity_home": str(role_home),
+                "desks_memory_home": str(role_home / "memory"),
+                "desks_current_name": identity.get("current_name"),
+            }
+        return {}
+
+    profile_dir = role_home
+    profile_path = profile_dir / "profile.json"
+    if not profile_path.is_file():
+        return {}
+    try:
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(profile, dict):
+        return {}
+
+    profile_id = profile.get("profile_id")
+    identity_id = profile.get("identity_id")
+    meta = {
+        "desks_profile_id": profile_id,
+        "desks_profile_home": str(profile_dir),
+        "desks_identity_id": identity_id,
+    }
+    if identity_id and profile_dir.parent.name == "profiles":
+        desks_root = profile_dir.parent.parent
+        identity_home = desks_root / "identities" / str(identity_id)
+        meta.update({
+            "desks_identity_home": str(identity_home),
+            "desks_memory_home": str(identity_home / "memory"),
+        })
+        identity_path = identity_home / "identity.json"
+        if identity_path.is_file():
+            try:
+                identity = json.loads(identity_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                identity = {}
+            if isinstance(identity, dict):
+                meta["desks_current_name"] = identity.get("current_name")
+    return {key: value for key, value in meta.items() if value}
+
+
+def _role_metadata_from_manifest(manifest: dict) -> dict:
+    files = manifest.get("files") or {}
+    bootstrap = files.get("bootstrap")
+    meta = {
+        "desks_role_home": str(manifest["role_home"]),
+        "desks_role_id": manifest["role_id"],
+        "desks_product": manifest["product"],
+        "desks_unit": manifest["unit"],
+        "desks_manifest": str(manifest["manifest_path"]),
+        "desks_bootstrap": str(bootstrap) if bootstrap else None,
+        "desks_compression": str(files.get("compression")) if files.get("compression") else None,
+        "desks_memory": str(files.get("memory")) if files.get("memory") else None,
+        "desks_default_seat": manifest.get("seat"),
+        "desks_default_fleet": manifest.get("fleet"),
+        "flex_project_manifest": str(manifest["flex_project_manifest"]) if manifest.get("flex_project_manifest") else None,
+        "flex_project_root": str(manifest["flex_project_root"]) if manifest.get("flex_project_root") else None,
+    }
+    meta.update(_desks_profile_metadata(manifest))
+    return {key: value for key, value in meta.items() if value}
+
+
+def _desks_launch_env(role_meta: dict) -> dict:
+    if not role_meta:
+        return {}
+    mappings = {
+        "ROLE_HOME": "desks_role_home",
+        "ROLE_ID": "desks_role_id",
+        "PRODUCT": "desks_product",
+        "UNIT": "desks_unit",
+        "MANIFEST": "desks_manifest",
+        "IDENTITY_ID": "desks_identity_id",
+        "PROFILE_ID": "desks_profile_id",
+        "CURRENT_NAME": "desks_current_name",
+        "IDENTITY_HOME": "desks_identity_home",
+        "PROFILE_HOME": "desks_profile_home",
+        "MEMORY_HOME": "desks_memory_home",
+        "DEFAULT_SEAT": "desks_default_seat",
+        "DEFAULT_FLEET": "desks_default_fleet",
+    }
+    env = {}
+    for env_suffix, meta_key in mappings.items():
+        value = role_meta.get(meta_key, "")
+        env[f"DESKS_{env_suffix}"] = value
+        env[f"AURA_DESKS_{env_suffix}"] = value
+    return env
 
 
 def _apply_spawn_manifest(args) -> dict | None:
@@ -658,10 +827,6 @@ def _apply_spawn_manifest(args) -> dict | None:
     workspace_root = manifest["workspace_root"]
     bootstrap = manifest["files"]["bootstrap"]
 
-    if getattr(args, "name", None) and args.name != seat:
-        return {"ok": False, "error": f"manifest seat mismatch: name={args.name} manifest={seat}"}
-    if getattr(args, "fleet", None) and args.fleet != fleet:
-        return {"ok": False, "error": f"manifest fleet mismatch: --fleet={args.fleet} manifest={fleet}"}
     if getattr(args, "cwd", None):
         try:
             requested_cwd = Path(args.cwd).expanduser()
@@ -675,30 +840,20 @@ def _apply_spawn_manifest(args) -> dict | None:
     if getattr(args, "prompt", None) or getattr(args, "work", None):
         return {"ok": False, "error": "manifest supplies the bootstrap prompt; do not combine with --prompt or --work"}
 
-    args.name = seat
-    args.fleet = fleet
+    args.name = getattr(args, "name", None) or seat
+    args.fleet = getattr(args, "fleet", None) or fleet
     args.cwd = str(workspace_root)
     args.runtime = getattr(args, "runtime", None) or manifest.get("runtime") or "codex"
-    args.prompt = "\n".join([
-        f"Read {bootstrap} and follow it.",
-        f"Use {manifest['role_home']} as your Desks role home.",
-    ])
+    if not getattr(args, "resume_session", None):
+        args.prompt = "\n".join([
+            f"Read {bootstrap} and follow it.",
+            f"Use {manifest['role_home']} as your Desks role home.",
+        ])
     if not getattr(args, "context", None) and manifest["files"].get("agents"):
         args.context = str(manifest["files"]["agents"])
     if not getattr(args, "profile", None):
         args.profile = manifest.get("profile") or seat
-    args._role_manifest_meta = {
-        "desks_role_home": str(manifest["role_home"]),
-        "desks_role_id": manifest["role_id"],
-        "desks_product": manifest["product"],
-        "desks_unit": manifest["unit"],
-        "desks_manifest": str(manifest["manifest_path"]),
-        "desks_bootstrap": str(bootstrap),
-        "desks_compression": str(manifest["files"].get("compression")) if manifest["files"].get("compression") else None,
-        "desks_memory": str(manifest["files"].get("memory")) if manifest["files"].get("memory") else None,
-        "flex_project_manifest": str(manifest["flex_project_manifest"]) if manifest.get("flex_project_manifest") else None,
-        "flex_project_root": str(manifest["flex_project_root"]) if manifest.get("flex_project_root") else None,
-    }
+    args._role_manifest_meta = _role_metadata_from_manifest(manifest)
     args._role_manifest = manifest
     return {"ok": True, "manifest": str(manifest["manifest_path"])}
 
@@ -727,6 +882,10 @@ def _load_role_manifest(manifest_arg: str | None, role_home_arg: str | None) -> 
     files = raw.get("files")
     if not isinstance(files, dict):
         raise ValueError("manifest files must be an object")
+    files = dict(files)
+    if files.get("compaction") and not files.get("compression"):
+        files["compression"] = files["compaction"]
+    raw["files"] = files
 
     role_home = manifest_path.parent
     manifest_role_home = raw.get("role_home")
@@ -842,38 +1001,7 @@ def _resolve_launch_flex_project(workdir_path: Path, role_meta: dict | None = No
 
 
 def _render_flex_project_launch_packet(manifest: Path | None, root: Path | None) -> str | None:
-    if not manifest or not root or not manifest.is_file():
-        return None
-    project_name = ""
-    try:
-        import yaml
-
-        raw = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
-        if isinstance(raw, dict):
-            project = raw.get("project") or {}
-            if isinstance(project, dict):
-                project_name = str(project.get("name") or "")
-    except Exception:
-        project_name = ""
-
-    guidance_path = root / ".flex" / "agent-guidance.md"
-    guidance = guidance_path.read_text(encoding="utf-8").strip() if guidance_path.is_file() else ""
-    if not guidance:
-        guidance = (
-            "Use project-local Flex commands when the user asks to search project context, "
-            "project sessions, or this agent's memory."
-        )
-
-    lines = [
-        "[FLEX PROJECT RETRIEVAL]",
-        f"project={project_name or root.name}",
-        f"root={root}",
-        f"manifest={manifest}",
-        "",
-        guidance,
-        "[/FLEX PROJECT RETRIEVAL]",
-    ]
-    return "\n".join(lines)
+    return None
 
 
 def _augment_runtime_prompt(
@@ -899,11 +1027,6 @@ def _augment_runtime_prompt(
         lines.extend([flex_packet, ""])
     lines.append(prompt_text)
     return "\n".join(lines)
-
-
-def _confidence_at_least(value: str | None, minimum: str) -> bool:
-    order = {"exact": 4, "high": 3, "medium": 2, "low": 1}
-    return order.get(value or "", 0) >= order[minimum]
 
 
 def _codex_cwd_choice_from_capture(capture: list[str], desired_cwd: str | None) -> dict | None:
@@ -1001,14 +1124,17 @@ def _retry_codex_prompt_submit(*, terminal, target: str, seat: str, launch_id: s
             )
         except Exception:
             session_info = {}
-        if session_info and _confidence_at_least(session_info.get("runtime_session_confidence"), "high"):
+        possible_matches = session_info.get("runtime_session_possible_matches") if session_info else None
+        if possible_matches:
             return {
                 "ok": True,
                 "attempts": len(attempts),
                 "results": attempts,
                 "session_seen": True,
-                "runtime_session_id": session_info.get("runtime_session_id"),
-                "runtime_session_confidence": session_info.get("runtime_session_confidence"),
+                "runtime_session_binding": session_info.get("runtime_session_binding"),
+                "runtime_session_source": session_info.get("runtime_session_source"),
+                "runtime_session_diagnostics": session_info.get("runtime_session_diagnostics"),
+                "runtime_session_possible_matches": possible_matches,
             }
     return {
         "ok": any(result.get("ok") for result in attempts),
@@ -1042,16 +1168,18 @@ def _observe_spawn_session(
     if runtime != "codex":
         return {"status": "skipped", "reason": "runtime-not-observed-at-spawn", "runtime": runtime}
 
-    if existing_session.get("runtime_session_id") and _confidence_at_least(
-        existing_session.get("runtime_session_confidence"),
-        "high",
-    ):
+    from lib import runtime_session
+
+    if runtime_session.is_bound_session(existing_session):
         session_id = existing_session.get("runtime_session_id")
         return {
             "status": "already-bound",
             "session_id": session_id,
             "runtime_session_id": session_id,
             "runtime_session_source": existing_session.get("runtime_session_source"),
+            "runtime_session_binding": existing_session.get("runtime_session_binding"),
+            "runtime_session_bind_method": existing_session.get("runtime_session_bind_method"),
+            "runtime_session_bind_source": existing_session.get("runtime_session_bind_source"),
             "runtime_session_confidence": existing_session.get("runtime_session_confidence"),
             "runtime_session_evidence": existing_session.get("runtime_session_evidence"),
         }
@@ -1059,7 +1187,7 @@ def _observe_spawn_session(
     if not target or not hasattr(terminal, "pane_pid"):
         return {"status": "pending", "reason": "no-pane-target", "runtime": runtime}
 
-    from lib import registry, runtime_session, session_ledger
+    from lib import registry, session_ledger
 
     deadline = time.time() + max(timeout, 0)
     attempts = 0
@@ -1084,7 +1212,7 @@ def _observe_spawn_session(
 
         if session_info:
             last_session = session_info
-            if _confidence_at_least(session_info.get("runtime_session_confidence"), "high"):
+            if runtime_session.is_bound_session(session_info):
                 merged = registry.upsert_agent(runtime_session.merge(dict(registered), session_info))
                 try:
                     session_ledger.append_record({
@@ -1114,6 +1242,59 @@ def _observe_spawn_session(
             break
         time.sleep(0.25)
 
+    # Fresh Codex starts have no trustworthy argv resume evidence, but Aura
+    # injects the launch id into the first prompt. Once Codex writes that prompt
+    # to its JSONL, the launch id is an explicit nonce and can bind exactly.
+    if launch_id:
+        try:
+            from commands import sessions as sessions_cmd
+
+            found = sessions_cmd._codex_session_from_nonce(launch_id, expected_cwd=workdir)
+            if found.get("ok") and found.get("session_id"):
+                evidence = {
+                    "reason": "codex-jsonl-nonce",
+                    "nonce": launch_id,
+                    "jsonl": found.get("jsonl"),
+                    "matches": found.get("matches"),
+                    "bound_after_spawn": True,
+                }
+                bound = sessions_cmd._bind_registry_session(
+                    fleet=fleet,
+                    seat=seat,
+                    previous=registered,
+                    session_id=found["session_id"],
+                    source="codex-jsonl:nonce",
+                    confidence="exact",
+                    evidence=evidence,
+                    cwd=found.get("cwd") or workdir,
+                    event="session_bound_nonce",
+                    extra={
+                        "jsonl": found.get("jsonl"),
+                        "cwd": found.get("cwd") or workdir,
+                    },
+                )
+                return {
+                    "status": "observed",
+                    "attempts": attempts,
+                    "session_id": found["session_id"],
+                    "runtime_session_id": found["session_id"],
+                    "runtime_session_source": "codex-jsonl:nonce",
+                    "runtime_session_binding": "bound",
+                    "runtime_session_bind_method": runtime_session.binding_method_for_source("codex-jsonl:nonce"),
+                    "runtime_session_bind_source": "codex-jsonl:nonce",
+                    "runtime_session_confidence": "exact",
+                    "runtime_session_evidence": evidence,
+                    "runtime_session_cwd": found.get("cwd") or workdir,
+                    "desks_session_recorded": bound.get("desks_session_recorded"),
+                }
+        except Exception as exc:
+            last_session = {
+                **(last_session or {}),
+                "runtime_session_diagnostics": {
+                    "nonce_bind_error": str(exc),
+                },
+            }
+
     pending = {
         "status": "pending",
         "reason": "no-high-confidence-session-evidence",
@@ -1122,10 +1303,10 @@ def _observe_spawn_session(
     }
     if last_session:
         pending.update({
-            "last_runtime_session_id": last_session.get("runtime_session_id"),
             "last_runtime_session_source": last_session.get("runtime_session_source"),
-            "last_runtime_session_confidence": last_session.get("runtime_session_confidence"),
-            "last_runtime_session_evidence": last_session.get("runtime_session_evidence"),
+            "last_runtime_session_binding": last_session.get("runtime_session_binding"),
+            "last_runtime_session_diagnostics": last_session.get("runtime_session_diagnostics"),
+            "last_runtime_session_possible_matches": last_session.get("runtime_session_possible_matches"),
         })
     return pending
 
@@ -1154,6 +1335,9 @@ def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> Non
             "runtime_session_id": result.get("runtime_session_id"),
             "runtime_session_env": result.get("runtime_session_env"),
             "runtime_session_source": result.get("runtime_session_source"),
+            "runtime_session_binding": result.get("runtime_session_binding"),
+            "runtime_session_bind_method": result.get("runtime_session_bind_method"),
+            "runtime_session_bind_source": result.get("runtime_session_bind_source"),
             "runtime_session_confidence": result.get("runtime_session_confidence"),
             "runtime_session_evidence": result.get("runtime_session_evidence"),
             "runtime_process_pid": result.get("runtime_process_pid"),

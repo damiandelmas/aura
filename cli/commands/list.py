@@ -82,7 +82,7 @@ def run(args):
                 )
             except Exception:
                 session_info = {}
-        if a.get("registered") and session_info:
+        if a.get("registered") and session_info and runtime_session.is_bound_session(session_info):
             merged_agent = registry.upsert_agent(runtime_session.merge(dict(a), session_info))
             try:
                 from lib import session_ledger
@@ -122,10 +122,13 @@ def run(args):
             "terminal_ref": a.get("terminal_ref") or (f"tmux:{terminal.SESSION_NAME}:{name}" if terminal_alive else ""),
             "backend_ref": a.get("backend_ref") or (a.get("terminal_ref") or "").removeprefix("tmux:"),
             "pane_ref": a.get("pane_ref"),
+            "desks_identity_id": a.get("desks_identity_id"),
+            "flex_project_manifest": a.get("flex_project_manifest"),
+            "flex_project_root": a.get("flex_project_root"),
             "trace_cell": a.get("trace_cell"),
             "last_seen": (a.get("last_seen", "") or "")[:19]
         }, session_info)
-        if row.get("runtime_session_id") and not row.get("session_id"):
+        if runtime_session.is_bound_session(row) and row.get("runtime_session_id") and not row.get("session_id"):
             row["session_id"] = row["runtime_session_id"]
         rows.append(seat_schema.enrich(row))
     return rows

@@ -52,7 +52,10 @@ def test_receipt_relay_telemetry_spine(monkeypatch, tmp_path):
             "session_id": f"codex-{name}",
             "runtime_session_id": f"codex-{name}",
             "runtime_session_confidence": "high",
-            "runtime_session_source": "e2e-fixture",
+            "runtime_session_source": "codex-jsonl:nonce",
+            "runtime_session_binding": "bound",
+            "runtime_session_bind_method": "nonce-jsonl",
+            "runtime_session_bind_source": "codex-jsonl:nonce",
             "cwd": str(tmp_path),
         })
         session_ledger.append_record({
@@ -62,6 +65,10 @@ def test_receipt_relay_telemetry_spine(monkeypatch, tmp_path):
             "runtime": "codex",
             "runtime_session_id": f"codex-{name}",
             "runtime_session_confidence": "high",
+            "runtime_session_source": "codex-jsonl:nonce",
+            "runtime_session_binding": "bound",
+            "runtime_session_bind_method": "nonce-jsonl",
+            "runtime_session_bind_source": "codex-jsonl:nonce",
             "cwd": str(tmp_path),
         })
     registry.upsert_agent({

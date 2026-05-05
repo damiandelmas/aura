@@ -15,22 +15,10 @@ FLEX_PACKET_MARKER = "[FLEX PROJECT RETRIEVAL]"
 def _load_role_metadata(role_home: str | None, manifest_path: str | None) -> dict:
     if not role_home and not manifest_path:
         return {}
-    path = Path(manifest_path or Path(role_home) / "role.json").expanduser()
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    path = path.resolve()
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    role_dir = path.parent
-    return {
-        "desks_role_home": str(role_dir),
-        "desks_role_id": raw.get("role_id"),
-        "desks_product": raw.get("product"),
-        "desks_unit": raw.get("unit"),
-        "desks_manifest": str(path),
-        "desks_bootstrap": str((role_dir / raw.get("files", {}).get("bootstrap")).resolve()) if raw.get("files", {}).get("bootstrap") else None,
-        "desks_compression": str((role_dir / raw.get("files", {}).get("compression")).resolve()) if raw.get("files", {}).get("compression") else None,
-        "desks_memory": str((role_dir / raw.get("files", {}).get("memory")).resolve()) if raw.get("files", {}).get("memory") else None,
-    }
+    from commands import spawn
+
+    manifest = spawn._load_role_manifest(manifest_path, role_home)
+    return spawn._role_metadata_from_manifest(manifest)
 
 
 def _tmux_target(ref: str) -> str:
@@ -60,6 +48,7 @@ def _list_tmux_panes() -> list[dict]:
         parts = line.split("\t")
         if len(parts) < 5:
             continue
+        # Pad with empty strings for backwards compatibility with older tmux outputs.
         while len(parts) < 7:
             parts.append("")
         session, window_index, window_name, pane_id, pane_pid, pane_current_command, pane_current_path = parts[:7]
@@ -498,7 +487,15 @@ def _inject_flex(args, registry, terminal) -> dict:
 
     packet = spawn._render_flex_project_launch_packet(manifest, root)
     if not packet:
-        return {"ok": False, "error": "failed to render Flex project packet", "manifest": str(manifest), "root": str(root)}
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "flex-project-packet-disabled",
+            "target": args.target,
+            "terminal_ref": target,
+            "manifest": str(manifest),
+            "root": str(root),
+        }
 
     present = None if getattr(args, "force", False) else _packet_already_present(
         record,
@@ -626,28 +623,13 @@ def _restart_role_metadata(args, record: dict) -> tuple[dict, str | None, str | 
         from commands import spawn
 
         manifest = spawn._load_role_manifest(manifest_arg, role_home_arg)
-        if manifest.get("seat") != record.get("name"):
-            raise ValueError(f"manifest seat mismatch: restart target={record.get('name')} manifest={manifest.get('seat')}")
-        if manifest.get("fleet") != record.get("fleet"):
-            raise ValueError(f"manifest fleet mismatch: restart target={record.get('fleet')} manifest={manifest.get('fleet')}")
         files = manifest.get("files") or {}
-        meta = {
-            "desks_role_home": str(manifest["role_home"]),
-            "desks_role_id": manifest["role_id"],
-            "desks_product": manifest["product"],
-            "desks_unit": manifest["unit"],
-            "desks_manifest": str(manifest["manifest_path"]),
-            "desks_bootstrap": str(files.get("bootstrap")) if files.get("bootstrap") else None,
-            "desks_compression": str(files.get("compression")) if files.get("compression") else None,
-            "desks_memory": str(files.get("memory")) if files.get("memory") else None,
-            "flex_project_manifest": str(manifest["flex_project_manifest"]) if manifest.get("flex_project_manifest") else None,
-            "flex_project_root": str(manifest["flex_project_root"]) if manifest.get("flex_project_root") else None,
-        }
+        meta = spawn._role_metadata_from_manifest(manifest)
         prompt = "\n".join([
             f"Read {files.get('bootstrap')} and follow it.",
             f"Use {manifest['role_home']} as your Desks role home.",
         ])
-        return {k: v for k, v in meta.items() if v}, str(manifest["workspace_root"]), prompt
+        return meta, str(manifest["workspace_root"]), prompt
 
     meta = {
         key: record.get(key)
@@ -660,6 +642,14 @@ def _restart_role_metadata(args, record: dict) -> tuple[dict, str | None, str | 
             "desks_bootstrap",
             "desks_compression",
             "desks_memory",
+            "desks_default_seat",
+            "desks_default_fleet",
+            "desks_identity_id",
+            "desks_profile_id",
+            "desks_current_name",
+            "desks_identity_home",
+            "desks_profile_home",
+            "desks_memory_home",
             "flex_project_manifest",
             "flex_project_root",
         )
@@ -709,6 +699,22 @@ def _restart_plan(args, record: dict) -> dict:
         return {"ok": False, "phase": "build_plan", "error": f"failed to load role metadata: {exc}"}
     if role_cwd and not getattr(args, "cwd", None):
         cwd_path = Path(role_cwd)
+
+    resume_session_id = record.get("runtime_session_id") or record.get("session_id")
+    try:
+        from lib import runtimes
+
+        runtime_capabilities = runtimes.capabilities(runtime)
+    except Exception:
+        runtime_capabilities = {"supports_resume": False}
+    if resume_session_id and runtime_capabilities.get("supports_resume"):
+        try:
+            command = runtimes.build_resume_command(runtime, str(resume_session_id))
+        except Exception:
+            # Fall back to the recorded launch command if the runtime cannot
+            # build a native resume command for this seat.
+            pass
+
     prompt = getattr(args, "prompt", None) or role_prompt
     return {
         "ok": True,
@@ -717,6 +723,7 @@ def _restart_plan(args, record: dict) -> dict:
         "cwd": str(cwd_path),
         "role_meta": role_meta,
         "prompt": prompt,
+        "resume_session_id": resume_session_id,
     }
 
 
@@ -850,18 +857,9 @@ def _restart(args, registry, terminal) -> dict:
     }
     role_meta = plan.get("role_meta") or {}
     if role_meta:
-        launch_env.update({
-            "AURA_DESKS_ROLE_HOME": role_meta.get("desks_role_home", ""),
-            "AURA_DESKS_ROLE_ID": role_meta.get("desks_role_id", ""),
-            "AURA_DESKS_PRODUCT": role_meta.get("desks_product", ""),
-            "AURA_DESKS_UNIT": role_meta.get("desks_unit", ""),
-            "AURA_DESKS_MANIFEST": role_meta.get("desks_manifest", ""),
-            "DESKS_ROLE_HOME": role_meta.get("desks_role_home", ""),
-            "DESKS_ROLE_ID": role_meta.get("desks_role_id", ""),
-            "DESKS_PRODUCT": role_meta.get("desks_product", ""),
-            "DESKS_UNIT": role_meta.get("desks_unit", ""),
-            "DESKS_MANIFEST": role_meta.get("desks_manifest", ""),
-        })
+        from commands import spawn
+
+        launch_env.update(spawn._desks_launch_env(role_meta))
     if role_meta.get("flex_project_manifest"):
         launch_env["FLEX_PROJECT_MANIFEST"] = role_meta["flex_project_manifest"]
     if role_meta.get("flex_project_root"):
@@ -891,6 +889,23 @@ def _restart(args, registry, terminal) -> dict:
                 "old": old,
             },
         })
+        try:
+            from lib import session_ledger
+
+            session_ledger.append_seat_event(
+                event="seat_restart_failed",
+                before=record,
+                after=failure_record,
+                evidence={
+                    "restart_id": restart_id,
+                    "phase": "relaunch_failed",
+                    "error": launch.get("error", "launch failed"),
+                    "old": old,
+                },
+                source_command="aura seat restart",
+            )
+        except Exception:
+            pass
         return {
             "ok": False,
             "schema": "aura.seat_restart.v1",
@@ -991,6 +1006,15 @@ def _restart(args, registry, terminal) -> dict:
         )
         if session_observation.get("runtime_session_id"):
             updated = registry.upsert_agent({**updated, **_session_fields(session_observation)})
+            try:
+                from lib import desks_sessions
+
+                desks_sessions.append_identity_session(
+                    updated.get("desks_identity_id") or record.get("desks_identity_id"),
+                    session_observation.get("runtime_session_id"),
+                )
+            except Exception:
+                pass
     except Exception as exc:
         session_observation = {"status": "error", "reason": "session-discovery-error", "error": str(exc)}
 
@@ -1039,6 +1063,32 @@ def _restart(args, registry, terminal) -> dict:
             "aura_launch_id": launch_id,
             "previous_aura_launch_id": old.get("aura_launch_id"),
         })
+        session_ledger.append_seat_event(
+            event="seat_restarted",
+            before=record,
+            after=updated,
+            evidence={
+                "restart_id": restart_id,
+                "old_runtime_session_id": old.get("runtime_session_id"),
+                "new_runtime_session_id": new.get("runtime_session_id"),
+                "old_pid": old.get("pid"),
+                "new_pid": new.get("pid"),
+                "old_pane_ref": old.get("pane_ref"),
+                "new_pane_ref": new.get("pane_ref"),
+                "same_viewport": same_viewport,
+                "forced": bool(getattr(args, "force", False)),
+                "session_observation": session_observation,
+            },
+            source_command="aura seat restart",
+            restart_id=restart_id,
+            old_runtime_session_id=old.get("runtime_session_id"),
+            new_runtime_session_id=new.get("runtime_session_id"),
+            old_pid=old.get("pid"),
+            new_pid=new.get("pid"),
+            old_pane_ref=old.get("pane_ref"),
+            new_pane_ref=new.get("pane_ref"),
+            same_viewport=same_viewport,
+        )
     except Exception:
         lifecycle_event = {}
 
@@ -1050,7 +1100,7 @@ def _restart(args, registry, terminal) -> dict:
         "same_viewport": same_viewport,
         "old": old,
         "new": new,
-        "lineage_event_id": lifecycle_event.get("timestamp") or restart_id,
+        "seat_history_event_id": lifecycle_event.get("event_id") or restart_id,
         "restart_id": restart_id,
         "session_observation": session_observation,
         "warnings": warnings,
@@ -1134,6 +1184,8 @@ def _tag(args, registry, terminal=None) -> dict:
         return {"ok": False, "error": "registry-row-missing-fleet-or-name",
                 "detail": f"existing row for {target!r} lacks fleet/name fields"}
 
+    # Direct read/write rather than upsert_agent, because upsert merges previous
+    # keys back in via `{**previous, **record}` — that would defeat unset.
     data = registry.read_registry()
     key = registry._key(fleet, name)
     next_record["last_seen"] = registry.now_iso()
@@ -1178,6 +1230,12 @@ def _tag(args, registry, terminal=None) -> dict:
     return response
 
 
+_ORPHAN_RUNTIME_CHOICES = {
+    "claude-code", "claude", "hermes", "codex", "omx",
+    "opencode", "openclaw", "shell", "command",
+}
+
+
 def _infer_orphan_runtime(pane_command: str | None, pane_argv: list[str] | None = None) -> str:
     cmd = (pane_command or "").lower()
     argv_str = " ".join(pane_argv or []).lower()
@@ -1196,6 +1254,8 @@ def _infer_orphan_runtime(pane_command: str | None, pane_argv: list[str] | None 
     if cmd in {"bash", "zsh", "sh", "fish", "dash"}:
         return "shell"
     if cmd == "node":
+        # bare `node` with no detectable codex/claude argv → assume codex (most
+        # common manual launch). Operators who care should pass --runtime.
         return "codex"
     return "command"
 
@@ -1277,7 +1337,11 @@ def _register_orphan(args, registry, terminal=None, ledger=None) -> dict:
                 "record": existing}
 
     explicit_pane = getattr(args, "pane", None)
-    discovery = _validate_explicit_orphan_pane(explicit_pane, fleet) if explicit_pane else _discover_orphan_pane(fleet, seat)
+    if explicit_pane:
+        discovery = _validate_explicit_orphan_pane(explicit_pane, fleet)
+    else:
+        discovery = _discover_orphan_pane(fleet, seat)
+
     if not discovery.get("ok"):
         return {"ok": False, **discovery, "target": target}
 
@@ -1357,6 +1421,7 @@ def _register_orphan(args, registry, terminal=None, ledger=None) -> dict:
             source_command="aura seat register-orphan",
         )
     except Exception:
+        # ledger append failures should not block registration; the seat is in.
         pass
 
     return {
@@ -1407,6 +1472,18 @@ def _sweep(args, registry, terminal) -> dict:
     removed = []
     if getattr(args, "confirm", False):
         for row in stale:
+            before = registry.get_agent(row["seat"], fleet=row.get("fleet"))
+            try:
+                from lib import session_ledger
+
+                session_ledger.append_seat_event(
+                    event="seat_swept_removed",
+                    before=before or row,
+                    evidence=row,
+                    source_command="aura seat sweep",
+                )
+            except Exception:
+                pass
             if registry.remove_agent(row["seat"], fleet=row.get("fleet")):
                 removed.append(row["seat_ref"])
 
@@ -1460,6 +1537,42 @@ def run(args):
         from lib import terminal
 
         return _restart(args, registry, terminal)
+    if action == "adopt":
+        try:
+            metadata = _load_role_metadata(getattr(args, "role_home", None), getattr(args, "manifest", None))
+        except Exception as exc:
+            return {"ok": False, "error": f"failed to load role metadata: {exc}"}
+        metadata = {key: value for key, value in metadata.items() if value}
+        if not metadata:
+            return {"ok": False, "error": "adopt requires --manifest or --role-home"}
+        existing = registry.get_agent(args.target)
+        if not existing:
+            return {"ok": False, "error": f"agent not found: {args.target}"}
+        result = registry.rehome_agent(
+            args.target,
+            metadata=metadata,
+            alias_old=False,
+        )
+        if result.get("ok"):
+            try:
+                from lib import session_ledger
+
+                session_ledger.append_seat_event(
+                    event="seat_role_adopted",
+                    before=existing,
+                    after=result.get("record"),
+                    evidence={
+                        "source": result.get("source"),
+                        "target": result.get("target"),
+                        "metadata_keys": sorted(metadata.keys()),
+                    },
+                    source_command="aura seat adopt",
+                    source_ref=result.get("source"),
+                    target_ref=result.get("target"),
+                )
+            except Exception:
+                pass
+        return result
     if action == "rehome":
         try:
             metadata = _load_role_metadata(getattr(args, "role_home", None), getattr(args, "manifest", None))
@@ -1468,8 +1581,8 @@ def run(args):
         metadata = {key: value for key, value in metadata.items() if value}
         if getattr(args, "index", None) is not None and not getattr(args, "move_terminal", False):
             return {"ok": False, "error": "--index requires --move-terminal"}
+        existing = registry.get_agent(args.source)
         if getattr(args, "move_terminal", False):
-            existing = registry.get_agent(args.source)
             if not existing:
                 return {"ok": False, "error": f"agent not found: {args.source}"}
             target_name = getattr(args, "name", None) or existing.get("name")
@@ -1493,11 +1606,44 @@ def run(args):
                 metadata["rehome_previous_pane_ref"] = moved.get("previous_pane_ref")
             if moved.get("source_warning"):
                 metadata["rehome_source_warning"] = moved.get("source_warning")
-        return registry.rehome_agent(
+        result = registry.rehome_agent(
             args.source,
             new_name=getattr(args, "name", None),
             new_fleet=getattr(args, "fleet", None),
             metadata=metadata,
             alias_old=not getattr(args, "no_alias_old", False),
         )
+        if result.get("ok"):
+            try:
+                from lib import session_ledger
+
+                after = result.get("record")
+                event = "seat_role_adopted" if metadata and result.get("source") == result.get("target") else "seat_rehomed"
+                session_ledger.append_seat_event(
+                    event=event,
+                    before=existing,
+                    after=after,
+                    evidence={
+                        "source": result.get("source"),
+                        "target": result.get("target"),
+                        "move_terminal": bool(getattr(args, "move_terminal", False)),
+                        "metadata_keys": sorted(metadata.keys()),
+                    },
+                    source_command="aura seat rehome",
+                    source_ref=result.get("source"),
+                    target_ref=result.get("target"),
+                )
+                if result.get("alias"):
+                    session_ledger.append_seat_event(
+                        event="seat_alias_created",
+                        before=existing,
+                        after=after,
+                        evidence=result.get("alias"),
+                        source_command="aura seat rehome",
+                        source_ref=result["alias"].get("source"),
+                        target_ref=result["alias"].get("target"),
+                    )
+            except Exception:
+                pass
+        return result
     return {"ok": False, "error": f"unknown seat action: {action}"}

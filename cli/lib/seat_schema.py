@@ -3,6 +3,16 @@
 from __future__ import annotations
 
 
+# Allowlist for `aura seat tag` writes. Plan 011 phase 1 contract.
+#
+# Post-merge (Desks profiles merged into identities), the load-bearing FK is the
+# Desks identity id alone. Any path-typed metadata can be derived by the runtime
+# from `~/.desks/identities/$DESKS_IDENTITY_ID/`. Aura no longer caches those
+# paths because every cache field goes stale on rename.
+#
+# Flex project pointers stay in the allowlist because they are unrelated to the
+# Desks identity arc and remain useful as opaque project metadata exported into
+# the runtime environment.
 TAG_ALLOWLIST = frozenset({
     "desks_identity_id",
     "flex_project_manifest",

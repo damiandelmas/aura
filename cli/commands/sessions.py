@@ -11,31 +11,21 @@ import subprocess
 from commands import list as list_cmd
 
 
-CONFIDENCE_ORDER = {
-    "exact": 4,
-    "high": 3,
-    "medium": 2,
-    "low": 1,
-}
-
-
-def _confidence_at_least(value: str | None, minimum: str | None) -> bool:
-    if not minimum:
-        return True
-    return CONFIDENCE_ORDER.get(value or "", 0) >= CONFIDENCE_ORDER.get(minimum, 0)
-
-
 def run(args):
     if getattr(args, "sessions_action", None) == "self":
         from lib import runtime_session
 
         return runtime_session.resolve_current_process(getattr(args, "runtime", None))
+    if getattr(args, "sessions_action", None) == "seat-history":
+        return _seat_history(args)
     if getattr(args, "sessions_action", None) == "bind-current":
         return _bind_current(args)
     if getattr(args, "sessions_action", None) == "bind-nonce":
         return _bind_nonce(args)
     if getattr(args, "sessions_action", None) == "restore-plan":
         return _restore_plan(args)
+    if getattr(args, "sessions_action", None) == "fleets":
+        return _fleets(args)
 
     rows = list_cmd.run(argparse.Namespace(
         fleet=getattr(args, "fleet", None),
@@ -44,20 +34,23 @@ def run(args):
         include_hidden=bool(getattr(args, "include_hidden", False)),
     ))
     live_only = bool(getattr(args, "live", False))
-    minimum = getattr(args, "min_confidence", None)
     mapped = []
-    from lib import runtimes, session_ledger
+    from lib import runtime_session, runtimes, session_ledger
 
     for row in rows:
         if live_only and row.get("terminal") != "alive":
             continue
-        if not _confidence_at_least(row.get("runtime_session_confidence"), minimum):
-            continue
+        row = runtime_session.mark_binding(dict(row))
+        seat = row.get("seat") or row.get("name") or row.get("agent")
+        fleet = row.get("fleet")
+        target = f"{fleet}:{seat}" if fleet and seat else None
         capability = runtimes.capabilities(row.get("runtime"))
         restore = session_ledger.restore_status(row, capability)
         mapped.append({
-            "seat": row.get("name"),
-            "fleet": row.get("fleet"),
+            "seat": seat,
+            "fleet": fleet,
+            "target": target,
+            "seat_ref": row.get("seat_ref") or target,
             "runtime": row.get("runtime"),
             "runtime_capabilities": capability,
             "status": row.get("status"),
@@ -67,43 +60,165 @@ def run(args):
             "session_id": row.get("session_id"),
             "runtime_session_id": row.get("runtime_session_id"),
             "runtime_session_source": row.get("runtime_session_source") or row.get("runtime_session_env"),
-            "runtime_session_confidence": row.get("runtime_session_confidence"),
+            "runtime_session_binding": row.get("runtime_session_binding"),
+            "runtime_session_bind_method": row.get("runtime_session_bind_method"),
+            "runtime_session_bind_source": row.get("runtime_session_bind_source"),
             "runtime_session_evidence": row.get("runtime_session_evidence"),
+            "runtime_session_diagnostics": row.get("runtime_session_diagnostics"),
+            "runtime_session_possible_matches": row.get("runtime_session_possible_matches"),
             "aura_launch_id": row.get("aura_launch_id"),
             "pane_ref": row.get("pane_ref"),
             "cwd": row.get("runtime_session_cwd") or row.get("cwd") or row.get("workdir"),
+            "desks_identity_id": row.get("desks_identity_id"),
+            "flex_project_manifest": row.get("flex_project_manifest"),
+            "flex_project_root": row.get("flex_project_root"),
             **restore,
         })
-    with_session = [row for row in mapped if row.get("session_id")]
-    missing = [row for row in mapped if not row.get("session_id")]
-    by_confidence = {}
-    for row in with_session:
-        key = row.get("runtime_session_confidence") or "unknown"
-        by_confidence[key] = by_confidence.get(key, 0) + 1
+    with_session = [row for row in mapped if runtime_session.is_bound_session(row)]
+    missing = [row for row in mapped if not runtime_session.is_bound_session(row)]
+    by_binding = {}
+    for row in mapped:
+        key = row.get("runtime_session_binding") or ("bound" if runtime_session.is_bound_session(row) else "unbound")
+        by_binding[key] = by_binding.get(key, 0) + 1
     return {
         "ok": True,
         "total": len(mapped),
         "with_session_id": len(with_session),
         "missing_session_id": len(missing),
-        "by_confidence": by_confidence,
+        "by_binding": by_binding,
         "rows": mapped,
     }
 
 
+def _fleets(args) -> dict:
+    """Roster of fleets: per-fleet live seat count, registry seat count, last lifecycle event."""
+    from lib import registry as registry_lib, runtime_session, session_ledger
+
+    rows = list_cmd.run(argparse.Namespace(
+        fleet=None,
+        status=None,
+        mode=None,
+        include_hidden=True,
+    ))
+
+    raw = registry_lib.read_registry()
+    raw_by_target: dict[str, dict] = {}
+    for k, v in (raw.items() if isinstance(raw, dict) else []):
+        if not isinstance(v, dict):
+            continue
+        target = f"{v.get('fleet','?')}:{v.get('seat') or v.get('name','?')}"
+        raw_by_target[target] = v
+
+    def _new_bucket(fleet: str) -> dict:
+        return {
+            "fleet": fleet,
+            "registry_seats": 0,
+            "live_seats": 0,
+            "bound_seats": 0,
+            "adopted_seats": 0,
+            "last_event": None,
+            "last_event_at": None,
+            "last_event_target": None,
+        }
+
+    by_fleet: dict[str, dict] = {}
+    for row in rows:
+        row = runtime_session.mark_binding(dict(row))
+        fleet = row.get("fleet")
+        if not fleet:
+            continue
+        bucket = by_fleet.setdefault(fleet, _new_bucket(fleet))
+        bucket["registry_seats"] += 1
+        if row.get("terminal") == "alive":
+            bucket["live_seats"] += 1
+        if row.get("runtime_session_binding") == "bound":
+            bucket["bound_seats"] += 1
+        target = f"{fleet}:{row.get('name')}"
+        raw_row = raw_by_target.get(target) or {}
+        if raw_row.get("desks_identity_id"):
+            bucket["adopted_seats"] += 1
+
+    # Last event per fleet from session ledger
+    for record in session_ledger.iter_records():
+        fleet = record.get("fleet") or (record.get("after") or {}).get("fleet") or (record.get("before") or {}).get("fleet")
+        if not fleet:
+            ref = record.get("seat_ref") or ""
+            if ":" in ref:
+                fleet = ref.split(":", 1)[0]
+        if not fleet:
+            continue
+        bucket = by_fleet.setdefault(fleet, {
+            "fleet": fleet,
+            "registry_seats": 0,
+            "live_seats": 0,
+            "bound_seats": 0,
+            "adopted_seats": 0,
+            "last_event": None,
+            "last_event_at": None,
+            "last_event_target": None,
+        })
+        ts = record.get("timestamp")
+        if ts and (bucket["last_event_at"] is None or ts > bucket["last_event_at"]):
+            bucket["last_event_at"] = ts
+            bucket["last_event"] = record.get("event")
+            seat = record.get("seat") or record.get("name") or (record.get("after") or {}).get("seat") or (record.get("before") or {}).get("seat")
+            bucket["last_event_target"] = f"{fleet}:{seat}" if seat else fleet
+
+    fleets = sorted(by_fleet.values(), key=lambda b: (b["last_event_at"] or ""), reverse=True)
+    live = [fleet for fleet in fleets if fleet.get("live_seats", 0) > 0]
+    historical = [fleet for fleet in fleets if fleet.get("live_seats", 0) == 0]
+    return {
+        "ok": True,
+        "schema": "aura.sessions_fleets.v1",
+        "total_fleets": len(fleets),
+        "live_count": len(live),
+        "historical_count": len(historical),
+        "live": live,
+        "historical": historical,
+        "fleets": fleets,
+    }
+
+
 def _restore_plan(args):
+    from lib import runtimes, session_ledger
+
+    if getattr(args, "from_ledger", False):
+        rows = session_ledger.project_latest_from_ledger(fleet=getattr(args, "fleet", None))
+        plan = session_ledger.restore_plan_from_rows(rows, runtimes.capability_map())
+        plan["source"] = "ledger"
+        plan["latest_per_seat"] = bool(getattr(args, "latest_per_seat", False))
+        return plan
+
     rows_result = run(argparse.Namespace(
         sessions_action=None,
         fleet=getattr(args, "fleet", None),
         live=getattr(args, "live", False),
-        min_confidence=getattr(args, "min_confidence", None),
         include_hidden=getattr(args, "include_hidden", False),
     ))
-    from lib import runtimes, session_ledger
-
     return session_ledger.restore_plan_from_rows(
         rows_result.get("rows", []),
         runtimes.capability_map(),
     )
+
+
+def _seat_history(args) -> dict:
+    target = getattr(args, "target", None) or getattr(args, "nonce", None)
+    if not target:
+        return {"ok": False, "error": "seat-history requires a target seat ref"}
+    from lib import session_ledger
+
+    rows = session_ledger.seat_history_for_target(
+        target,
+        limit=getattr(args, "limit", None),
+        follow_aliases=not bool(getattr(args, "no_follow_aliases", False)),
+    )
+    return {
+        "ok": True,
+        "schema": "aura.sessions_seat_history.v1",
+        "target": target,
+        "total": len(rows),
+        "rows": rows,
+    }
 
 
 def _read_codex_session_jsonl(path: Path, nonce: str) -> dict:
@@ -188,6 +303,15 @@ def _codex_session_from_nonce(
         cwd_matches = [candidate for candidate in candidates if candidate.get("cwd") == expected_cwd]
         if cwd_matches:
             candidates = cwd_matches
+        else:
+            return {
+                "ok": False,
+                "error": "nonce matched Codex JSONL but not expected cwd",
+                "nonce": nonce,
+                "expected_cwd": expected_cwd,
+                "matches": len(candidates),
+                "jsonls": [candidate.get("jsonl") for candidate in candidates],
+            }
     elif len(candidates) > 1:
         return {
             "ok": False,
@@ -258,7 +382,7 @@ def _bind_nonce(args) -> dict:
     if not fleet or not seat:
         return {"ok": False, "error": "could not infer target fleet/seat; pass --target fleet:seat"}
 
-    from lib import registry, session_ledger
+    from lib import registry, runtime_session, session_ledger
 
     previous = registry.get_agent(seat, fleet=fleet) or {
         "name": seat,
@@ -309,10 +433,10 @@ def _bind_current(args) -> dict:
             "error": "could not resolve current runtime session id; use bind-nonce fallback",
             "current": current,
         }
-    if current.get("runtime_session_confidence") != "exact":
+    if not runtime_session.is_bound_session(current):
         return {
             "ok": False,
-            "error": "current runtime session id is not exact; use bind-nonce fallback",
+            "error": "current runtime session id is not bound; use bind-nonce fallback",
             "current": current,
         }
 
@@ -373,7 +497,7 @@ def _bind_registry_session(
     event: str,
     extra: dict | None = None,
 ) -> dict:
-    from lib import registry, session_ledger
+    from lib import desks_sessions, registry, runtime_session, session_ledger
 
     updated = registry.upsert_agent({
         **previous,
@@ -383,6 +507,9 @@ def _bind_registry_session(
         "session_id": session_id,
         "runtime_session_id": session_id,
         "runtime_session_source": source,
+        "runtime_session_binding": "bound",
+        "runtime_session_bind_method": runtime_session.binding_method_for_source(source),
+        "runtime_session_bind_source": source,
         "runtime_session_confidence": confidence,
         "runtime_session_evidence": evidence,
         "runtime_session_cwd": cwd,
@@ -397,10 +524,25 @@ def _bind_registry_session(
         "session_id": session_id,
         "runtime_session_id": session_id,
         "runtime_session_source": source,
+        "runtime_session_binding": "bound",
+        "runtime_session_bind_method": runtime_session.binding_method_for_source(source),
+        "runtime_session_bind_source": source,
         "runtime_session_confidence": confidence,
         "runtime_session_evidence": evidence,
         "cwd": cwd,
     })
+    session_ledger.append_seat_event(
+        event=event,
+        before=previous,
+        after=updated,
+        evidence=evidence,
+        source_command=f"aura sessions {event.removeprefix('session_').replace('_', '-')}",
+        cwd=cwd,
+    )
+    desks_result = desks_sessions.append_identity_session(
+        updated.get("desks_identity_id") or previous.get("desks_identity_id"),
+        session_id,
+    )
     result = {
         "ok": True,
         "seat": seat,
@@ -409,9 +551,15 @@ def _bind_registry_session(
         "session_id": session_id,
         "runtime_session_id": session_id,
         "runtime_session_source": source,
+        "runtime_session_binding": "bound",
+        "runtime_session_bind_method": runtime_session.binding_method_for_source(source),
+        "runtime_session_bind_source": source,
         "runtime_session_confidence": confidence,
         "registry_updated": True,
+        "desks_session_recorded": bool(desks_result.get("ok")),
     }
+    if desks_result.get("ok") or not desks_result.get("skipped"):
+        result["desks_session"] = desks_result
     if extra:
         result.update(extra)
     return result

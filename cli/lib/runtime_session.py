@@ -19,6 +19,97 @@ UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
 DEFAULT_CODEX_STATE_DB = Path.home() / ".codex" / "state_5.sqlite"
+BOUND_SESSION_SOURCES = {
+    "spawn:resume-session": "spawn-resume-session",
+    "argv:codex-resume": "argv-resume",
+    "codex-jsonl:nonce": "nonce-jsonl",
+}
+
+
+def binding_method_for_source(source: str | None) -> str | None:
+    if not source:
+        return None
+    if source in BOUND_SESSION_SOURCES:
+        return BOUND_SESSION_SOURCES[source]
+    if source.startswith("env:"):
+        return "runtime-env"
+    if source == "current-process":
+        return "current-process"
+    return None
+
+
+def is_bound_session(session: dict | None) -> bool:
+    if not session or not (session.get("runtime_session_id") or session.get("session_id")):
+        return False
+    if session.get("runtime_session_binding") == "bound":
+        return True
+    return bool(binding_method_for_source(session.get("runtime_session_source")))
+
+
+def mark_binding(session: dict) -> dict:
+    if not session:
+        return session
+    method = session.get("runtime_session_bind_method") or binding_method_for_source(session.get("runtime_session_source"))
+    if method and (session.get("runtime_session_id") or session.get("session_id")):
+        if not session.get("runtime_session_id") and session.get("session_id"):
+            session["runtime_session_id"] = session["session_id"]
+        session.setdefault("runtime_session_binding", "bound")
+        session.setdefault("runtime_session_bind_method", method)
+        session.setdefault("runtime_session_bind_source", session.get("runtime_session_source"))
+    else:
+        if session.get("runtime_session_source") == "codex-state:cwd-start":
+            possible_id = session.pop("runtime_session_id", None) or session.pop("session_id", None)
+            session.pop("session_id", None)
+            if possible_id and not session.get("runtime_session_possible_matches"):
+                evidence = session.get("runtime_session_evidence") or {}
+                session["runtime_session_possible_matches"] = [{
+                    "runtime_session_id": possible_id,
+                    "source": "codex-state:cwd-start",
+                    "reason": evidence.get("reason"),
+                    "cwd": session.get("runtime_session_cwd") or session.get("cwd"),
+                    "created_at_ms": session.get("runtime_session_created_at_ms"),
+                    "updated_at_ms": session.get("runtime_session_updated_at_ms"),
+                }]
+            if session.get("runtime_session_evidence") and not session.get("runtime_session_diagnostics"):
+                session["runtime_session_diagnostics"] = {
+                    **(session.get("runtime_session_evidence") or {}),
+                    "source": "codex-state:cwd-start",
+                    "reason": "legacy-codex-state-possible-match",
+                }
+        session.setdefault("runtime_session_binding", "unbound")
+    return session
+
+
+def possible_match_from_codex_state(row: dict, selection: dict, *, cwd: str | None, started: float | None, launch_id: str | None) -> dict:
+    return {
+        "runtime_session_possible_matches": [{
+            "runtime_session_id": row.get("id"),
+            "source": "codex-state:cwd-start",
+            "reason": selection.get("reason"),
+            "candidate_count": selection.get("candidate_count"),
+            "cwd": cwd,
+            "pane_start_epoch": started,
+            "created_at_ms": row.get("created_at_ms"),
+            "updated_at_ms": row.get("updated_at_ms"),
+            "title": row.get("title"),
+            "first_user_message_preview": (row.get("first_user_message") or "")[:160],
+            "aura_launch_id": launch_id,
+        }],
+        "runtime_session_diagnostics": {
+            **selection,
+            "source": "codex-state:cwd-start",
+            "reason": "codex-state-possible-match",
+            "cwd": cwd,
+            "pane_start_epoch": started,
+            "aura_launch_id": launch_id,
+        },
+        "runtime_session_source": "codex-state:cwd-start",
+        "runtime_session_binding": "unbound",
+        "runtime_session_pid": None,
+        "runtime_session_cwd": cwd,
+        "runtime_session_created_at_ms": row.get("created_at_ms"),
+        "runtime_session_updated_at_ms": row.get("updated_at_ms"),
+    }
 
 
 def _read_process_environ(pid: int) -> dict[str, str]:
@@ -309,25 +400,9 @@ def _discover_codex_state_thread(
     )
     if not row:
         return {}
-    return {
-        "runtime_session_id": row["id"],
-        "runtime_session_source": "codex-state:cwd-start",
-        "runtime_session_confidence": selection["confidence"],
-        "runtime_session_evidence": {
-            **selection,
-            "cwd": cwd,
-            "pane_start_epoch": started,
-            "created_at_ms": row.get("created_at_ms"),
-            "updated_at_ms": row.get("updated_at_ms"),
-            "title": row.get("title"),
-            "first_user_message_preview": (row.get("first_user_message") or "")[:160],
-            "aura_launch_id": launch_id,
-        },
-        "runtime_session_pid": pane_pid,
-        "runtime_session_cwd": cwd,
-        "runtime_session_created_at_ms": row.get("created_at_ms"),
-        "runtime_session_updated_at_ms": row.get("updated_at_ms"),
-    }
+    diagnostic = possible_match_from_codex_state(row, selection, cwd=cwd, started=started, launch_id=launch_id)
+    diagnostic["runtime_session_pid"] = pane_pid
+    return diagnostic
 
 
 def _session_env_names(runtime: str | None) -> tuple[str, ...]:
@@ -354,6 +429,9 @@ def _discover_codex_resume_argv(pid: int) -> dict:
             return {
                 "runtime_session_id": match.group(0),
                 "runtime_session_source": "argv:codex-resume",
+                "runtime_session_binding": "bound",
+                "runtime_session_bind_method": "argv-resume",
+                "runtime_session_bind_source": "argv:codex-resume",
                 "runtime_session_confidence": "exact",
                 "runtime_session_evidence": {
                     "reason": "codex-resume-argv",
@@ -403,6 +481,9 @@ def discover_from_pane_pid(
                     "runtime_session_id": value,
                     "runtime_session_env": name,
                     "runtime_session_source": f"env:{name}",
+                    "runtime_session_binding": "bound",
+                    "runtime_session_bind_method": "runtime-env",
+                    "runtime_session_bind_source": f"env:{name}",
                     "runtime_session_confidence": "medium",
                     "runtime_session_evidence": {"reason": "runtime-env", "env": name},
                     "runtime_session_pid": pid,
@@ -430,18 +511,19 @@ def discover_for_target(
 def merge(record: dict, session: dict) -> dict:
     if not session:
         return record
-    record_id = record.get("runtime_session_id")
-    session_id = session.get("runtime_session_id")
-    record_conf = record.get("runtime_session_confidence")
-    session_conf = session.get("runtime_session_confidence")
-    confidence_order = {"exact": 4, "high": 3, "medium": 2, "low": 1}
-    if record_id and session_id and confidence_order.get(record_conf or "", 0) > confidence_order.get(session_conf or "", 0):
+    record = mark_binding(dict(record))
+    session = mark_binding(dict(session))
+    if is_bound_session(record) and not is_bound_session(session):
         protected = {
             key: record.get(key)
             for key in (
                 "session_id",
                 "runtime_session_id",
                 "runtime_session_source",
+                "runtime_session_binding",
+                "runtime_session_bind_method",
+                "runtime_session_bind_source",
+                "runtime_session_bound_at",
                 "runtime_session_confidence",
                 "runtime_session_evidence",
                 "runtime_session_env",
@@ -452,8 +534,24 @@ def merge(record: dict, session: dict) -> dict:
             if record.get(key) is not None
         }
         return {**record, **{k: v for k, v in session.items() if k not in protected}, **protected}
+    if not is_bound_session(session):
+        diagnostics = {
+            key: session.get(key)
+            for key in (
+                "runtime_session_source",
+                "runtime_session_binding",
+                "runtime_session_diagnostics",
+                "runtime_session_possible_matches",
+                "runtime_session_cwd",
+                "runtime_session_created_at_ms",
+                "runtime_session_updated_at_ms",
+                "runtime_session_pid",
+            )
+            if session.get(key) is not None
+        }
+        return {**record, **diagnostics}
     merged = {**record, **session}
-    if session.get("runtime_session_id"):
+    if is_bound_session(session):
         merged["session_id"] = session["runtime_session_id"]
     return merged
 
@@ -552,6 +650,9 @@ def resolve_current_process(runtime: str | None = None) -> dict:
         "session_id": selected.get("session_id"),
         "runtime_session_id": selected.get("session_id"),
         "runtime_session_source": selected.get("source"),
+        "runtime_session_binding": "bound" if selected.get("session_id") else "unbound",
+        "runtime_session_bind_method": binding_method_for_source(selected.get("source")),
+        "runtime_session_bind_source": selected.get("source"),
         "runtime_session_confidence": selected.get("confidence"),
         "runtime_session_reason": selected.get("reason"),
         "cross_check": cross_check,

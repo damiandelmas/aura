@@ -401,10 +401,13 @@ def main():
 
     # sessions
     p_sessions = subparsers.add_parser("sessions", help="List live seats with runtime session ids")
-    p_sessions.add_argument("sessions_action", nargs="?", choices=["restore-plan", "self", "bind-current", "bind-nonce"],
+    p_sessions.add_argument(
+        "sessions_action",
+        nargs="?",
+        choices=["restore-plan", "self", "bind-current", "bind-nonce", "seat-history", "fleets"],
                             help="Optional sessions action")
     p_sessions.add_argument("nonce", nargs="?",
-                            help="For bind-nonce, unique marker written into the target Codex session")
+                            help="For bind-nonce, unique marker written into the target Codex session; for seat-history, target seat ref")
     p_sessions.add_argument("--target",
                             help="For bind-nonce, target seat to update; defaults to current tmux fleet/window")
     p_sessions.add_argument("--jsonl",
@@ -413,12 +416,18 @@ def main():
                             help="Filter by fleet")
     p_sessions.add_argument("--live", action="store_true",
                             help="Only include seats with alive terminals")
-    p_sessions.add_argument("--min-confidence", choices=["low", "medium", "high", "exact"],
-                            help="Only include session ids at or above this confidence")
     p_sessions.add_argument("--include-hidden", action="store_true",
                             help="Include hidden/internal seats such as Ether panels")
     p_sessions.add_argument("--dry-run", action="store_true",
                             help="For restore-plan, produce commands without starting seats")
+    p_sessions.add_argument("--from-ledger", action="store_true",
+                            help="For restore-plan, rebuild from the append-only session ledger instead of live tmux")
+    p_sessions.add_argument("--latest-per-seat", action="store_true",
+                            help="For --from-ledger restore-plan, collapse to the latest known row per seat")
+    p_sessions.add_argument("--limit", type=int,
+                            help="For seat-history, limit rows")
+    p_sessions.add_argument("--no-follow-aliases", action="store_true",
+                            help="For seat-history, do not follow rehome/alias chains")
     p_sessions.add_argument("--runtime", choices=["codex", "claude-code", "claude", "hermes", "omx", "opencode", "openclaw", "shell", "command"],
                             help="For sessions self, override runtime inference")
 

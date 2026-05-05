@@ -32,6 +32,9 @@ def test_runtime_session_discovers_codex_thread_from_resume_argv(monkeypatch):
     assert result == {
         "runtime_session_id": "019dd2b7-8919-75d2-b472-7c778a93da92",
         "runtime_session_source": "argv:codex-resume",
+        "runtime_session_binding": "bound",
+        "runtime_session_bind_method": "argv-resume",
+        "runtime_session_bind_source": "argv:codex-resume",
         "runtime_session_confidence": "exact",
         "runtime_session_evidence": {
             "reason": "codex-resume-argv",
@@ -116,10 +119,12 @@ def test_runtime_session_recovers_fresh_codex_thread_from_state_db(monkeypatch, 
 
     result = runtime_session.discover_from_pane_pid("codex", 1001, seat_name="specialist-cell")
 
-    assert result["runtime_session_id"] == "019dd797-1169-7931-b2f7-17824b3b7134"
+    assert "runtime_session_id" not in result
     assert result["runtime_session_source"] == "codex-state:cwd-start"
-    assert result["runtime_session_confidence"] == "high"
-    assert result["runtime_session_evidence"]["reason"] == "cwd-start-seat-name"
+    assert result["runtime_session_binding"] == "unbound"
+    assert result["runtime_session_diagnostics"]["reason"] == "codex-state-possible-match"
+    assert result["runtime_session_possible_matches"][0]["runtime_session_id"] == "019dd797-1169-7931-b2f7-17824b3b7134"
+    assert result["runtime_session_possible_matches"][0]["reason"] == "cwd-start-seat-name"
 
 
 def test_runtime_session_prefers_currently_updated_state_candidate(monkeypatch, tmp_path):
@@ -181,9 +186,10 @@ def test_runtime_session_prefers_currently_updated_state_candidate(monkeypatch, 
 
     result = runtime_session.discover_from_pane_pid("codex", 1001, seat_name="flex-release-parity-manager")
 
-    assert result["runtime_session_id"] == "019dd724-49b1-7503-99ac-7c534c6d5ec5"
-    assert result["runtime_session_confidence"] == "high"
-    assert result["runtime_session_evidence"]["reason"] == "cwd-start-seat-name-currently-updated"
+    assert "runtime_session_id" not in result
+    assert result["runtime_session_binding"] == "unbound"
+    assert result["runtime_session_possible_matches"][0]["runtime_session_id"] == "019dd724-49b1-7503-99ac-7c534c6d5ec5"
+    assert result["runtime_session_possible_matches"][0]["reason"] == "cwd-start-seat-name-currently-updated"
 
 
 def test_runtime_session_does_not_match_single_word_seat_from_target_mentions(monkeypatch, tmp_path):
@@ -245,9 +251,10 @@ def test_runtime_session_does_not_match_single_word_seat_from_target_mentions(mo
 
     result = runtime_session.discover_from_pane_pid("codex", 1001, seat_name="manager")
 
-    assert result["runtime_session_id"] == "manager-thread"
-    assert result["runtime_session_confidence"] == "high"
-    assert result["runtime_session_evidence"]["reason"] == "cwd-start-seat-name"
+    assert "runtime_session_id" not in result
+    assert result["runtime_session_binding"] == "unbound"
+    assert result["runtime_session_possible_matches"][0]["runtime_session_id"] == "manager-thread"
+    assert result["runtime_session_possible_matches"][0]["reason"] == "cwd-start-seat-name"
 
 
 def test_runtime_session_launch_id_is_exact_join_key(monkeypatch, tmp_path):
@@ -314,9 +321,10 @@ def test_runtime_session_launch_id_is_exact_join_key(monkeypatch, tmp_path):
         launch_id="aura-launch-manager",
     )
 
-    assert result["runtime_session_id"] == "manager-thread"
-    assert result["runtime_session_confidence"] == "exact"
-    assert result["runtime_session_evidence"]["reason"] == "aura-launch-id"
+    assert "runtime_session_id" not in result
+    assert result["runtime_session_binding"] == "unbound"
+    assert result["runtime_session_possible_matches"][0]["runtime_session_id"] == "manager-thread"
+    assert result["runtime_session_possible_matches"][0]["reason"] == "aura-launch-id"
 
 
 def test_spawn_exports_aura_runtime_env_and_records_pane_ref(monkeypatch, tmp_path):
@@ -581,10 +589,13 @@ def test_spawn_codex_prompt_retries_submit_before_session_observation(monkeypatc
         runtime_session,
         "discover_for_target",
         lambda *args, **kwargs: {
-            "runtime_session_id": "codex-thread-after-submit",
             "runtime_session_source": "codex-state:cwd-start",
-            "runtime_session_confidence": "exact",
-            "runtime_session_evidence": {"reason": "aura-launch-id"},
+            "runtime_session_binding": "unbound",
+            "runtime_session_diagnostics": {"reason": "codex-state-possible-match"},
+            "runtime_session_possible_matches": [{
+                "runtime_session_id": "codex-thread-after-submit",
+                "reason": "aura-launch-id",
+            }],
             "runtime_session_cwd": str(unit),
         },
     )
@@ -611,7 +622,7 @@ def test_spawn_codex_prompt_retries_submit_before_session_observation(monkeypatc
     assert result["prompt_submit_retry"]["session_seen"] is True
     assert result["prompt_submit_retry"]["attempts"] == 1
     assert keys == [("tmux:unitfleet:%44", "Enter", False)]
-    assert result["runtime_session_id"] == "codex-thread-after-submit"
+    assert "runtime_session_id" not in result
     assert sent[0][0] == "builder"
 
 
@@ -650,10 +661,13 @@ def test_spawn_auto_observes_codex_session_by_launch_id(monkeypatch, tmp_path):
         assert seat_name == "builder"
         assert launch_id == "aura-launch-feedfacecafebeef"
         return {
-            "runtime_session_id": "codex-thread-launch",
             "runtime_session_source": "codex-state:cwd-start",
-            "runtime_session_confidence": "exact",
-            "runtime_session_evidence": {"reason": "aura-launch-id"},
+            "runtime_session_binding": "unbound",
+            "runtime_session_diagnostics": {"reason": "codex-state-possible-match"},
+            "runtime_session_possible_matches": [{
+                "runtime_session_id": "codex-thread-launch",
+                "reason": "aura-launch-id",
+            }],
             "runtime_session_cwd": str(unit),
         }
 
@@ -676,17 +690,17 @@ def test_spawn_auto_observes_codex_session_by_launch_id(monkeypatch, tmp_path):
     result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
 
     assert result["ok"] is True
-    assert result["session_id"] == "codex-thread-launch"
-    assert result["runtime_session_id"] == "codex-thread-launch"
-    assert result["session_observation"]["status"] == "observed"
-    assert result["session_observation"]["runtime_session_confidence"] == "exact"
+    assert "session_id" not in result
+    assert "runtime_session_id" not in result
+    assert result["session_observation"]["status"] == "pending"
+    assert result["session_observation"]["last_runtime_session_binding"] == "unbound"
 
     agent = registry.get_agent("builder", fleet="unitfleet")
-    assert agent["session_id"] == "codex-thread-launch"
-    assert agent["runtime_session_confidence"] == "exact"
+    assert "session_id" not in agent
+    assert "runtime_session_id" not in agent
 
     rows = session_ledger.iter_records()
-    assert any(row.get("event") == "session_observed_after_spawn" and row.get("runtime_session_id") == "codex-thread-launch" for row in rows)
+    assert not any(row.get("event") == "session_observed_after_spawn" and row.get("runtime_session_id") == "codex-thread-launch" for row in rows)
 
 
 def test_spawn_session_observation_pending_without_high_confidence(monkeypatch, tmp_path):
@@ -792,6 +806,10 @@ def test_list_merges_runtime_session_id_from_pane(monkeypatch, tmp_path):
         lambda runtime, pane_pid, **kwargs: {
             "runtime_session_id": "codex-thread-123",
             "runtime_session_env": "CODEX_THREAD_ID",
+            "runtime_session_source": "env:CODEX_THREAD_ID",
+            "runtime_session_binding": "bound",
+            "runtime_session_bind_method": "runtime-env",
+            "runtime_session_bind_source": "env:CODEX_THREAD_ID",
             "runtime_session_pid": pane_pid,
         },
     )
@@ -883,9 +901,10 @@ def test_sessions_restore_plan_marks_high_confidence_codex_restore_ready(monkeyp
     ))
 
     assert result["ok"] is True
-    assert result["restore_ready"] == 1
-    assert result["rows"][0]["restore_ready"] is True
-    assert "codex --dangerously-bypass-approvals-and-sandbox resume 019dd2b7-8919-75d2-b472-7c778a93da92" in result["rows"][0]["restore_command"]
+    assert result["restore_ready"] == 0
+    assert result["rows"][0]["restore_ready"] is False
+    assert result["rows"][0]["restore_reason"] == "runtime-session-unbound"
+    assert result["rows"][0]["restore_command"] is None
 
 
 def test_runtime_session_self_prefers_current_codex_thread_env(monkeypatch):
@@ -1074,7 +1093,7 @@ def test_sessions_bind_current_requires_exact_session(monkeypatch):
     ))
 
     assert result["ok"] is False
-    assert result["error"] == "current runtime session id is not exact; use bind-nonce fallback"
+    assert result["error"] == "current runtime session id is not bound; use bind-nonce fallback"
 
 
 def test_sessions_bind_nonce_default_target_prefers_aura_env(monkeypatch):

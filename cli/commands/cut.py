@@ -77,6 +77,14 @@ def run(args):
 def _record_stop(result: dict, reg_agent: dict | None, terminal_target: str) -> None:
     try:
         from lib import session_ledger
+        from lib import registry
+
+        after = None
+        if reg_agent:
+            after = registry.get_agent(
+                reg_agent.get("name") or result.get("name"),
+                fleet=reg_agent.get("fleet"),
+            )
 
         session_ledger.append_record({
             "event": "stop",
@@ -92,5 +100,19 @@ def _record_stop(result: dict, reg_agent: dict | None, terminal_target: str) -> 
             "graceful_exit": result.get("graceful_exit"),
             "result": result,
         })
+        session_ledger.append_seat_event(
+            event="seat_cut",
+            before=reg_agent,
+            after=after,
+            evidence={
+                "target": terminal_target,
+                "force": result.get("force"),
+                "graceful_attempted": result.get("graceful_attempted"),
+                "graceful_exit": result.get("graceful_exit"),
+                "terminal": result.get("terminal"),
+                "note": result.get("note"),
+            },
+            source_command="aura seat cut",
+        )
     except Exception:
         pass
