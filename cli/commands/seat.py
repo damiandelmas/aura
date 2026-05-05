@@ -1209,6 +1209,10 @@ def _tag(args, registry, terminal=None) -> dict:
     # keys back in via `{**previous, **record}` — that would defeat unset.
     data = registry.read_registry()
     key = registry._key(fleet, name)
+    next_record["name"] = name
+    next_record["seat"] = next_record.get("seat") or name
+    next_record["fleet"] = fleet
+    next_record["seat_ref"] = next_record.get("seat_ref") or key
     next_record["last_seen"] = registry.now_iso()
     data[key] = next_record
     registry.write_registry(data)
