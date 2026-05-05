@@ -1529,6 +1529,75 @@ def _sweep(args, registry, terminal) -> dict:
     }
 
 
+def _archive(args, registry, terminal) -> dict:
+    target = getattr(args, "target", None) or ""
+    if not target or target.count(":") != 1 or target.startswith(":") or target.endswith(":"):
+        return {"ok": False, "error": "empty-target",
+                "detail": "target must be FLEET:SEAT"}
+
+    record = registry.get_agent(target)
+    if not record:
+        return {"ok": False, "error": "seat not found", "target": target}
+
+    fleet = record.get("fleet")
+    if fleet and hasattr(terminal, "configure_session"):
+        terminal.configure_session(fleet)
+    targets = _seat_targets(record)
+    alive_targets = [ref for ref in targets if _target_exists(terminal, ref)]
+    pane_exists = _pane_exists_anywhere(record.get("pane_ref"))
+    if (alive_targets or pane_exists) and not getattr(args, "force", False):
+        return {
+            "ok": False,
+            "error": "seat-appears-live",
+            "target": target,
+            "alive_targets": alive_targets,
+            "pane_exists_anywhere": pane_exists,
+            "detail": "refusing to archive a current row while its terminal appears live; pass --force only after manual verification",
+        }
+
+    now = registry.now_iso()
+    reason = getattr(args, "reason", None) or "manual-current-projection-cleanup"
+    after = {
+        **record,
+        "status": "archived",
+        "archived_at": now,
+        "archive_reason": reason,
+        "terminal_state": "historical",
+    }
+    try:
+        from lib import session_ledger
+
+        event = session_ledger.append_seat_event(
+            event="seat_archived",
+            before=record,
+            after=after,
+            evidence={
+                "source_command": "aura seat archive",
+                "reason": reason,
+                "checked_targets": targets,
+                "alive_targets": alive_targets,
+                "pane_exists_anywhere": pane_exists,
+                "force": bool(getattr(args, "force", False)),
+            },
+            source_command="aura seat archive",
+        )
+    except Exception:
+        event = None
+
+    fleet_name, seat_name = registry.split_ref(target)
+    removed = registry.remove_agent(seat_name, fleet=fleet_name)
+    return {
+        "ok": bool(removed),
+        "action": "archive",
+        "target": target,
+        "removed_current_row": bool(removed),
+        "event": "seat_archived",
+        "event_id": (event or {}).get("event_id"),
+        "reason": reason,
+        "historical": True,
+    }
+
+
 def run(args):
     from lib import registry
 
@@ -1550,6 +1619,10 @@ def run(args):
         from lib import terminal
 
         return _sweep(args, registry, terminal)
+    if action == "archive":
+        from lib import terminal
+
+        return _archive(args, registry, terminal)
     if action == "register-orphan":
         return _register_orphan(args, registry)
     if action == "tag":

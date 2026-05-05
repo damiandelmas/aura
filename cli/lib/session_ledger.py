@@ -250,7 +250,7 @@ def seat_history_for_target(target: str, *, limit: int | None = None, follow_ali
     return filtered
 
 
-TERMINAL_EVENTS = {"seat_cut", "seat_swept_removed"}
+TERMINAL_EVENTS = {"seat_cut", "seat_swept_removed", "seat_archived"}
 
 
 def _state_from_row(row: dict[str, Any]) -> dict[str, Any]:
