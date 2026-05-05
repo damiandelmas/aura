@@ -1,4 +1,4 @@
-"""Broadcast a message to every agent in a fleet."""
+"""Broadcast a message to every agent in a fleet or live scope."""
 
 import argparse
 
@@ -79,8 +79,105 @@ def _targets_for_fleet(fleet: str, include_shell: bool = False, allow_hidden: bo
     return names
 
 
+def _live_targets(*, runtime: str | None = None, allow_hidden: bool = False) -> list[dict]:
+    """Return registered live targets across fleets.
+
+    This is registry-first: global broadcast is for Aura seats, not raw
+    unregistered tmux panes. Fleet broadcast with --include-shell remains the
+    local recovery path for intentionally including unregistered windows.
+    """
+    registry = _registry_mod()
+    terminal = _terminal_mod()
+    rows = []
+    seen: set[str] = set()
+    for agent in registry.list_agents(include_hidden=allow_hidden):
+        if registry.is_hidden_agent(agent) and not allow_hidden:
+            continue
+        if runtime and agent.get("runtime") != runtime:
+            continue
+        fleet = agent.get("fleet")
+        name = agent.get("seat") or agent.get("name")
+        if not fleet or not name:
+            continue
+        if registry.is_hidden_fleet(fleet) and not allow_hidden:
+            continue
+        target = f"{fleet}:{name}"
+        if target in seen:
+            continue
+        terminal_ref = agent.get("pane_ref") or agent.get("terminal_ref") or target
+        if not terminal.target_exists(terminal_ref):
+            continue
+        seen.add(target)
+        rows.append({
+            "target": target,
+            "fleet": fleet,
+            "seat": name,
+            "runtime": agent.get("runtime"),
+            "terminal_ref": terminal_ref,
+        })
+    return sorted(rows, key=lambda row: (row["fleet"], row["seat"]))
+
+
+def _message_for_scope(args) -> str:
+    parts = list(getattr(args, "parts", []) or [])
+    if hasattr(args, "message"):
+        return getattr(args, "message", "") or ""
+    return " ".join(parts)
+
+
+def _broadcast_to_targets(args, target_rows: list[dict], message: str) -> dict:
+    from lib import identity
+
+    results = []
+    send = _send_mod()
+    for row in target_rows:
+        target = row["target"]
+        dedupe_key = getattr(args, "dedupe_key", None)
+        if dedupe_key:
+            dedupe_key = f"{dedupe_key}:{target}"
+        send_args = argparse.Namespace(
+            target=target,
+            message=message,
+            sender=identity.sender(getattr(args, "sender", None)),
+            mode=None,
+            nudge=False,
+            transport=getattr(args, "transport", "auto") or "auto",
+            dedupe_key=dedupe_key,
+            force=getattr(args, "force", False),
+            allow_hidden=bool(getattr(args, "allow_hidden", False)),
+        )
+        result = send.run(send_args)
+        results.append({**row, "result": result})
+    sent = [row for row in results if (row.get("result") or {}).get("ok")]
+    failed = [row for row in results if not (row.get("result") or {}).get("ok")]
+    return {
+        "count": len(results),
+        "sent_count": len(sent),
+        "failed_count": len(failed),
+        "targets": [row["target"] for row in target_rows],
+        "results": results,
+    }
+
+
 def run(args):
     from lib import identity
+
+    scope = getattr(args, "scope", None) or "fleet"
+    if scope in {"live", "all-live"}:
+        message = _message_for_scope(args)
+        runtime = getattr(args, "runtime", None)
+        targets = _live_targets(runtime=runtime, allow_hidden=bool(getattr(args, "allow_hidden", False)))
+        fanout = _broadcast_to_targets(args, targets, message)
+        fleets = sorted({row["fleet"] for row in targets})
+        return {
+            "ok": fanout["failed_count"] == 0,
+            "schema": "aura.broadcast_live.v1",
+            "scope": "live",
+            "runtime": runtime,
+            "fleet_count": len(fleets),
+            "fleets": fleets,
+            **fanout,
+        }
 
     fleet, message = _fleet_and_message_from_args(args)
     include_shell = getattr(args, "include_shell", False)

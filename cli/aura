@@ -211,6 +211,10 @@ def main():
                              help="Either: MESSAGE when --fleet is set, or FLEET MESSAGE")
     p_broadcast.add_argument("--fleet", "-f", metavar="NAME",
                              help="Fleet name")
+    p_broadcast.add_argument("--scope", choices=["fleet", "live", "all-live"], default="fleet",
+                             help="Broadcast scope: one fleet (default) or all live registered seats")
+    p_broadcast.add_argument("--runtime",
+                             help="For --scope live, include only seats with this runtime (for example codex)")
     p_broadcast.add_argument("--as", dest="sender",
                              help="Send as (default: current Aura seat, else cli)")
     p_broadcast.add_argument("--transport", choices=["auto", "tmux", "mesh"], default="auto",

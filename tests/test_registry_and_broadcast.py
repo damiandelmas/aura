@@ -677,3 +677,127 @@ def test_broadcast_blocks_hidden_fleet_without_operator_override(monkeypatch):
     assert result["ok"] is False
     assert result["blocked"] is True
     assert result["reason"] == "target-hidden"
+
+
+def test_broadcast_live_scope_targets_registered_live_codex_seats(monkeypatch):
+    from commands import broadcast
+
+    registry_agents = [
+        {"name": "engineer", "fleet": "flex", "runtime": "codex", "registered": True, "terminal_ref": "flex:engineer"},
+        {"name": "runtime", "fleet": "flex", "runtime": "codex", "registered": True, "terminal_ref": "flex:runtime"},
+        {"name": "shell", "fleet": "flex", "runtime": "shell", "registered": True, "terminal_ref": "flex:shell"},
+        {"name": "dead", "fleet": "flex", "runtime": "codex", "registered": True, "terminal_ref": "flex:dead"},
+        {"name": "ether", "fleet": "_aura-ether", "runtime": "codex", "registered": True, "hidden": True},
+    ]
+
+    class FakeRegistry:
+        @staticmethod
+        def list_agents(fleet=None, include_hidden=False):
+            rows = [a for a in registry_agents if fleet is None or a.get("fleet") == fleet]
+            if not include_hidden:
+                rows = [a for a in rows if not FakeRegistry.is_hidden_agent(a)]
+            return rows
+
+        @staticmethod
+        def is_hidden_agent(record):
+            return bool(record.get("hidden")) or record.get("kind") == "ether" or str(record.get("fleet") or "").startswith("_")
+
+        @staticmethod
+        def is_hidden_fleet(fleet):
+            return bool(fleet and str(fleet).startswith("_"))
+
+    class FakeTerminal:
+        @staticmethod
+        def target_exists(target):
+            return target in {"flex:engineer", "flex:runtime", "flex:shell"}
+
+    sent = []
+
+    class FakeSend:
+        @staticmethod
+        def run(args):
+            sent.append((args.target, args.message, args.transport))
+            return {"ok": True, "target": args.target}
+
+    monkeypatch.setattr(broadcast, "_registry", FakeRegistry)
+    monkeypatch.setattr(broadcast, "_terminal", FakeTerminal)
+    monkeypatch.setattr(broadcast, "_send", FakeSend)
+
+    result = broadcast.run(argparse.Namespace(
+        scope="live",
+        runtime="codex",
+        parts=["bind", "now"],
+        sender="cli",
+        transport="tmux",
+        dedupe_key="bind-run",
+        force=False,
+        include_shell=False,
+        allow_hidden=False,
+    ))
+
+    assert result["ok"] is True
+    assert result["schema"] == "aura.broadcast_live.v1"
+    assert result["scope"] == "live"
+    assert result["runtime"] == "codex"
+    assert result["fleet_count"] == 1
+    assert result["count"] == 2
+    assert result["sent_count"] == 2
+    assert result["failed_count"] == 0
+    assert result["targets"] == ["flex:engineer", "flex:runtime"]
+    assert sent == [
+        ("flex:engineer", "bind now", "tmux"),
+        ("flex:runtime", "bind now", "tmux"),
+    ]
+
+
+def test_broadcast_live_scope_reports_partial_failures(monkeypatch):
+    from commands import broadcast
+
+    class FakeRegistry:
+        @staticmethod
+        def list_agents(fleet=None, include_hidden=False):
+            return [
+                {"name": "ok-seat", "fleet": "flex", "runtime": "codex", "registered": True, "terminal_ref": "flex:ok-seat"},
+                {"name": "bad-seat", "fleet": "flex", "runtime": "codex", "registered": True, "terminal_ref": "flex:bad-seat"},
+            ]
+
+        @staticmethod
+        def is_hidden_agent(record):
+            return False
+
+        @staticmethod
+        def is_hidden_fleet(fleet):
+            return False
+
+    class FakeTerminal:
+        @staticmethod
+        def target_exists(target):
+            return True
+
+    class FakeSend:
+        @staticmethod
+        def run(args):
+            if args.target == "flex:bad-seat":
+                return {"ok": False, "error": "blocked"}
+            return {"ok": True}
+
+    monkeypatch.setattr(broadcast, "_registry", FakeRegistry)
+    monkeypatch.setattr(broadcast, "_terminal", FakeTerminal)
+    monkeypatch.setattr(broadcast, "_send", FakeSend)
+
+    result = broadcast.run(argparse.Namespace(
+        scope="all-live",
+        runtime=None,
+        parts=["hello"],
+        sender="cli",
+        transport="auto",
+        dedupe_key=None,
+        force=False,
+        include_shell=False,
+        allow_hidden=False,
+    ))
+
+    assert result["ok"] is False
+    assert result["count"] == 2
+    assert result["sent_count"] == 1
+    assert result["failed_count"] == 1
