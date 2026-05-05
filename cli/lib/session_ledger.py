@@ -40,6 +40,58 @@ def append_record(record: dict[str, Any]) -> dict[str, Any]:
     return enriched
 
 
+def _seat_ref(record: dict[str, Any] | None) -> str | None:
+    if not isinstance(record, dict):
+        return None
+    if record.get("seat_ref"):
+        return str(record["seat_ref"])
+    fleet = record.get("fleet")
+    seat = record.get("seat") or record.get("name")
+    if fleet and seat:
+        return f"{fleet}:{seat}"
+    return None
+
+
+def append_seat_event(
+    *,
+    event: str,
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
+    evidence: dict[str, Any] | None = None,
+    source_command: str | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Append a seat-history event to the session ledger.
+
+    This is an append-only audit helper for seat lifecycle/metadata repair
+    events. It intentionally stores before/after snapshots as evidence, while
+    also promoting common target fields for easy grep/query.
+    """
+    target_row = after if isinstance(after, dict) else before if isinstance(before, dict) else {}
+    seat_ref = _seat_ref(target_row) or _seat_ref(before) or _seat_ref(after)
+    fleet = target_row.get("fleet") if isinstance(target_row, dict) else None
+    seat = (target_row.get("seat") or target_row.get("name")) if isinstance(target_row, dict) else None
+    payload = {
+        "schema": "aura.seat_history.v1",
+        "event_id": f"aura-seat-history-{__import__('uuid').uuid4().hex[:12]}",
+        "event": event,
+        "source_command": source_command,
+        "seat_ref": seat_ref,
+        "fleet": fleet,
+        "seat": seat,
+        "name": seat,
+        "runtime": target_row.get("runtime") if isinstance(target_row, dict) else None,
+        "aura_launch_id": target_row.get("aura_launch_id") if isinstance(target_row, dict) else None,
+        "runtime_session_id": target_row.get("runtime_session_id") if isinstance(target_row, dict) else None,
+        "runtime_session_binding": target_row.get("runtime_session_binding") if isinstance(target_row, dict) else None,
+        "before": before,
+        "after": after,
+        "evidence": evidence or {},
+        **extra,
+    }
+    return append_record({key: value for key, value in payload.items() if value is not None})
+
+
 def iter_records(limit: int | None = None) -> list[dict[str, Any]]:
     path = ledger_path()
     if not path.exists():

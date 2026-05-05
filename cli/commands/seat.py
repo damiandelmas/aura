@@ -51,16 +51,18 @@ def _list_tmux_panes() -> list[dict]:
         "list-panes",
         "-a",
         "-F",
-        "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}",
+        "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}",
     ])
     if result.returncode != 0:
         return []
     panes = []
     for line in result.stdout.splitlines():
         parts = line.split("\t")
-        if len(parts) != 5:
+        if len(parts) < 5:
             continue
-        session, window_index, window_name, pane_id, pane_pid = parts
+        while len(parts) < 7:
+            parts.append("")
+        session, window_index, window_name, pane_id, pane_pid, pane_current_command, pane_current_path = parts[:7]
         try:
             pid = int(pane_pid)
         except ValueError:
@@ -71,6 +73,8 @@ def _list_tmux_panes() -> list[dict]:
             "window_name": window_name,
             "pane_id": pane_id,
             "pane_pid": pid,
+            "pane_current_command": pane_current_command,
+            "pane_current_path": pane_current_path,
         })
     return panes
 
@@ -1070,6 +1074,300 @@ def _safe_stale(agent: dict) -> bool:
     return bool(agent.get("cut_at") or agent.get("ended_at") or agent.get("terminated_at"))
 
 
+def _parse_set_pair(arg: str) -> tuple[str, str] | dict:
+    if not arg or "=" not in arg:
+        return {"ok": False, "error": "malformed-set-pair", "arg": arg}
+    key, value = arg.split("=", 1)
+    if not key:
+        return {"ok": False, "error": "malformed-set-pair", "arg": arg}
+    return key, value
+
+
+def _tag(args, registry, terminal=None) -> dict:
+    from lib.seat_schema import TAG_ALLOWLIST
+
+    target = getattr(args, "target", None) or ""
+    if not target or target.count(":") != 1 or target.startswith(":") or target.endswith(":"):
+        return {"ok": False, "error": "empty-target",
+                "detail": "target must be FLEET:SEAT"}
+
+    record = registry.get_agent(target)
+    if not record:
+        return {"ok": False, "error": "no-such-seat",
+                "detail": f"registry has no row for {target!r}"}
+
+    set_pairs: dict[str, str] = {}
+    for raw in getattr(args, "set", None) or []:
+        parsed = _parse_set_pair(raw)
+        if isinstance(parsed, dict):
+            return parsed
+        key, value = parsed
+        if key not in TAG_ALLOWLIST:
+            return {"ok": False, "error": f"key-not-in-allowlist:{key}",
+                    "allowlist": sorted(TAG_ALLOWLIST)}
+        set_pairs[key] = value
+
+    unset_keys = list(getattr(args, "unset", None) or [])
+    for key in unset_keys:
+        if key not in TAG_ALLOWLIST:
+            return {"ok": False, "error": f"key-not-in-allowlist:{key}",
+                    "allowlist": sorted(TAG_ALLOWLIST)}
+
+    keys_to_track = sorted(set(set_pairs.keys()) | set(unset_keys))
+    before = {k: record.get(k) for k in keys_to_track}
+
+    next_record = dict(record)
+    for key, value in set_pairs.items():
+        if value == "":
+            next_record.pop(key, None)
+        else:
+            next_record[key] = value
+    for key in unset_keys:
+        next_record.pop(key, None)
+
+    after = {k: next_record.get(k) for k in keys_to_track}
+    changed_keys = [k for k in keys_to_track if before.get(k) != after.get(k)]
+
+    fleet = next_record.get("fleet") or record.get("fleet")
+    name = next_record.get("name") or next_record.get("seat") or record.get("name") or record.get("seat")
+    if not fleet or not name:
+        return {"ok": False, "error": "registry-row-missing-fleet-or-name",
+                "detail": f"existing row for {target!r} lacks fleet/name fields"}
+
+    data = registry.read_registry()
+    key = registry._key(fleet, name)
+    next_record["last_seen"] = registry.now_iso()
+    data[key] = next_record
+    registry.write_registry(data)
+    updated = next_record
+
+    warnings: list[str] = []
+    try:
+        from lib import session_ledger
+
+        session_ledger.append_seat_event(
+            event="seat_metadata_tagged",
+            before=record,
+            after=updated,
+            evidence={
+                "source_command": "aura seat tag",
+                "caller": os.environ.get("DESKS_CALLER", "cli"),
+                "set_keys": sorted(set_pairs.keys()),
+                "unset_keys": sorted(unset_keys),
+                "changed_keys": changed_keys,
+                "rehome": os.environ.get("DESKS_REHOME") == "true",
+                "before": before,
+                "after": after,
+            },
+            source_command="aura seat tag",
+        )
+    except Exception:
+        warnings.append("ledger-append-failed")
+
+    response = {
+        "ok": True,
+        "action": "tag",
+        "target": target,
+        "set": sorted(set_pairs.keys()),
+        "unset": sorted(unset_keys),
+        "changed": changed_keys,
+        "record": updated,
+    }
+    if warnings:
+        response["warnings"] = warnings
+    return response
+
+
+def _infer_orphan_runtime(pane_command: str | None, pane_argv: list[str] | None = None) -> str:
+    cmd = (pane_command or "").lower()
+    argv_str = " ".join(pane_argv or []).lower()
+    if "codex" in argv_str or "codex" in cmd:
+        return "codex"
+    if "claude" in argv_str or "claude" in cmd:
+        return "claude-code"
+    if "hermes" in argv_str:
+        return "hermes"
+    if "omx" in argv_str:
+        return "omx"
+    if "openclaw" in argv_str:
+        return "openclaw"
+    if "opencode" in argv_str:
+        return "opencode"
+    if cmd in {"bash", "zsh", "sh", "fish", "dash"}:
+        return "shell"
+    if cmd == "node":
+        return "codex"
+    return "command"
+
+
+def _discover_orphan_pane(fleet: str, seat: str, panes: list[dict] | None = None) -> dict:
+    if panes is None:
+        panes = _list_tmux_panes()
+    in_fleet = [p for p in panes if p.get("session") == fleet]
+    matches = [p for p in in_fleet if p.get("window_name") == seat]
+    if not matches:
+        return {"ok": False, "error": "no-pane",
+                "detail": f"no tmux pane found for fleet={fleet!r} seat={seat!r}"}
+    if len(matches) > 1:
+        return {
+            "ok": False,
+            "error": "ambiguous-pane",
+            "detail": f"{len(matches)} windows named {seat!r} in {fleet!r}; pass --pane explicitly",
+            "candidates": [
+                {
+                    "pane_ref": f"tmux:{p['session']}:{p['pane_id']}",
+                    "window_index": p.get("window_index"),
+                    "pane_pid": p.get("pane_pid"),
+                }
+                for p in matches
+            ],
+        }
+    return {"ok": True, "pane": matches[0], "discovered_by": "scan"}
+
+
+def _validate_explicit_orphan_pane(pane_ref: str, fleet: str) -> dict:
+    target = _tmux_target(pane_ref)
+    if not target.startswith("%"):
+        return {"ok": False, "error": "not-a-fleet-pane",
+                "detail": "--pane must be a tmux pane id ref like tmux:<fleet>:%<id>"}
+    info = _run_tmux([
+        "display-message", "-p", "-t", target,
+        "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}",
+    ])
+    if info.returncode != 0:
+        return {"ok": False, "error": "pane-not-found",
+                "detail": info.stderr.strip() or f"tmux pane not found: {pane_ref}"}
+    parts = info.stdout.strip().split("\t")
+    while len(parts) < 7:
+        parts.append("")
+    session, window_index, window_name, pane_id, pane_pid, pane_current_command, pane_current_path = parts[:7]
+    if session != fleet:
+        return {
+            "ok": False,
+            "error": "not-a-fleet-pane",
+            "detail": f"--pane resolves to session {session!r}, expected {fleet!r}",
+        }
+    try:
+        pid = int(pane_pid)
+    except ValueError:
+        pid = None
+    pane = {
+        "session": session,
+        "window_index": window_index,
+        "window_name": window_name,
+        "pane_id": pane_id,
+        "pane_pid": pid,
+        "pane_current_command": pane_current_command,
+        "pane_current_path": pane_current_path,
+    }
+    return {"ok": True, "pane": pane, "discovered_by": "explicit"}
+
+
+def _register_orphan(args, registry, terminal=None, ledger=None) -> dict:
+    target = getattr(args, "target", None) or ""
+    if not target or target.count(":") != 1 or target.startswith(":") or target.endswith(":"):
+        return {"ok": False, "error": "empty-target",
+                "detail": "target must be FLEET:SEAT"}
+    fleet, seat = target.split(":", 1)
+
+    existing = registry.get_agent(target)
+    if existing:
+        return {"ok": False, "error": "already-registered",
+                "detail": f"registry already has a row for {target!r}; cut or sweep first",
+                "record": existing}
+
+    explicit_pane = getattr(args, "pane", None)
+    discovery = _validate_explicit_orphan_pane(explicit_pane, fleet) if explicit_pane else _discover_orphan_pane(fleet, seat)
+    if not discovery.get("ok"):
+        return {"ok": False, **discovery, "target": target}
+
+    pane = discovery["pane"]
+    pane_id = pane.get("pane_id")
+    pane_command = pane.get("pane_current_command") or ""
+    runtime_arg = getattr(args, "runtime", None)
+    runtime_inferred = False
+    if runtime_arg:
+        runtime = runtime_arg
+    else:
+        runtime = _infer_orphan_runtime(pane_command)
+        runtime_inferred = True
+
+    cwd_override = getattr(args, "cwd", None)
+    cwd = cwd_override or pane.get("pane_current_path") or ""
+
+    now = registry.now_iso()
+    record = {
+        "name": seat,
+        "seat": seat,
+        "fleet": fleet,
+        "runtime": runtime,
+        "backend": "tmux",
+        "backend_ref": f"{fleet}:{seat}",
+        "terminal_ref": f"{fleet}:{seat}",
+        "seat_ref": f"{fleet}:{seat}",
+        "pane_ref": f"tmux:{fleet}:{pane_id}",
+        "status": "unknown",
+        "registered": True,
+        "delivery_mode": "immediate",
+        "kind": "terminal",
+        "cwd": cwd,
+        "workdir": cwd,
+        "transport": "tmux",
+        "created_at": now,
+        "last_seen": now,
+        "registered_via": "register-orphan",
+        "registered_at": now,
+        "registered_pane_pid": pane.get("pane_pid"),
+        "registered_pane_command": pane_command,
+        "runtime_session_id": None,
+        "runtime_session_binding": "unbound",
+        "runtime_session_bind_method": None,
+        "aura_launch_id": None,
+    }
+    inserted = registry.upsert_agent(record)
+
+    provenance = {
+        "discovered_by": discovery.get("discovered_by"),
+        "pane_ref": record["pane_ref"],
+        "pane_pid": pane.get("pane_pid"),
+        "pane_command": pane_command,
+        "pane_cwd": pane.get("pane_current_path"),
+        "runtime": runtime,
+        "runtime_inferred": runtime_inferred,
+        "registered_at": now,
+    }
+
+    try:
+        from lib import session_ledger
+
+        session_ledger.append_seat_event(
+            event="seat_registered_orphan",
+            before=None,
+            after=inserted,
+            evidence={
+                "source_command": "aura seat register-orphan",
+                "pane_ref": record["pane_ref"],
+                "pane_pid": pane.get("pane_pid"),
+                "pane_command": pane_command,
+                "pane_cwd": pane.get("pane_current_path"),
+                "discovered_by": discovery.get("discovered_by"),
+                "runtime": runtime,
+                "runtime_inferred": runtime_inferred,
+            },
+            source_command="aura seat register-orphan",
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "action": "register-orphan",
+        "target": target,
+        "record": inserted,
+        "provenance": provenance,
+    }
+
+
 def _sweep(args, registry, terminal) -> dict:
     include_hidden = bool(getattr(args, "include_hidden", False))
     agents = registry.list_agents(getattr(args, "fleet", None), include_hidden=include_hidden)
@@ -1150,6 +1448,10 @@ def run(args):
         from lib import terminal
 
         return _sweep(args, registry, terminal)
+    if action == "register-orphan":
+        return _register_orphan(args, registry)
+    if action == "tag":
+        return _tag(args, registry)
     if action == "inject-flex":
         from lib import terminal
 

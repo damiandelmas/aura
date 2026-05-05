@@ -178,6 +178,23 @@ def main():
     p_seat_flex.add_argument("--capture-lines", type=int, default=5000,
                              help="Terminal scrollback lines to inspect for the existing packet marker")
     seat_sub.add_parser("aliases", help="List seat aliases")
+    p_seat_register = seat_sub.add_parser(
+        "register-orphan",
+        help="Adopt an unregistered live tmux pane into the Aura registry.",
+    )
+    p_seat_register.add_argument("target", help="FLEET:SEAT")
+    p_seat_register.add_argument("--pane", help="Explicit tmux pane ref, e.g. tmux:flex-leaders-2:%48")
+    p_seat_register.add_argument("--runtime", help="Runtime name (codex, claude-code, shell, command)")
+    p_seat_register.add_argument("--cwd", help="Override the registered cwd; defaults to pane current path")
+    p_seat_tag = seat_sub.add_parser(
+        "tag",
+        help="Write opaque metadata onto a seat.",
+    )
+    p_seat_tag.add_argument("target", help="FLEET:SEAT")
+    p_seat_tag.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                            help="Opaque key=value pair; repeatable. Empty value unsets.")
+    p_seat_tag.add_argument("--unset", action="append", default=[], metavar="KEY",
+                            help="Remove a key entirely; repeatable.")
 
 
     # write

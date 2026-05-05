@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 
+TAG_ALLOWLIST = frozenset({
+    "desks_identity_id",
+    "flex_project_manifest",
+    "flex_project_root",
+})
+
+
 def infer_backend_ref(terminal_ref: str | None, *, fleet: str | None = None, name: str | None = None) -> str | None:
     """Return backend-local ref without the backend scheme.
 
