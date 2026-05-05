@@ -81,7 +81,7 @@ def test_submission_evidence_accepts_visible_message_id_after_prompt():
     from lib import terminal_submit
 
     capture = [
-        "› [AURA MESSAGE id=aura-msg-unit from=ops sent_at=2026-04-30T00:00:00Z]",
+        "› [AURA MESSAGE from=ops sent_at=2026-04-30T00:00:00Z]",
         "  do the thing",
         "  [/AURA MESSAGE]",
         "",
@@ -90,7 +90,7 @@ def test_submission_evidence_accepts_visible_message_id_after_prompt():
 
     assert terminal_submit.submission_evidence(capture, message_id="aura-msg-unit") == (
         True,
-        "message-id-visible",
+        "aura-envelope-visible",
     )
 
 
@@ -115,7 +115,7 @@ def test_verify_submit_retries_queued_input_until_message_visible():
     class FakeTerminal:
         captures = [
             ["› [Pasted Content 1024 chars]", "", "gpt-5.5 medium"],
-            ["› [AURA MESSAGE id=aura-msg-unit from=ops sent_at=now]", "  body", "[/AURA MESSAGE]"],
+            ["› [AURA MESSAGE from=ops sent_at=now]", "  body", "[/AURA MESSAGE]"],
         ]
         keys = []
 
@@ -136,7 +136,7 @@ def test_verify_submit_retries_queued_input_until_message_visible():
     )
 
     assert result["submitted_verified"] is True
-    assert result["verify_reason"] == "message-id-visible"
+    assert result["verify_reason"] == "aura-envelope-visible"
     assert result["submit_retry"] is True
     assert FakeTerminal.keys == [("fleet:seat", "Enter", False)]
 
@@ -147,7 +147,7 @@ def test_verify_submit_retries_missing_positive_evidence_until_message_visible()
     class FakeTerminal:
         captures = [
             ["› Explain this codebase", "", "gpt-5.5 medium"],
-            ["› [AURA MESSAGE id=aura-msg-unit from=ops sent_at=now]", "  body", "[/AURA MESSAGE]"],
+            ["› [AURA MESSAGE from=ops sent_at=now]", "  body", "[/AURA MESSAGE]"],
         ]
         keys = []
 
@@ -168,7 +168,7 @@ def test_verify_submit_retries_missing_positive_evidence_until_message_visible()
     )
 
     assert result["submitted_verified"] is True
-    assert result["verify_reason"] == "message-id-visible"
+    assert result["verify_reason"] == "aura-envelope-visible"
     assert result["submit_retry"] is True
     assert FakeTerminal.keys == [("fleet:seat", "Enter", False)]
 

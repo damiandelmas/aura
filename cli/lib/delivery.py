@@ -31,10 +31,23 @@ def default_dedupe_key(target: str, sender: str, body: str) -> str:
     return f"{target}:{sender}:{body_hash(body)}"
 
 
+def visible_sent_at(value: str | None = None) -> str:
+    raw = value or now_iso()
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw.split(".", 1)[0]
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc)
+        return parsed.isoformat(timespec="seconds").replace("+00:00", "Z")
+    return parsed.isoformat(timespec="seconds")
+
+
 def render_envelope(message_id: str, sender: str, body: str, sent_at: str | None = None) -> str:
-    sent_at = sent_at or now_iso()
+    del message_id
+    sent_at = visible_sent_at(sent_at)
     return (
-        f"[AURA MESSAGE id={message_id} from={sender} sent_at={sent_at}]\n"
+        f"[AURA MESSAGE from={sender} sent_at={sent_at}]\n"
         f"{body}\n"
         f"[/AURA MESSAGE]"
     )

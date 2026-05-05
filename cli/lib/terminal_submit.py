@@ -92,6 +92,17 @@ def has_message_marker(capture: list[str], message_id: str | None) -> bool:
     return any(message_id in str(line) for line in (capture or []))
 
 
+def has_aura_envelope(capture: list[str]) -> bool:
+    """Return true when a compact Aura message envelope is visible."""
+    for raw in capture or []:
+        line = str(raw).strip()
+        if line.startswith(("› ", "❯ ")):
+            line = line[1:].strip()
+        if line.startswith("[AURA MESSAGE ") and " from=" in line and " sent_at=" in line:
+            return True
+    return False
+
+
 def submission_evidence(capture: list[str], message_id: str | None = None) -> tuple[bool, str]:
     """Classify whether a post-submit capture proves the input was entered.
 
@@ -103,6 +114,8 @@ def submission_evidence(capture: list[str], message_id: str | None = None) -> tu
         return False, "queued-input"
     if has_message_marker(capture, message_id):
         return True, "message-id-visible"
+    if has_aura_envelope(capture):
+        return True, "aura-envelope-visible"
     if is_busy(capture):
         return True, "target-working"
     if message_id:
