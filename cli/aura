@@ -98,6 +98,12 @@ def main():
                          help="Runtime profile name (defaults to agent name; used by Hermes)")
     p_spawn.add_argument("--command", dest="launch_command", metavar="CMD",
                          help="Override runtime launch command for terminal-backed spawn")
+    p_spawn.add_argument("--delivery-backend", choices=["tmux", "host"], default="tmux",
+                         help=argparse.SUPPRESS)
+    p_spawn.add_argument("--control-backend", choices=["tmux", "host"], default="tmux",
+                         help=argparse.SUPPRESS)
+    p_spawn.add_argument("--host-mode", choices=["pane", "detached"], default="pane",
+                         help=argparse.SUPPRESS)
 
     # start
     p_start = subparsers.add_parser(
@@ -122,7 +128,7 @@ def main():
                         help=argparse.SUPPRESS)
     p_send.add_argument("--nudge", action="store_true",
                         help="Send Enter keystroke to unstick delivery")
-    p_send.add_argument("--transport", choices=["auto", "tmux", "mesh"], default="auto",
+    p_send.add_argument("--transport", choices=["auto", "tmux", "mesh", "host"], default="auto",
                         help="Delivery transport: auto uses tmux window if present, otherwise mesh")
     p_send.add_argument("--dedupe-key", metavar="KEY",
                         help="Skip send if this key was already delivered to the target")

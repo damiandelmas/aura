@@ -1,0 +1,397 @@
+#!/usr/bin/env python3
+"""Generic Aura PTY host.
+
+Owns one child PTY and exposes a tiny local JSONL socket protocol:
+send/status/tail/stop. The host is mechanical only; Aura owns semantics.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import selectors
+import signal
+import socket
+import sys
+import threading
+import time
+from collections import deque
+from pathlib import Path
+
+
+MAX_REQUEST_BYTES = 1024 * 1024
+MAX_SEND_BYTES = 512 * 1024
+READ_DEADLINE_SECONDS = 5.0
+WRITE_DEADLINE_SECONDS = 5.0
+TAIL_MAX_LINES = 500
+
+
+def now() -> float:
+    return time.time()
+
+
+class AgentHost:
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.socket_path = Path(args.socket)
+        self.launch_id = args.launch_id
+        self.seat = args.seat
+        self.fleet = args.fleet
+        self.runtime = args.runtime
+        self.cwd = args.cwd
+        self.command = " ".join(args.command)
+        self.child_pid: int | None = None
+        self.master_fd: int | None = None
+        self.child_exit_status: int | None = None
+        self.output_log = Path(args.output_log) if args.output_log else None
+        self.output_log_file = None
+        self.stop_event = threading.Event()
+        self.write_lock = threading.Lock()
+        self.tail_lock = threading.Lock()
+        self.tail_lines: deque[str] = deque(maxlen=2000)
+        self.delivery_results: dict[str, dict] = {}
+        self.server: socket.socket | None = None
+
+    def spawn_child(self) -> None:
+        import pty
+
+        pid, fd = pty.fork()
+        if pid == 0:
+            if self.cwd:
+                os.chdir(self.cwd)
+            os.environ["AURA_HOST_LAUNCH_ID"] = self.launch_id
+            os.environ["AURA_HOST_SEAT"] = self.seat
+            os.environ["AURA_HOST_FLEET"] = self.fleet
+            os.environ["AURA_HOST_RUNTIME"] = self.runtime
+            os.execvpe("/bin/sh", ["sh", "-lc", self.command], os.environ)
+        self.child_pid = pid
+        self.master_fd = fd
+
+    def child_alive(self) -> bool:
+        if self.child_pid is None or self.child_exit_status is not None:
+            return False
+        try:
+            got, status = os.waitpid(self.child_pid, os.WNOHANG)
+        except ChildProcessError:
+            self.child_exit_status = -1
+            return False
+        if got == 0:
+            return True
+        self.child_exit_status = status
+        return False
+
+    def append_output(self, data: bytes) -> None:
+        text = data.decode("utf-8", errors="replace")
+        with self.tail_lock:
+            for line in text.splitlines():
+                self.tail_lines.append(line)
+        if self.output_log_file:
+            try:
+                self.output_log_file.write(text)
+                self.output_log_file.flush()
+            except OSError:
+                pass
+
+    def output_loop(self) -> None:
+        assert self.master_fd is not None
+        while not self.stop_event.is_set():
+            try:
+                data = os.read(self.master_fd, 4096)
+            except OSError:
+                break
+            if not data:
+                break
+            self.append_output(data)
+            try:
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+            except BrokenPipeError:
+                pass
+
+    def stdin_loop(self) -> None:
+        assert self.master_fd is not None
+        try:
+            fd = sys.stdin.fileno()
+        except OSError:
+            return
+        while not self.stop_event.is_set():
+            try:
+                data = os.read(fd, 4096)
+            except OSError:
+                break
+            if not data:
+                break
+            with self.write_lock:
+                self._write_all(data)
+
+    def _write_all(self, payload: bytes) -> tuple[int, bool, str | None]:
+        if self.master_fd is None:
+            return 0, False, "missing_pty"
+        deadline = now() + WRITE_DEADLINE_SECONDS
+        written = 0
+        view = memoryview(payload)
+        while written < len(payload):
+            if not self.child_alive():
+                return written, False, "child_dead"
+            remaining = deadline - now()
+            if remaining <= 0:
+                return written, False, "write_timeout"
+            selector = selectors.DefaultSelector()
+            try:
+                selector.register(self.master_fd, selectors.EVENT_WRITE)
+                ready = selector.select(remaining)
+            finally:
+                selector.close()
+            if not ready:
+                return written, False, "write_timeout"
+            try:
+                n = os.write(self.master_fd, view[written:])
+            except BlockingIOError:
+                continue
+            except OSError as exc:
+                return written, False, f"write_error:{exc.errno}"
+            if n <= 0:
+                return written, False, "partial_write"
+            written += n
+        return written, True, None
+
+    def handle_send(self, request: dict) -> dict:
+        delivery_id = request.get("delivery_id")
+        if not delivery_id:
+            return self.error_response("send", "missing_delivery_id", "delivery_id is required")
+        if delivery_id in self.delivery_results:
+            prior = dict(self.delivery_results[delivery_id])
+            prior["duplicate"] = True
+            return prior
+        text = request.get("text")
+        if not isinstance(text, str):
+            return self.error_response("send", "bad_text", "text must be a string", delivery_id=delivery_id)
+        payload = text.encode("utf-8")
+        if len(payload) > MAX_SEND_BYTES:
+            return self.error_response("send", "request_too_large", "send text is too large", delivery_id=delivery_id)
+        if request.get("submit", False):
+            payload += b"\r"
+
+        child_alive_before = self.child_alive()
+        with self.write_lock:
+            written, complete, reason = self._write_all(payload)
+        child_alive_after = self.child_alive()
+        response = {
+            "ok": complete,
+            "op": "send",
+            "delivery_id": delivery_id,
+            "host_pid": os.getpid(),
+            "child_pid": self.child_pid,
+            "host_launch_id": self.launch_id,
+            "bytes_requested": len(payload),
+            "bytes_written": written,
+            "write_complete": complete,
+            "child_alive_before": child_alive_before,
+            "child_alive_after": child_alive_after,
+            "outcome": "write_complete" if complete else (reason or "write_failed"),
+        }
+        if not complete:
+            response["reason"] = reason or "write_failed"
+            response["error"] = response["reason"]
+        self.delivery_results[delivery_id] = dict(response)
+        return response
+
+    def handle_status(self) -> dict:
+        alive = self.child_alive()
+        return {
+            "ok": True,
+            "op": "status",
+            "host_pid": os.getpid(),
+            "child_pid": self.child_pid,
+            "child_alive": alive,
+            "child_exit_status": self.child_exit_status,
+            "host_launch_id": self.launch_id,
+            "seat": self.seat,
+            "fleet": self.fleet,
+            "runtime": self.runtime,
+            "cwd": self.cwd,
+        }
+
+    def handle_tail(self, request: dict) -> dict:
+        raw_lines = request.get("lines", 80)
+        try:
+            lines = max(1, min(TAIL_MAX_LINES, int(raw_lines)))
+        except (TypeError, ValueError):
+            lines = 80
+        with self.tail_lock:
+            tail = list(self.tail_lines)[-lines:]
+        return {
+            "ok": True,
+            "op": "tail",
+            "lines": lines,
+            "output": tail,
+        }
+
+    def handle_stop(self, request: dict) -> dict:
+        mode = request.get("mode") or "graceful"
+        graceful_text = request.get("graceful_text") or "/exit"
+        rung = "already_dead"
+        if self.child_alive():
+            if mode == "graceful":
+                payload = (graceful_text + "\r").encode("utf-8")
+                with self.write_lock:
+                    self._write_all(payload)
+                rung = "graceful_input"
+                deadline = now() + 2.0
+                while now() < deadline and self.child_alive():
+                    time.sleep(0.05)
+            if self.child_alive():
+                rung = "sigterm"
+                try:
+                    self._signal_child(signal.SIGTERM)
+                except OSError:
+                    pass
+                deadline = now() + 2.0
+                while now() < deadline and self.child_alive():
+                    time.sleep(0.05)
+            if self.child_alive():
+                rung = "sigkill"
+                try:
+                    self._signal_child(signal.SIGKILL)
+                except OSError:
+                    pass
+                self.child_alive()
+        return {
+            "ok": True,
+            "op": "stop",
+            "mode": mode,
+            "rung": rung,
+            "child_pid": self.child_pid,
+            "child_alive": self.child_alive(),
+            "child_exit_status": self.child_exit_status,
+        }
+
+    def _signal_child(self, sig: int) -> None:
+        if self.child_pid is None:
+            return
+        try:
+            pgid = os.getpgid(self.child_pid)
+        except OSError:
+            os.kill(self.child_pid, sig)
+            return
+        if pgid and pgid != os.getpgrp():
+            os.killpg(pgid, sig)
+        else:
+            os.kill(self.child_pid, sig)
+
+    def error_response(self, op: str | None, reason: str, error: str, **fields) -> dict:
+        return {
+            "ok": False,
+            "op": op,
+            "reason": reason,
+            "outcome": reason,
+            "error": error,
+            **fields,
+        }
+
+    def dispatch(self, request: dict) -> dict:
+        if request.get("launch_id") and request.get("launch_id") != self.launch_id:
+            return self.error_response(request.get("op"), "launch_mismatch", "launch_id does not match host")
+        op = request.get("op")
+        if op == "send":
+            return self.handle_send(request)
+        if op == "status":
+            return self.handle_status()
+        if op == "tail":
+            return self.handle_tail(request)
+        if op == "stop":
+            return self.handle_stop(request)
+        return self.error_response(op, "unknown_op", f"unknown op: {op}")
+
+    def handle_client(self, conn: socket.socket) -> None:
+        with conn:
+            conn.settimeout(READ_DEADLINE_SECONDS)
+            try:
+                raw = conn.recv(MAX_REQUEST_BYTES + 1)
+            except socket.timeout:
+                response = self.error_response(None, "read_timeout", "timed out reading request")
+            else:
+                if len(raw) > MAX_REQUEST_BYTES:
+                    response = self.error_response(None, "request_too_large", "request too large")
+                else:
+                    line = raw.splitlines()[0] if raw else b""
+                    try:
+                        request = json.loads(line.decode("utf-8"))
+                    except Exception as exc:
+                        response = self.error_response(None, "bad_json", str(exc))
+                    else:
+                        response = self.dispatch(request)
+            conn.sendall(json.dumps(response, sort_keys=True).encode("utf-8") + b"\n")
+
+    def socket_loop(self) -> None:
+        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.socket_path.unlink()
+        except FileNotFoundError:
+            pass
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(str(self.socket_path))
+        os.chmod(self.socket_path, 0o600)
+        self.server.listen(20)
+        self.server.settimeout(0.5)
+        while not self.stop_event.is_set():
+            try:
+                conn, _ = self.server.accept()
+            except socket.timeout:
+                if not self.child_alive():
+                    break
+                continue
+            threading.Thread(target=self.handle_client, args=(conn,), daemon=False).start()
+
+    def run(self) -> int:
+        if self.output_log:
+            self.output_log.parent.mkdir(parents=True, exist_ok=True)
+            self.output_log.touch(exist_ok=True)
+            self.output_log_file = self.output_log.open("a", encoding="utf-8", errors="replace")
+        self.spawn_child()
+        threads = [
+            threading.Thread(target=self.output_loop, daemon=True),
+            threading.Thread(target=self.stdin_loop, daemon=True),
+            threading.Thread(target=self.socket_loop, daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        while self.child_alive():
+            time.sleep(0.1)
+        self.stop_event.set()
+        if self.server:
+            self.server.close()
+        try:
+            self.socket_path.unlink()
+        except FileNotFoundError:
+            pass
+        if self.output_log_file:
+            self.output_log_file.close()
+        return 0
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--socket", required=True)
+    parser.add_argument("--launch-id", required=True)
+    parser.add_argument("--seat", default="")
+    parser.add_argument("--fleet", default="")
+    parser.add_argument("--runtime", default="command")
+    parser.add_argument("--cwd", default=None)
+    parser.add_argument("--output-log", default=None)
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args(argv)
+    if args.command and args.command[0] == "--":
+        args.command = args.command[1:]
+    if not args.command:
+        parser.error("child command is required after --")
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv or sys.argv[1:])
+    return AgentHost(args).run()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

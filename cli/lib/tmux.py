@@ -123,16 +123,27 @@ def create_window(
         unset_env: Environment variables to remove from the launched command.
     """
     sess = _session()
-    if sess is None:
-        ensure_session()
-        sess = _session()
 
-    if command:
-        args = ["new-window", "-t", TMUX_SESSION, "-n", name]
-        if detached:
-            args.append("-d")
+    def _create_initial_session(command_text: str | None = None):
+        args = ["new-session", "-d", "-s", TMUX_SESSION, "-n", name]
         if workdir:
             args.extend(["-c", workdir])
+        if command_text:
+            args.append(command_text)
+        result = _run_tmux(args)
+        if result.returncode != 0:
+            return {"ok": False, "error": result.stderr.strip() or "tmux new-session failed", "name": name}
+        pane = pane_id(name)
+        return {
+            "ok": True,
+            "name": name,
+            "target": _backend_ref(name),
+            "pane_id": pane,
+            "pane_ref": f"{TMUX_SESSION}:{pane}" if pane else None,
+            "created_session": True,
+        }
+
+    if command:
         env_prefix = ""
         env_parts = []
         if unset_env:
@@ -143,6 +154,13 @@ def create_window(
             env_parts.extend(f"{key}={shlex.quote(str(value))}" for key, value in env.items())
         if env_parts:
             env_prefix = " ".join(env_parts) + " "
+        if sess is None:
+            return _create_initial_session(env_prefix + command)
+        args = ["new-window", "-t", TMUX_SESSION, "-n", name]
+        if detached:
+            args.append("-d")
+        if workdir:
+            args.extend(["-c", workdir])
         args.append(env_prefix + command)
         result = _run_tmux(args)
         if result.returncode != 0:
@@ -155,6 +173,9 @@ def create_window(
             "pane_id": pane,
             "pane_ref": f"{TMUX_SESSION}:{pane}" if pane else None,
         }
+
+    if sess is None:
+        return _create_initial_session()
 
     kwargs = {"window_name": name, "attach": not detached}
     if workdir:

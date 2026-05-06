@@ -2,8 +2,10 @@
 
 import json
 import os
+import shlex
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -107,10 +109,6 @@ def run(args):
         base["attach"] = f"tmux attach -t {fleet_name}" if terminal.BACKEND_NAME == "tmux" else f"zellij attach {fleet_name}"
         base["window"] = f"{fleet_name}:{name}"
         return base
-
-    # Ensure terminal session exists; this is the baseline substrate for both
-    # generic runtimes and the legacy Claude wrapper path.
-    terminal.ensure_session()
 
     # Check if window already exists
     if terminal.window_exists(args.name):
@@ -357,6 +355,14 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     fleet = getattr(terminal, "SESSION_NAME", None) or registry.current_fleet(default="aura")
     launch_id = f"aura-launch-{uuid.uuid4().hex[:16]}"
     seat_instance_id = registry.new_seat_instance_id()
+    control_backend = getattr(args, "control_backend", "tmux") or "tmux"
+    delivery_backend = getattr(args, "delivery_backend", "tmux") or "tmux"
+    if control_backend not in {"tmux", "host"}:
+        return result_fn({"ok": False, "error": f"unsupported control backend: {control_backend}", "name": args.name})
+    if delivery_backend not in {"tmux", "host"}:
+        return result_fn({"ok": False, "error": f"unsupported delivery backend: {delivery_backend}", "name": args.name})
+    if delivery_backend == "host" and control_backend != "host":
+        return result_fn({"ok": False, "error": "delivery backend host requires --control-backend host", "name": args.name})
 
     launch_env = {
         "AURA_AGENT_NAME": args.name,
@@ -411,12 +417,69 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         launch_env["FLEX_PROJECT_MANIFEST"] = flex_meta["flex_project_manifest"]
     if flex_meta.get("flex_project_root"):
         launch_env["FLEX_PROJECT_ROOT"] = flex_meta["flex_project_root"]
+    host_socket = None
+    host_output_log = None
+    host_pid = None
+    host_mode = "none"
+    host_ref = None
+    launch_command_for_window = command
+    if control_backend == "host":
+        host_mode = getattr(args, "host_mode", "pane") or "pane"
+        host_socket = Path(tempfile.gettempdir()) / "aura" / "hosts" / f"{launch_id}.sock"
+        host_output_log = Path(tempfile.gettempdir()) / "aura" / "hosts" / f"{launch_id}.log"
+        host_output_log.parent.mkdir(parents=True, exist_ok=True)
+        host_output_log.touch(exist_ok=True)
+        host_ref = f"host:{fleet}:{args.name}"
+        host_bin = Path(__file__).resolve().parents[1] / "aura-agent-host"
+        host_command_argv = [
+            sys.executable,
+            str(host_bin),
+            "--socket",
+            str(host_socket),
+            "--launch-id",
+            launch_id,
+            "--seat",
+            args.name,
+            "--fleet",
+            fleet,
+            "--runtime",
+            runtime,
+            "--cwd",
+            workdir,
+            "--output-log",
+            str(host_output_log),
+            "--",
+            command,
+        ]
+        launch_command_for_window = " ".join(shlex.quote(part) for part in host_command_argv)
+        if host_mode == "detached":
+            host_env = os.environ.copy()
+            host_env.update({key: str(value) for key, value in launch_env.items()})
+            for key in [
+                "NO_COLOR",
+                "AURA_RUNTIME_SESSION_ID",
+                "AURA_SESSION_ID",
+                "CODEX_THREAD_ID",
+                "CLAUDE_SESSION_ID",
+            ]:
+                host_env.pop(key, None)
+            process = subprocess.Popen(
+                host_command_argv,
+                cwd=workdir,
+                env=host_env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            host_pid = process.pid
+            launch_command_for_window = f"tail -n +1 -F {shlex.quote(str(host_output_log))}"
     try:
         launch = terminal.create_window(
             args.name,
             workdir,
             detached=getattr(args, 'as_pane', False),
-            command=command,
+            command=launch_command_for_window,
             env=launch_env,
             unset_env=[
                 "NO_COLOR",
@@ -436,6 +499,19 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         return result_fn({"ok": False, "error": launch.get("error", "launch failed"), "name": args.name})
 
     pane_ref = f"tmux:{fleet}:{launch.get('pane_id')}" if launch.get("pane_id") else None
+    if control_backend == "host" and host_mode == "pane" and pane_ref and hasattr(terminal, "pane_pid"):
+        try:
+            host_pid = terminal.pane_pid(pane_ref)
+        except Exception:
+            host_pid = None
+    host_start_status = None
+    if control_backend == "host" and host_socket:
+        host_start_status = _wait_for_host_status(
+            host_socket=str(host_socket),
+            launch_id=launch_id,
+        )
+        if host_start_status.get("ok"):
+            host_pid = host_start_status.get("host_pid") or host_pid
     process_meta = {}
     if pane_ref and hasattr(terminal, "pane_pid"):
         try:
@@ -519,7 +595,18 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "backend_ref": launch.get("target"),
         "pane_ref": pane_ref,
         "physical_fleet": fleet,
-        "transport": "tmux",
+        "transport": control_backend,
+        "control_backend": control_backend,
+        "delivery_backend": delivery_backend,
+        "viewport_backend": "tmux",
+        "host_ref": host_ref,
+        "host_socket": str(host_socket) if host_socket else None,
+        "host_output_log": str(host_output_log) if host_output_log else None,
+        "host_pid": host_pid,
+        "host_mode": host_mode,
+        "host_launch_id": launch_id if control_backend == "host" else None,
+        "host_status": _host_status_label(host_start_status) if control_backend == "host" else None,
+        "host_start_status": host_start_status,
         "status": "starting",
         "registered": True,
         **flex_meta,
@@ -573,6 +660,17 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "work_file": str(work_path) if work_path else None,
             "terminal_ref": launch.get("target"),
             "pane_ref": pane_ref,
+            "control_backend": control_backend,
+            "delivery_backend": delivery_backend,
+            "viewport_backend": "tmux",
+            "host_ref": host_ref,
+            "host_socket": str(host_socket) if host_socket else None,
+            "host_output_log": str(host_output_log) if host_output_log else None,
+            "host_pid": host_pid,
+            "host_mode": host_mode,
+            "host_launch_id": launch_id if control_backend == "host" else None,
+            "host_status": _host_status_label(host_start_status) if control_backend == "host" else None,
+            "host_start_status": host_start_status,
             "status": "starting",
             **flex_meta,
             **role_meta,
@@ -614,6 +712,17 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "terminal_ref": launch.get("target"),
         "backend_ref": launch.get("target"),
         "pane_ref": pane_ref,
+        "control_backend": control_backend,
+        "delivery_backend": delivery_backend,
+        "viewport_backend": "tmux",
+        "host_ref": host_ref,
+        "host_socket": str(host_socket) if host_socket else None,
+        "host_output_log": str(host_output_log) if host_output_log else None,
+        "host_pid": host_pid,
+        "host_mode": host_mode,
+        "host_launch_id": launch_id if control_backend == "host" else None,
+        "host_status": _host_status_label(host_start_status) if control_backend == "host" else None,
+        "host_start_status": host_start_status,
         "status": "starting",
         "registered": True,
         "fleet": fleet,
@@ -628,18 +737,22 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         time.sleep(1)
         prompt_target = pane_ref or launch.get("target") or args.name
         flex_packet = _render_flex_project_launch_packet(flex_manifest, flex_root)
-        prompt_result = terminal.send_text(
-            args.name,
-            _augment_runtime_prompt(
+        prompt_body = _augment_runtime_prompt(
                 runtime,
                 prompt_text,
                 fleet=fleet,
                 seat=args.name,
                 launch_id=launch_id,
                 flex_packet=flex_packet,
-            ),
-            submit=True,
-        )
+            )
+        if control_backend == "host" and host_socket:
+            prompt_result = _send_initial_prompt_to_host(
+                host_socket=str(host_socket),
+                launch_id=launch_id,
+                text=prompt_body,
+            )
+        else:
+            prompt_result = terminal.send_text(args.name, prompt_body, submit=True)
         result["prompt_sent"] = bool(prompt_result.get("ok"))
         if prompt_result.get("ok") and flex_packet and flex_manifest and flex_root:
             try:
@@ -664,7 +777,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 pass
         if not prompt_result.get("ok"):
             result["prompt_error"] = prompt_result.get("error")
-        elif runtime == "codex" and hasattr(terminal, "send_keys"):
+        elif control_backend != "host" and runtime == "codex" and hasattr(terminal, "send_keys"):
             result["prompt_submit_retry"] = _retry_codex_prompt_submit(
                 terminal=terminal,
                 target=prompt_target,
@@ -759,6 +872,66 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
 
     _record_workspace_spawn(workdir_path, result, runtime=runtime)
     return result_fn({k: v for k, v in result.items() if v is not None})
+
+
+def _send_initial_prompt_to_host(*, host_socket: str, launch_id: str, text: str) -> dict:
+    deadline = time.time() + 8.0
+    last_error = None
+    while time.time() < deadline:
+        try:
+            from lib import host_client
+
+            return host_client.request(host_socket, {
+                "op": "send",
+                "launch_id": launch_id,
+                "delivery_id": f"{launch_id}:initial-prompt",
+                "text": text,
+                "submit": True,
+            })
+        except Exception as exc:
+            last_error = exc
+            time.sleep(0.05)
+    return {
+        "ok": False,
+        "error": str(last_error) if last_error else "host prompt delivery timed out",
+        "outcome": "host_prompt_failed",
+    }
+
+
+def _wait_for_host_status(*, host_socket: str, launch_id: str, timeout: float = 5.0) -> dict:
+    deadline = time.time() + timeout
+    last_error = None
+    while time.time() < deadline:
+        try:
+            from lib import host_client
+
+            status = host_client.request(host_socket, {
+                "op": "status",
+                "launch_id": launch_id,
+            }, timeout=1.0)
+            if status.get("ok"):
+                return status
+            last_error = status.get("error") or status.get("outcome")
+        except Exception as exc:
+            last_error = exc
+        time.sleep(0.05)
+    return {
+        "ok": False,
+        "op": "status",
+        "reason": "host_start_timeout",
+        "outcome": "host_start_timeout",
+        "error": str(last_error) if last_error else "host did not become ready",
+    }
+
+
+def _host_status_label(status: dict | None) -> str:
+    if not status:
+        return "starting"
+    if status.get("ok") and status.get("child_alive"):
+        return "alive"
+    if status.get("ok"):
+        return "dead"
+    return "unavailable"
 
 
 def _runtime_home(runtime: str, profile: str | None) -> str | None:

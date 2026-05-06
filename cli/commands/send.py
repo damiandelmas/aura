@@ -24,7 +24,9 @@ def _is_current_seat(target: str, record: dict | None) -> bool:
 
     tmux_pane = os.environ.get("TMUX_PANE")
     pane_ref = str(record.get("pane_ref") or "")
-    if tmux_pane and pane_ref.endswith(f":{tmux_pane}"):
+    record_fleet = record.get("fleet")
+    same_fleet = bool(fleet and record_fleet and fleet == record_fleet)
+    if tmux_pane and same_fleet and pane_ref.endswith(f":{tmux_pane}"):
         return True
 
     return False
@@ -85,7 +87,23 @@ def run(args):
 
     transport = getattr(args, 'transport', 'auto') or 'auto'
     if transport == 'auto':
-        transport = 'tmux' if target_exists else 'mesh'
+        delivery_backend = (reg_agent or {}).get("delivery_backend") or "tmux"
+        if delivery_backend == "host":
+            transport = "host"
+        elif delivery_backend == "tmux":
+            transport = 'tmux' if target_exists else 'mesh'
+        else:
+            return {
+                "ok": False,
+                "blocked": True,
+                "state": "blocked",
+                "reason": "unsupported-delivery-backend",
+                "error": f"unsupported delivery backend: {delivery_backend}",
+                "target": args.target,
+            }
+
+    if transport == 'host':
+        return _send_host(args, reg_agent or {}, delivery, sender=sender)
 
     if transport == 'tmux':
         return _send_tmux(args, terminal, delivery, terminal_target=terminal_target, sender=sender)
@@ -113,6 +131,174 @@ def run(args):
             "message_id": result.get("message_id", "")
         }
     return result
+
+
+def _send_host(args, record, delivery, sender=None):
+    from lib import host_client
+    from lib import identity
+
+    sender = identity.sender(sender if sender is not None else getattr(args, "sender", None))
+    body = args.message or ""
+    socket_path = record.get("host_socket")
+    backend_ref = record.get("host_ref") or (
+        f"host:{record.get('fleet')}:{record.get('name')}" if record.get("fleet") and record.get("name") else None
+    )
+    if not socket_path:
+        return {
+            "ok": False,
+            "blocked": True,
+            "state": "blocked",
+            "reason": "missing-host-socket",
+            "error": "target is host-backed but has no host_socket",
+            "target": args.target,
+        }
+    dedupe_key = getattr(args, 'dedupe_key', None) or delivery.default_dedupe_key(args.target, sender, body)
+    if not getattr(args, 'force', False):
+        previous = delivery.has_successful_dedupe(args.target, dedupe_key)
+        if previous:
+            out = delivery.new_delivery_record(
+                delivery_type="semantic_send",
+                sender=sender,
+                target=args.target,
+                backend="host",
+                backend_ref=backend_ref,
+                dedupe_key=dedupe_key,
+                state="skipped_duplicate",
+                previous_message_id=previous,
+                transport="host",
+            )
+            delivery.append_attempt(out, state="skipped_duplicate", evidence={"previous_message_id": previous})
+            out = delivery.append_record(out)
+            return {"ok": True, "skipped": True, "reason": "duplicate", "previous_message_id": previous, "record": out}
+
+    message_id = delivery.new_message_id()
+    sent_at = delivery.now_iso()
+    envelope = delivery.render_envelope(message_id, sender, body, sent_at=sent_at)
+    pending = delivery.new_delivery_record(
+        delivery_type="semantic_send",
+        sender=sender,
+        target=args.target,
+        payload_hash=delivery.body_hash(body),
+        backend="host",
+        backend_ref=backend_ref,
+        dedupe_key=dedupe_key,
+        message_id=message_id,
+        transport="host",
+        state="pending",
+        control_backend=record.get("control_backend"),
+        delivery_backend=record.get("delivery_backend"),
+        viewport_backend=record.get("viewport_backend"),
+    )
+    pending["created_at"] = sent_at
+    pending["updated_at"] = sent_at
+    delivery.append_attempt(pending, state="pending", evidence={"body_hash": delivery.body_hash(body)})
+    delivery.append_record(pending)
+
+    request = {
+        "op": "send",
+        "launch_id": record.get("host_launch_id") or record.get("aura_launch_id"),
+        "delivery_id": pending["delivery_id"],
+        "text": envelope,
+        "submit": True,
+    }
+    try:
+        result = host_client.request(socket_path, request)
+    except host_client.HostClientError as exc:
+        result = {
+            "ok": False,
+            "reason": "host_request_failed",
+            "outcome": "host_request_failed",
+            "error": str(exc),
+            "error_stage": exc.stage,
+            "possible_write": exc.possible_write,
+        }
+    except Exception as exc:
+        result = {
+            "ok": False,
+            "reason": "host_request_failed",
+            "outcome": "host_request_failed",
+            "error": str(exc),
+            "possible_write": False,
+        }
+
+    write_ok = bool(result.get("ok") and result.get("write_complete"))
+    possible_write = bool(result.get("possible_write"))
+    state = "attempted" if write_ok else ("ambiguous" if possible_write else "failed")
+    delivery.append_attempt(pending, state=state, evidence={
+        "backend": "host",
+        "backend_ref": backend_ref,
+        "host_ref": record.get("host_ref"),
+        "host_pid": result.get("host_pid") or record.get("host_pid"),
+        "child_pid": result.get("child_pid"),
+        "host_socket": socket_path,
+        "bytes": result.get("bytes_written"),
+        "bytes_requested": result.get("bytes_requested"),
+        "bytes_written": result.get("bytes_written"),
+        "submitted": True,
+        "write_ok": write_ok,
+        "write_complete": result.get("write_complete"),
+        "child_alive_before": result.get("child_alive_before"),
+        "child_alive_after": result.get("child_alive_after"),
+        "outcome": result.get("outcome"),
+        "error": result.get("error"),
+        "error_stage": result.get("error_stage"),
+        "possible_write": possible_write,
+        "ambiguity_reason": "host_response_lost_after_request" if possible_write and not write_ok else None,
+    })
+    final = delivery.append_final_record(
+        pending,
+        state=state,
+        terminal_ref=record.get("terminal_ref"),
+        backend_ref=backend_ref,
+        host_ref=record.get("host_ref"),
+        host_pid=result.get("host_pid") or record.get("host_pid"),
+        host_socket=socket_path,
+        error=result.get("error"),
+        outcome=result.get("outcome"),
+        bytes=result.get("bytes_written"),
+        bytes_requested=result.get("bytes_requested"),
+        bytes_written=result.get("bytes_written"),
+        submitted=True,
+        submitted_verified=None,
+        write_ok=write_ok,
+        possible_write=possible_write,
+        ambiguity_reason="host_response_lost_after_request" if possible_write and not write_ok else None,
+        error_stage=result.get("error_stage"),
+        fallback_used=False,
+    )
+    if not write_ok:
+        return {
+            "ok": False,
+            "transport": "host",
+            "target": args.target,
+            "message_id": message_id,
+            "delivery_id": pending["delivery_id"],
+            "state": state,
+            "error": result.get("error") or result.get("outcome") or "host send failed",
+            "outcome": result.get("outcome"),
+            "possible_write": possible_write,
+            "ambiguity_reason": final.get("ambiguity_reason"),
+            "record": final,
+        }
+    return {
+        "ok": True,
+        "type": "send",
+        "transport": "host",
+        "backend_ref": backend_ref,
+        "message_id": message_id,
+        "delivery_id": pending["delivery_id"],
+        "target": args.target,
+        "terminal_ref": record.get("terminal_ref"),
+        "host_ref": record.get("host_ref"),
+        "host_pid": result.get("host_pid") or record.get("host_pid"),
+        "host_socket": socket_path,
+        "state": state,
+        "submitted": True,
+        "submitted_verified": None,
+        "submit_verify_reason": None,
+        "submit_retry": None,
+        "record": final,
+    }
 
 
 def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None):
