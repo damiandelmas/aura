@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import argparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -210,6 +211,81 @@ def test_report_releases_queued_messages_for_reporting_seat(monkeypatch, tmp_pat
     saved = queued_messages.load(queued["queue_id"])
     assert saved["release_report_id"] == report["report_id"]
     assert saved["release_message_id"] == "aura-msg-test"
+
+
+def test_report_command_schedules_queued_release_after_ack(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+
+    from commands import report as report_cmd, send
+    from lib import queued_messages
+
+    def fail_send(_args):
+        raise AssertionError("report should schedule queue release, not send inline")
+
+    started = []
+    monkeypatch.setattr(send, "run", fail_send)
+    monkeypatch.setattr(report_cmd, "_start_queued_release_worker", lambda report_id: started.append(report_id))
+
+    queued = queued_messages.create(
+        target="unitfleet:worker",
+        message="continue after report",
+        sender="tester",
+    )
+    args = argparse.Namespace(
+        report_action="complete",
+        work="done",
+        done=[],
+        receipt=[],
+        next_action=None,
+        blocker=[],
+        ack=True,
+    )
+    result = report_cmd.run(args)
+
+    assert result["ok"] is True
+    assert result["scheduled_queued"] == 1
+    assert result["queue_release_delay_seconds"] == 1.5
+    assert started == [result["report_id"]]
+    saved = queued_messages.load(queued["queue_id"])
+    assert saved["status"] == "scheduled"
+    assert saved["release_report_id"] == result["report_id"]
+
+
+def test_queue_release_report_command_releases_scheduled_message(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+
+    from commands import queue as queue_cmd, send
+    from lib import queued_messages, reports
+
+    sent = []
+
+    def fake_send(args):
+        sent.append((args.target, args.message, args.dedupe_key))
+        return {"ok": True, "message_id": "aura-msg-delayed"}
+
+    monkeypatch.setattr(send, "run", fake_send)
+
+    queued = queued_messages.create(
+        target="unitfleet:worker",
+        message="continue after report",
+        sender="tester",
+    )
+    report = reports.append_report({"state": "complete", "work": "done"})
+    scheduled = reports.schedule_queued_messages(report, delay_seconds=1.5)
+    assert scheduled[0]["status"] == "scheduled"
+
+    result = queue_cmd.run(argparse.Namespace(release_report=report["report_id"], delay="0"))
+
+    assert result["ok"] is True
+    assert result["released"] == 1
+    assert sent == [("unitfleet:worker", "continue after report", f"queue:{queued['queue_id']}")]
+    saved = queued_messages.load(queued["queue_id"])
+    assert saved["status"] == "released"
+    assert saved["release_message_id"] == "aura-msg-delayed"
 
 
 def test_report_release_failure_is_inspectable_and_not_retried(monkeypatch, tmp_path):

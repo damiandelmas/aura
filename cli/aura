@@ -149,8 +149,10 @@ def main():
                          help="Release condition: next-report or a report id (default: next-report)")
     p_queue.add_argument("--list", action="store_true",
                          help="List queued messages")
-    p_queue.add_argument("--status", choices=["pending", "released", "release_failed"],
+    p_queue.add_argument("--status", choices=["pending", "scheduled", "released", "release_failed"],
                          help="Filter --list by status")
+    p_queue.add_argument("--release-report", help=argparse.SUPPRESS)
+    p_queue.add_argument("--delay", default="0", help=argparse.SUPPRESS)
 
     # seat
     p_seat = subparsers.add_parser("seat", help="Manage logical seat identity")

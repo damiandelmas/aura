@@ -2,7 +2,36 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 from lib import reports
+
+
+QUEUE_RELEASE_DELAY_SECONDS = 1.5
+
+
+def _start_queued_release_worker(report_id: str) -> None:
+    env = os.environ.copy()
+    cmd = [
+        sys.executable,
+        sys.argv[0],
+        "queue",
+        "--release-report",
+        report_id,
+        "--delay",
+        str(QUEUE_RELEASE_DELAY_SECONDS),
+    ]
+    subprocess.Popen(
+        cmd,
+        cwd=os.getcwd(),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 def _report_filters(args) -> dict:
@@ -76,7 +105,9 @@ def run(args):
         "blockers": getattr(args, "blocker", None) or [],
     }
     created = reports.append_report(record)
-    released = reports.release_queued_messages(created)
+    scheduled = reports.schedule_queued_messages(created, delay_seconds=QUEUE_RELEASE_DELAY_SECONDS)
+    if scheduled:
+        _start_queued_release_worker(created.get("report_id"))
     if not getattr(args, "ack", False):
         return None
     return {
@@ -88,6 +119,7 @@ def run(args):
         "seat": created.get("seat"),
         "fleet": created.get("fleet"),
         "warnings": created.get("warnings") or [],
-        "released_queued": len(released),
+        "scheduled_queued": len(scheduled),
+        "queue_release_delay_seconds": QUEUE_RELEASE_DELAY_SECONDS,
         "reports_path": str(reports.reports_path()),
     }

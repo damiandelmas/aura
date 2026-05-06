@@ -101,7 +101,10 @@ def _report_targets(report: dict[str, Any]) -> set[str]:
 
 
 def _matches_report(record: dict[str, Any], report: dict[str, Any]) -> bool:
-    if record.get("status") != "pending":
+    status = record.get("status")
+    if status == "scheduled":
+        return record.get("release_report_id") == report.get("report_id")
+    if status != "pending":
         return False
     after = record.get("after") or "next-report"
     if after != "next-report":
@@ -122,12 +125,26 @@ def _matches_report(record: dict[str, Any], report: dict[str, Any]) -> bool:
     return False
 
 
+def schedule_for_report(report: dict[str, Any], *, delay_seconds: float = 1.5) -> list[dict[str, Any]]:
+    """Mark matching pending queue records as approved for delayed release."""
+    scheduled: list[dict[str, Any]] = []
+    for record in list_records(status="pending"):
+        if not _matches_report(record, report):
+            continue
+        record["status"] = "scheduled"
+        record["release_report_id"] = report.get("report_id")
+        record["scheduled_at"] = now_iso()
+        record["release_delay_seconds"] = delay_seconds
+        scheduled.append(save(record))
+    return scheduled
+
+
 def release_for_report(report: dict[str, Any]) -> list[dict[str, Any]]:
     """Release queued messages whose condition is satisfied by a report."""
     from commands import send
 
     released: list[dict[str, Any]] = []
-    for record in list_records(status="pending"):
+    for record in list_records():
         if not _matches_report(record, report):
             continue
         args = argparse.Namespace(

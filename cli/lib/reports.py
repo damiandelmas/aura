@@ -117,6 +117,12 @@ def release_queued_messages(report: dict[str, Any]) -> list[dict[str, Any]]:
     return queued_messages.release_for_report(report)
 
 
+def schedule_queued_messages(report: dict[str, Any], *, delay_seconds: float = 1.5) -> list[dict[str, Any]]:
+    from lib import queued_messages
+
+    return queued_messages.schedule_for_report(report, delay_seconds=delay_seconds)
+
+
 def iter_reports(limit: int | None = None) -> list[dict[str, Any]]:
     path = reports_path()
     if not path.exists():
@@ -141,3 +147,10 @@ def iter_reports(limit: int | None = None) -> list[dict[str, Any]]:
 def latest_report() -> dict[str, Any] | None:
     rows = iter_reports(limit=1)
     return rows[-1] if rows else None
+
+
+def find_report(report_id: str) -> dict[str, Any] | None:
+    for row in reversed(iter_reports()):
+        if row.get("report_id") == report_id:
+            return row
+    return None
