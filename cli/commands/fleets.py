@@ -6,6 +6,7 @@ import shlex
 from typing import Any
 
 from commands import list as list_cmd
+from lib import seat_schema
 
 
 def run(args) -> dict:
@@ -191,6 +192,9 @@ def fleet_history(target: str | None) -> dict:
                 "cwd": cwd,
                 "runtime_session_id": session_id,
                 "runtime_session_binding": binding.get("runtime_session_binding"),
+                "identity_provider": seat_schema.identity_provider_for(snap),
+                "identity_id": seat_schema.identity_id_for(snap),
+                "identity_label": snap.get("identity_label") or snap.get("desks_current_name"),
                 "desks_identity_id": snap.get("desks_identity_id"),
                 "source_event": row.get("event"),
                 "source_event_at": ts,
@@ -215,10 +219,16 @@ def fleet_history(target: str | None) -> dict:
                     session_id=candidate["runtime_session_id"],
                 ),
             }
-            if candidate.get("desks_identity_id"):
+            if candidate.get("identity_id"):
+                bind_parts = [
+                    f"--set identity_provider={_quote(candidate.get('identity_provider') or 'desks')}",
+                    f"--set identity_id={_quote(candidate['identity_id'])}",
+                ]
+                if candidate.get("identity_label"):
+                    bind_parts.append(f"--set identity_label={_quote(candidate['identity_label'])}")
                 restore["post_bind_command"] = (
                     f"aura seat tag {_quote(fleet_name + ':' + seat)} "
-                    f"--set desks_identity_id={_quote(candidate['desks_identity_id'])}"
+                    + " ".join(bind_parts)
                 )
             restore_commands.append(restore["command"])
             if restore.get("post_bind_command"):
@@ -232,6 +242,9 @@ def fleet_history(target: str | None) -> dict:
                 "cwd": (current.get("runtime_session_cwd") or current.get("cwd") or current.get("workdir")) if current else None,
                 "runtime_session_id": (current.get("runtime_session_id") or current.get("session_id")) if current else None,
                 "runtime_session_binding": current.get("runtime_session_binding") if current else None,
+                "identity_provider": seat_schema.identity_provider_for(current) if current else None,
+                "identity_id": seat_schema.identity_id_for(current) if current else None,
+                "identity_label": (current.get("identity_label") or current.get("desks_current_name")) if current else None,
                 "desks_identity_id": current.get("desks_identity_id") if current else None,
                 "pane_ref": current.get("pane_ref") if current else None,
             },

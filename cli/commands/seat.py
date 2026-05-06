@@ -644,6 +644,12 @@ def _restart_role_metadata(args, record: dict) -> tuple[dict, str | None, str | 
             "desks_memory",
             "desks_default_seat",
             "desks_default_fleet",
+            "identity_provider",
+            "identity_id",
+            "identity_label",
+            "identity_bound_at",
+            "identity_bind_source",
+            "identity_bind_confidence",
             "desks_identity_id",
             "desks_profile_id",
             "desks_current_name",
@@ -1027,9 +1033,12 @@ def _restart(args, registry, terminal) -> dict:
             updated = registry.upsert_agent({**updated, **_session_fields(session_observation)})
             try:
                 from lib import desks_sessions
+                from lib import seat_schema
 
+                identity_provider = seat_schema.identity_provider_for(updated) or seat_schema.identity_provider_for(record)
+                identity_id = seat_schema.identity_id_for(updated) or seat_schema.identity_id_for(record)
                 desks_sessions.append_identity_session(
-                    updated.get("desks_identity_id") or record.get("desks_identity_id"),
+                    identity_id if identity_provider == "desks" else None,
                     session_observation.get("runtime_session_id"),
                 )
             except Exception:
@@ -1143,6 +1152,37 @@ def _safe_stale(agent: dict) -> bool:
     if status in {"dead", "stopped", "cut", "terminated", "exited"}:
         return True
     return bool(agent.get("cut_at") or agent.get("ended_at") or agent.get("terminated_at"))
+
+
+ORPHAN_RESET_FIELDS = {
+    # A reused fleet:seat address is a new live incarnation unless an operator
+    # explicitly binds it. Do not inherit identity/session continuity from a
+    # stale current projection at the same routing address.
+    "desks_identity_id": None,
+    "identity_provider": None,
+    "identity_id": None,
+    "identity_label": None,
+    "identity_bound_at": None,
+    "identity_bind_source": None,
+    "identity_bind_confidence": None,
+    "desks_current_name": None,
+    "desks_identity_home": None,
+    "desks_memory_home": None,
+    "desks_profile_id": None,
+    "desks_profile_home": None,
+    "runtime_session_id": None,
+    "session_id": None,
+    "source_session_id": None,
+    "runtime_session_binding": "unbound",
+    "runtime_session_bind_method": None,
+    "runtime_session_bind_source": None,
+    "runtime_session_confidence": None,
+    "runtime_session_source": None,
+    "runtime_session_evidence": None,
+    "runtime_session_pid": None,
+    "runtime_session_mode": None,
+    "isolation": None,
+}
 
 
 def _parse_set_pair(arg: str) -> tuple[str, str] | dict:
@@ -1414,6 +1454,27 @@ def _register_orphan(args, registry, terminal=None, ledger=None) -> dict:
         "aura_launch_id": None,
     }
     inserted = registry.upsert_agent(record)
+    try:
+        data = registry.read_registry()
+        key = registry._key(fleet, seat)
+        stored = dict(data.get(key, inserted))
+        stored.update(record)
+        for reset_key, reset_value in ORPHAN_RESET_FIELDS.items():
+            if reset_value is None:
+                stored.pop(reset_key, None)
+            else:
+                stored[reset_key] = reset_value
+        stored["runtime_session_id"] = None
+        stored["runtime_session_binding"] = "unbound"
+        stored["runtime_session_bind_method"] = None
+        stored["aura_launch_id"] = None
+        data[key] = stored
+        registry.write_registry(data)
+        inserted = stored
+    except Exception:
+        # Registration should still succeed if the defensive cleanup write
+        # fails; the ledger event below preserves the attempted record.
+        pass
 
     provenance = {
         "discovered_by": discovery.get("discovered_by"),

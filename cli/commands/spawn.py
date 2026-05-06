@@ -379,6 +379,12 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
 
     if role_meta:
         launch_env.update(_desks_launch_env(role_meta))
+        if role_meta.get("identity_provider"):
+            launch_env["AURA_IDENTITY_PROVIDER"] = str(role_meta["identity_provider"])
+        if role_meta.get("identity_id"):
+            launch_env["AURA_IDENTITY_ID"] = str(role_meta["identity_id"])
+        if role_meta.get("identity_label"):
+            launch_env["AURA_IDENTITY_LABEL"] = str(role_meta["identity_label"])
     if flex_meta.get("flex_project_manifest"):
         launch_env["FLEX_PROJECT_MANIFEST"] = flex_meta["flex_project_manifest"]
     if flex_meta.get("flex_project_root"):
@@ -450,6 +456,25 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "runtime_session_pid": None,
         }
     session_clear_keys = [key for key, value in session_meta.items() if value is None]
+    has_identity_binding = bool(role_meta.get("identity_id") or role_meta.get("desks_identity_id"))
+    identity_clear_keys = []
+    if not has_identity_binding:
+        identity_clear_keys = [
+            "identity_provider",
+            "identity_id",
+            "identity_label",
+            "identity_bound_at",
+            "identity_bind_source",
+            "identity_bind_confidence",
+            "desks_identity_id",
+            "desks_current_name",
+            "desks_identity_home",
+            "desks_memory_home",
+            "desks_profile_id",
+            "desks_profile_home",
+        ]
+    elif role_meta.get("identity_id") and not role_meta.get("identity_bound_at"):
+        role_meta = {**role_meta, "identity_bound_at": registry.now_iso()}
 
     registered = registry.upsert_agent({
         "name": args.name,
@@ -483,18 +508,20 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         try:
             from lib import desks_sessions
 
+            identity_provider = registered.get("identity_provider") or ("desks" if registered.get("desks_identity_id") else None)
+            identity_id = registered.get("identity_id") or registered.get("desks_identity_id") or role_meta.get("identity_id") or role_meta.get("desks_identity_id")
             desks_sessions.append_identity_session(
-                registered.get("desks_identity_id") or role_meta.get("desks_identity_id"),
+                identity_id if identity_provider == "desks" else None,
                 resume_session,
             )
         except Exception:
             pass
-    if session_clear_keys:
+    if session_clear_keys or identity_clear_keys:
         try:
             data = registry.read_registry()
             key = registry._key(fleet, args.name)
             stored = dict(data.get(key, registered))
-            for clear_key in session_clear_keys:
+            for clear_key in [*session_clear_keys, *identity_clear_keys]:
                 stored.pop(clear_key, None)
             data[key] = stored
             registry.write_registry(data)
@@ -726,6 +753,11 @@ def _desks_profile_metadata(manifest: dict) -> dict:
         if isinstance(identity, dict):
             identity_id = identity.get("identity_id") or role_home.name
             return {
+                "identity_provider": "desks",
+                "identity_id": identity_id,
+                "identity_label": identity.get("current_name"),
+                "identity_bind_source": "desks-launch",
+                "identity_bind_confidence": "explicit",
                 "desks_identity_id": identity_id,
                 "desks_identity_home": str(role_home),
                 "desks_memory_home": str(role_home / "memory"),
@@ -747,6 +779,10 @@ def _desks_profile_metadata(manifest: dict) -> dict:
     profile_id = profile.get("profile_id")
     identity_id = profile.get("identity_id")
     meta = {
+        "identity_provider": "desks" if identity_id else None,
+        "identity_id": identity_id,
+        "identity_bind_source": "desks-launch" if identity_id else None,
+        "identity_bind_confidence": "explicit" if identity_id else None,
         "desks_profile_id": profile_id,
         "desks_profile_home": str(profile_dir),
         "desks_identity_id": identity_id,
@@ -766,6 +802,7 @@ def _desks_profile_metadata(manifest: dict) -> dict:
                 identity = {}
             if isinstance(identity, dict):
                 meta["desks_current_name"] = identity.get("current_name")
+                meta["identity_label"] = identity.get("current_name")
     return {key: value for key, value in meta.items() if value}
 
 
@@ -800,6 +837,8 @@ def _desks_launch_env(role_meta: dict) -> dict:
         "UNIT": "desks_unit",
         "MANIFEST": "desks_manifest",
         "IDENTITY_ID": "desks_identity_id",
+        "GENERIC_IDENTITY_PROVIDER": "identity_provider",
+        "GENERIC_IDENTITY_ID": "identity_id",
         "PROFILE_ID": "desks_profile_id",
         "CURRENT_NAME": "desks_current_name",
         "IDENTITY_HOME": "desks_identity_home",

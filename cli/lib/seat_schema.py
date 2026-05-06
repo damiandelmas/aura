@@ -5,19 +5,44 @@ from __future__ import annotations
 
 # Allowlist for `aura seat tag` writes. Plan 011 phase 1 contract.
 #
-# Post-merge (Desks profiles merged into identities), the load-bearing FK is the
-# Desks identity id alone. Any path-typed metadata can be derived by the runtime
-# from `~/.desks/identities/$DESKS_IDENTITY_ID/`. Aura no longer caches those
-# paths because every cache field goes stale on rename.
+# Aura identity binding is provider-generic. `identity_provider` + `identity_id`
+# is the load-bearing handle for whatever identity harness launched or adopted a
+# live seat incarnation. `desks_identity_id` remains as a legacy compatibility
+# alias while older rows and tools migrate.
 #
 # Flex project pointers stay in the allowlist because they are unrelated to the
-# Desks identity arc and remain useful as opaque project metadata exported into
-# the runtime environment.
+# identity arc and remain useful as opaque project metadata exported into the
+# runtime environment.
 TAG_ALLOWLIST = frozenset({
     "desks_identity_id",
+    "identity_provider",
+    "identity_id",
+    "identity_label",
+    "identity_bound_at",
+    "identity_bind_source",
+    "identity_bind_confidence",
     "flex_project_manifest",
     "flex_project_root",
 })
+
+
+def identity_id_for(record: dict | None) -> str | None:
+    """Return the generic identity id, falling back to the legacy Desks alias."""
+    if not isinstance(record, dict):
+        return None
+    return record.get("identity_id") or record.get("desks_identity_id")
+
+
+def identity_provider_for(record: dict | None) -> str | None:
+    """Return the identity provider, inferring `desks` for legacy rows."""
+    if not isinstance(record, dict):
+        return None
+    provider = record.get("identity_provider")
+    if provider:
+        return provider
+    if record.get("desks_identity_id"):
+        return "desks"
+    return None
 
 
 def infer_backend_ref(terminal_ref: str | None, *, fleet: str | None = None, name: str | None = None) -> str | None:

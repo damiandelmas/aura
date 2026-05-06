@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 
 from commands import list as list_cmd
+from lib import seat_schema
 
 
 def run(args):
@@ -82,6 +83,9 @@ def run(args):
             "aura_launch_id": row.get("aura_launch_id"),
             "pane_ref": row.get("pane_ref"),
             "cwd": row.get("runtime_session_cwd") or row.get("cwd") or row.get("workdir"),
+            "identity_provider": seat_schema.identity_provider_for(row),
+            "identity_id": seat_schema.identity_id_for(row),
+            "identity_label": row.get("identity_label") or row.get("desks_current_name"),
             "desks_identity_id": row.get("desks_identity_id"),
             "flex_project_manifest": row.get("flex_project_manifest"),
             "flex_project_root": row.get("flex_project_root"),
@@ -151,7 +155,7 @@ def _fleets(args) -> dict:
             bucket["bound_seats"] += 1
         target = f"{fleet}:{row.get('name')}"
         raw_row = raw_by_target.get(target) or {}
-        if raw_row.get("desks_identity_id"):
+        if seat_schema.identity_id_for(raw_row):
             bucket["adopted_seats"] += 1
 
     # Last event per fleet from session ledger
@@ -546,8 +550,10 @@ def _bind_registry_session(
         source_command=f"aura sessions {event.removeprefix('session_').replace('_', '-')}",
         cwd=cwd,
     )
+    identity_provider = seat_schema.identity_provider_for(updated) or seat_schema.identity_provider_for(previous)
+    identity_id = seat_schema.identity_id_for(updated) or seat_schema.identity_id_for(previous)
     desks_result = desks_sessions.append_identity_session(
-        updated.get("desks_identity_id") or previous.get("desks_identity_id"),
+        identity_id if identity_provider == "desks" else None,
         session_id,
     )
     result = {

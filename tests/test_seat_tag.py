@@ -61,6 +61,34 @@ def test_tag_writes_allowed_keys_and_returns_updated_record(aura_state):
     assert result["record"]["desks_identity_id"] == "r_6be5b613"
 
 
+def test_tag_writes_generic_identity_binding(aura_state):
+    from commands import seat as seat_cmd
+    from lib import registry
+
+    _seed_seat()
+
+    args = argparse.Namespace(
+        seat_action="tag",
+        target="test-fleet:engineer",
+        set=[
+            "identity_provider=desks",
+            "identity_id=r_6be5b613",
+            "identity_label=flex:engine:lead",
+            "identity_bind_source=manual",
+            "identity_bind_confidence=explicit",
+        ],
+        unset=[],
+    )
+    result = seat_cmd._tag(args, registry)
+
+    assert result["ok"] is True
+    assert result["record"]["identity_provider"] == "desks"
+    assert result["record"]["identity_id"] == "r_6be5b613"
+    assert result["record"]["identity_label"] == "flex:engine:lead"
+    assert result["record"]["identity_bind_source"] == "manual"
+    assert result["record"]["identity_bind_confidence"] == "explicit"
+
+
 def test_tag_unset_removes_key_when_value_empty(aura_state):
     from commands import seat as seat_cmd
     from lib import registry

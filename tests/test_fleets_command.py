@@ -113,4 +113,6 @@ def test_fleet_history_builds_restore_commands(monkeypatch, tmp_path):
     assert result["seats"][0]["restore"]["ready"] is True
     assert "--fleet-id" in result["seats"][0]["restore"]["command"]
     assert "--resume-session session-1" in result["seats"][0]["restore"]["command"]
-    assert result["seats"][0]["restore"]["post_bind_command"] == "aura seat tag unitfleet:worker --set desks_identity_id=r_test"
+    assert result["seats"][0]["restore"]["post_bind_command"] == (
+        "aura seat tag unitfleet:worker --set identity_provider=desks --set identity_id=r_test"
+    )

@@ -1,0 +1,115 @@
+"""Tests for spawn identity binding cleanup."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "cli"))
+
+
+@pytest.fixture
+def aura_state(monkeypatch, tmp_path):
+    state_root = tmp_path / ".aura"
+    state_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AURA_STATE_DIR", str(state_root))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    return state_root
+
+
+class FakeTerminal:
+    SESSION_NAME = "unitfleet"
+    BACKEND_NAME = "tmux"
+    last_env = None
+
+    @staticmethod
+    def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+        FakeTerminal.last_env = env
+        return {
+            "ok": True,
+            "target": f"unitfleet:{name}",
+            "pane_id": "%9",
+        }
+
+
+def _args(tmp_path, **overrides):
+    values = {
+        "name": "worker",
+        "runtime": "command",
+        "launch_command": "true",
+        "resume_session": None,
+        "cwd": str(tmp_path),
+        "profile": None,
+        "model": None,
+        "context": None,
+        "work": None,
+        "prompt": None,
+        "as_pane": True,
+        "_role_manifest_meta": {},
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def test_fresh_spawn_does_not_inherit_stale_identity_binding(aura_state, tmp_path):
+    from commands import spawn
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "worker",
+        "seat": "worker",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "status": "dead",
+        "pane_ref": "tmux:unitfleet:%old",
+        "desks_identity_id": "r_old",
+        "identity_provider": "desks",
+        "identity_id": "r_old",
+        "identity_label": "old:name",
+        "runtime_session_id": "old-session",
+        "runtime_session_binding": "bound",
+    })
+
+    result = spawn._spawn_terminal_runtime(_args(tmp_path), FakeTerminal, lambda base: base)
+
+    assert result["ok"] is True
+    record = registry.get_agent("unitfleet:worker")
+    assert record["pane_ref"] == "tmux:unitfleet:%9"
+    assert "desks_identity_id" not in record
+    assert "identity_provider" not in record
+    assert "identity_id" not in record
+    assert "identity_label" not in record
+    assert "runtime_session_id" not in record
+    assert record["runtime_session_binding"] == "unbound"
+
+
+def test_spawn_from_desks_metadata_sets_generic_identity_binding(aura_state, tmp_path):
+    from commands import spawn
+    from lib import registry
+
+    args = _args(
+        tmp_path,
+        _role_manifest_meta={
+            "identity_provider": "desks",
+            "identity_id": "r_new",
+            "identity_label": "flex:engine:lead",
+            "desks_identity_id": "r_new",
+        },
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda base: base)
+
+    assert result["ok"] is True
+    record = registry.get_agent("unitfleet:worker")
+    assert record["identity_provider"] == "desks"
+    assert record["identity_id"] == "r_new"
+    assert record["identity_label"] == "flex:engine:lead"
+    assert record["identity_bound_at"]
+    assert record["desks_identity_id"] == "r_new"
+    assert FakeTerminal.last_env["AURA_IDENTITY_PROVIDER"] == "desks"
+    assert FakeTerminal.last_env["AURA_IDENTITY_ID"] == "r_new"
+    assert FakeTerminal.last_env["AURA_IDENTITY_LABEL"] == "flex:engine:lead"

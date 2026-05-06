@@ -3,7 +3,7 @@
 
 def run(args):
     """List all agents."""
-    from lib import mesh, registry, terminal
+    from lib import mesh, registry, seat_schema, terminal
 
     def _target_exists(target: str) -> bool:
         return terminal.target_exists(target) if hasattr(terminal, "target_exists") else terminal.window_exists(target)
@@ -122,6 +122,9 @@ def run(args):
             "terminal_ref": a.get("terminal_ref") or (f"tmux:{terminal.SESSION_NAME}:{name}" if terminal_alive else ""),
             "backend_ref": a.get("backend_ref") or (a.get("terminal_ref") or "").removeprefix("tmux:"),
             "pane_ref": a.get("pane_ref"),
+            "identity_provider": seat_schema.identity_provider_for(a),
+            "identity_id": seat_schema.identity_id_for(a),
+            "identity_label": a.get("identity_label") or a.get("desks_current_name"),
             "desks_identity_id": a.get("desks_identity_id"),
             "flex_project_manifest": a.get("flex_project_manifest"),
             "flex_project_root": a.get("flex_project_root"),
