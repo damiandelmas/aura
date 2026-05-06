@@ -326,7 +326,7 @@ def send_text(name: str, text: str, submit: bool = True, submit_key: str = "Ente
             return {"ok": False, "error": load.stderr.strip() or "tmux load-buffer failed", "name": name}
 
         paste = subprocess.run(
-            ["tmux", "paste-buffer", "-t", _tmux_target(name), "-b", buffer_name],
+            ["tmux", "paste-buffer", "-p", "-t", _tmux_target(name), "-b", buffer_name],
             capture_output=True,
             text=True,
         )
@@ -359,6 +359,11 @@ def send_text(name: str, text: str, submit: bool = True, submit_key: str = "Ente
             "submit_delay_seconds": delay_seconds,
         }
     finally:
+        subprocess.run(
+            ["tmux", "delete-buffer", "-b", buffer_name],
+            capture_output=True,
+            text=True,
+        )
         try:
             os.unlink(path)
         except OSError:

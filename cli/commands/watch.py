@@ -1,4 +1,4 @@
-"""Watch a seat by repeatedly capturing/checking and sensing state."""
+"""Watch a seat by repeatedly capturing/checking mechanical state."""
 
 from __future__ import annotations
 
@@ -94,7 +94,8 @@ def sample(args) -> dict:
 
     sense_record = None
     sense_reused = False
-    if not getattr(args, "no_sense", False):
+    run_sense = bool(getattr(args, "sense", False)) and not getattr(args, "no_sense", False)
+    if run_sense:
         previous_sense = previous.get("sense") if previous else None
         if (
             not output_changed
@@ -170,6 +171,7 @@ def sample_fleet(args) -> dict:
             question=getattr(args, "question", None),
             features=getattr(args, "features", None),
             no_sense=getattr(args, "no_sense", False),
+            sense=getattr(args, "sense", False),
             fresh_sense=getattr(args, "fresh_sense", False),
             sense_mode=getattr(args, "sense_mode", None),
             model=getattr(args, "model", None),

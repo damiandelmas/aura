@@ -116,7 +116,6 @@ def run(args):
 
 
 def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None):
-    from lib import terminal_submit
     from lib import identity
 
     sender = identity.sender(sender if sender is not None else getattr(args, "sender", None))
@@ -143,6 +142,8 @@ def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None):
 
     blocker = None
     if getattr(args, "defer_if_busy", False):
+        from lib import terminal_submit
+
         preflight_capture = terminal.capture_output(terminal_target, 80)
         blocker = terminal_submit.delivery_blocker(preflight_capture)
     if blocker:
@@ -206,15 +207,10 @@ def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None):
 
     result = terminal.send_text(terminal_target, envelope, submit=True)
     submit_verified = None
-    submit_retry = False
+    submit_retry = None
     verify_reason = None
-    if result.get("ok"):
-        verify = terminal_submit.verify_submit(terminal, terminal_target, message_id=message_id, lines=160)
-        submit_verified = verify["submitted_verified"]
-        submit_retry = verify["submit_retry"]
-        verify_reason = verify.get("verify_reason")
 
-    state = "delivered" if result.get("ok") else "failed"
+    state = "attempted" if result.get("ok") else "failed"
     delivery.append_attempt(pending, state="attempted", evidence={
         "paste_ok": bool(result.get("ok")),
         "terminal_ref": result.get("target"),
@@ -253,8 +249,6 @@ def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None):
         "submit_retry": submit_retry,
         "record": record,
     }
-    if submit_verified is False:
-        response["warning"] = "submit-unverified"
     return response
 
 

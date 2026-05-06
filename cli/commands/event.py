@@ -55,7 +55,7 @@ def _make_job(args) -> dict:
         "consecutive_errors": 0,
         "delivery": {
             "mode": "terminal_write",
-            "ensure_submit": True,
+            "ensure_submit": False,
         },
     }
 
@@ -153,7 +153,6 @@ def _deliver(job: dict, tick: int) -> dict:
         "--as",
         job.get("sender") or "aura-event",
         "--enter",
-        "--ensure-submit",
         "--lines",
         "80",
     ]
@@ -166,8 +165,6 @@ def _deliver(job: dict, tick: int) -> dict:
         parsed = None
     ok = result.returncode == 0 and isinstance(parsed, dict) and parsed.get("ok") is True
     submitted_verified = parsed.get("submitted_verified") if isinstance(parsed, dict) else None
-    if submitted_verified is False:
-        ok = False
     return {
         "ok": ok,
         "message_id": message_id,

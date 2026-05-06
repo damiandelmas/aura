@@ -193,6 +193,7 @@ def run(args):
         lines=getattr(args, "lines", 80),
         interval=0,
         no_sense=False,
+        sense=True,
         question=None,
         features=None,
     )

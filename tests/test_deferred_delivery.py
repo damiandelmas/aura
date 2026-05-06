@@ -94,14 +94,12 @@ def test_send_does_not_defer_on_prompt_text(monkeypatch, tmp_path):
     assert result["ok"] is True
     assert result.get("blocked") is not True
     assert result.get("deferred") is not True
-    assert result["submitted_verified"] is False
-    assert result["submit_verify_reason"] == "missing-positive-submit-evidence"
-    assert result["submit_retry"] is True
+    assert result["state"] == "attempted"
+    assert result["submitted_verified"] is None
+    assert result["submit_verify_reason"] is None
+    assert result["submit_retry"] is None
     assert FakeTerminal.sent is True
-    assert FakeTerminal.keys == [
-        ("tmux:fleet:%1", "Enter", False),
-        ("tmux:fleet:%1", "Enter", False),
-    ]
+    assert FakeTerminal.keys == []
 
 
 def test_send_defer_if_submit_unverified_records_metadata_without_outbox(monkeypatch, tmp_path):
@@ -150,13 +148,11 @@ def test_send_defer_if_submit_unverified_records_metadata_without_outbox(monkeyp
     assert result["ok"] is True
     assert result.get("blocked") is not True
     assert result.get("deferred") is not True
-    assert result["submitted_verified"] is False
-    assert result["submit_verify_reason"] == "missing-positive-submit-evidence"
-    assert result["submit_retry"] is True
-    assert FakeTerminal.keys == [
-        ("tmux:fleet:%1", "Enter", False),
-        ("tmux:fleet:%1", "Enter", False),
-    ]
+    assert result["state"] == "attempted"
+    assert result["submitted_verified"] is None
+    assert result["submit_verify_reason"] is None
+    assert result["submit_retry"] is None
+    assert FakeTerminal.keys == []
 
 
 def test_deferred_run_once_marks_delivered(monkeypatch, tmp_path):
@@ -177,7 +173,7 @@ def test_deferred_run_once_marks_delivered(monkeypatch, tmp_path):
         assert cmd[:2] == [deferred._aura_bin(), "send"]
         return type("Result", (), {
             "returncode": 0,
-            "stdout": json.dumps({"ok": True, "message_id": "aura-msg-delivered", "submitted_verified": True}),
+            "stdout": json.dumps({"ok": True, "state": "delivered", "message_id": "aura-msg-delivered", "submitted_verified": True}),
             "stderr": "",
         })()
 
@@ -407,7 +403,7 @@ def test_deferred_drain_runs_due_records(monkeypatch, tmp_path):
     def fake_run(cmd, text=True, capture_output=True, env=None):
         return type("Result", (), {
             "returncode": 0,
-            "stdout": json.dumps({"ok": True, "message_id": "aura-msg-delivered", "submitted_verified": True}),
+            "stdout": json.dumps({"ok": True, "state": "delivered", "message_id": "aura-msg-delivered", "submitted_verified": True}),
             "stderr": "",
         })()
 

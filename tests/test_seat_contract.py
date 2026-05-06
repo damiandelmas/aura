@@ -28,14 +28,13 @@ def test_openclaw_and_shell_runtime_specs_exist():
 
 
 def test_write_submit_retry_detection_is_narrow():
-    from commands.write import _needs_submit_retry, _retry_submit
-    from lib.terminal_submit import delivery_blocker
+    from lib.terminal_submit import delivery_blocker, needs_submit_retry, retry_submit
 
-    assert _needs_submit_retry(["Messages to be submitted after next tool call"]) is True
-    assert _needs_submit_retry(["Press Enter to submit"]) is True
-    assert _needs_submit_retry(["› [Pasted Content 1024 chars]", "", "gpt-5.5 high"]) is True
-    assert _needs_submit_retry(["› [Pasted Content 1024 chars]", "• Working (1s)"]) is False
-    assert _needs_submit_retry(["Working (2s)", "Running tool call"]) is False
+    assert needs_submit_retry(["Messages to be submitted after next tool call"]) is True
+    assert needs_submit_retry(["Press Enter to submit"]) is True
+    assert needs_submit_retry(["› [Pasted Content 1024 chars]", "", "gpt-5.5 high"]) is True
+    assert needs_submit_retry(["› [Pasted Content 1024 chars]", "• Working (1s)"]) is False
+    assert needs_submit_retry(["Working (2s)", "Running tool call"]) is False
     assert delivery_blocker(["› [Pasted Content 1024 chars]", "", "gpt-5.5 high"]) == "target-input-queued"
     assert delivery_blocker(["• Working (1s)", "Running tool call"]) == "target-busy"
 
@@ -47,11 +46,11 @@ def test_write_submit_retry_detection_is_narrow():
             cls.calls.append((name, text, enter))
             return {"ok": True}
 
-    assert _retry_submit("seat1", FakeTerminal)["ok"] is True
+    assert retry_submit("seat1", FakeTerminal)["ok"] is True
     assert FakeTerminal.calls == [("seat1", "Enter", False)]
 
 
-def test_send_tmux_verifies_submit_and_retries(monkeypatch, tmp_path):
+def test_send_tmux_attempts_without_submit_verification(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
 
     from commands import send
@@ -92,20 +91,22 @@ def test_send_tmux_verifies_submit_and_retries(monkeypatch, tmp_path):
     )
     assert result["ok"] is True
     assert result["submitted"] is True
-    assert result["submitted_verified"] is True
-    assert result["submit_retry"] is True
-    assert FakeTerminal.keys == [("unitfleet:worker", "Enter", False)]
+    assert result["state"] == "attempted"
+    assert result["submitted_verified"] is None
+    assert result["submit_retry"] is None
+    assert FakeTerminal.keys == []
 
     records = [
         json.loads(line)
         for line in (tmp_path / "deliveries.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert records[-1]["delivery_type"] == "semantic_send"
-    assert records[-1]["submitted_verified"] is True
-    assert records[-1]["submit_retry"] is True
+    assert records[-1]["state"] == "attempted"
+    assert records[-1]["submitted_verified"] is None
+    assert records[-1]["submit_retry"] is None
 
 
-def test_send_tmux_blocks_when_target_already_has_queued_input(monkeypatch, tmp_path):
+def test_send_tmux_does_not_inspect_queued_input_by_default(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
 
     from commands import send
@@ -145,8 +146,10 @@ def test_send_tmux_blocks_when_target_already_has_queued_input(monkeypatch, tmp_
 
     assert result["ok"] is True
     assert FakeTerminal.sent is True
-    assert result["submitted_verified"] is False
-    assert result["submit_retry"] is True
+    assert result["state"] == "attempted"
+    assert result["submitted_verified"] is None
+    assert result["submit_retry"] is None
+    assert FakeTerminal.keys == []
 
 
 def test_tmux_send_text_waits_before_submit(monkeypatch):
@@ -173,7 +176,9 @@ def test_tmux_send_text_waits_before_submit(monkeypatch):
     assert sleeps == [0.5]
     assert calls[0][1] == "load-buffer"
     assert calls[1][1] == "paste-buffer"
+    assert "-p" in calls[1]
     assert calls[2][-1] == "Enter"
+    assert calls[3][1] == "delete-buffer"
 
 
 def test_tmux_target_exists_uses_exact_window_names(monkeypatch):
@@ -1463,6 +1468,7 @@ def test_watch_reuses_previous_sense_when_output_unchanged(monkeypatch, tmp_path
         question=None,
         features=None,
         no_sense=False,
+        sense=True,
         fresh_sense=False,
         sense_mode="llm",
         model="local-test",
@@ -1531,6 +1537,7 @@ def test_single_seat_watch_iterations_are_bounded(monkeypatch, tmp_path):
         question=None,
         features=None,
         no_sense=False,
+        sense=True,
         fresh_sense=False,
         sense_mode="llm",
         model="local-test",
@@ -1621,7 +1628,7 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
             "fake-e2e-msg",
         )
         assert send_result.returncode == 0, send_result.stderr + send_result.stdout
-        assert '"state": "delivered"' in send_result.stdout
+        assert '"state": "attempted"' in send_result.stdout
 
         import time
         time.sleep(0.8)
@@ -1636,7 +1643,7 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         )
         assert write_result.returncode == 0, write_result.stderr + write_result.stdout
         assert '"schema": "aura.write.v1"' in write_result.stdout
-        assert '"state": "delivered"' in write_result.stdout
+        assert '"state": "attempted"' in write_result.stdout
 
         explicit_write_result = run_aura(
             "write",

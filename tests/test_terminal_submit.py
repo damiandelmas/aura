@@ -141,14 +141,11 @@ def test_verify_submit_retries_queued_input_until_message_visible():
     assert FakeTerminal.keys == [("fleet:seat", "Enter", False)]
 
 
-def test_verify_submit_retries_missing_positive_evidence_until_message_visible():
+def test_verify_submit_does_not_retry_missing_positive_evidence():
     from lib import terminal_submit
 
     class FakeTerminal:
-        captures = [
-            ["› Explain this codebase", "", "gpt-5.5 medium"],
-            ["› [AURA MESSAGE from=ops sent_at=now]", "  body", "[/AURA MESSAGE]"],
-        ]
+        captures = [["› Explain this codebase", "", "gpt-5.5 medium"]]
         keys = []
 
         @classmethod
@@ -167,10 +164,10 @@ def test_verify_submit_retries_missing_positive_evidence_until_message_visible()
         sleep=lambda _: None,
     )
 
-    assert result["submitted_verified"] is True
-    assert result["verify_reason"] == "aura-envelope-visible"
-    assert result["submit_retry"] is True
-    assert FakeTerminal.keys == [("fleet:seat", "Enter", False)]
+    assert result["submitted_verified"] is False
+    assert result["verify_reason"] == "missing-positive-submit-evidence"
+    assert result["submit_retry"] is False
+    assert FakeTerminal.keys == []
 
 
 def test_verify_submit_retries_prompt_text_after_paste_attempt():
@@ -197,8 +194,5 @@ def test_verify_submit_retries_prompt_text_after_paste_attempt():
 
     assert result["submitted_verified"] is False
     assert result["verify_reason"] == "missing-positive-submit-evidence"
-    assert result["submit_retry"] is True
-    assert FakeTerminal.keys == [
-        ("fleet:seat", "Enter", False),
-        ("fleet:seat", "Enter", False),
-    ]
+    assert result["submit_retry"] is False
+    assert FakeTerminal.keys == []

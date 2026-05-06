@@ -40,18 +40,6 @@ def _preview(text: str, limit: int = 120) -> str:
     return text[:limit]
 
 
-def _needs_submit_retry(capture: list[str]) -> bool:
-    from lib.terminal_submit import needs_submit_retry
-
-    return needs_submit_retry(capture)
-
-
-def _retry_submit(name: str, terminal) -> dict:
-    from lib.terminal_submit import retry_submit
-
-    return retry_submit(name, terminal)
-
-
 def run(args):
     """Write directly to the terminal body behind a seat or backend ref."""
     from lib import delivery, identity, registry, seat_schema, terminal
@@ -87,51 +75,6 @@ def run(args):
 
     if not _target_exists(terminal, terminal_target):
         return {"ok": False, "error": f"window not found: {target}", "target": target, "backend_ref": backend_ref}
-
-    if getattr(args, "ensure_submit", False) and submit and not key_sequence:
-        from lib import terminal_submit
-
-        preflight_capture = terminal.capture_output(terminal_target, max(lines, 80))
-        blocker = terminal_submit.delivery_blocker(preflight_capture)
-        if blocker:
-            record = delivery.new_delivery_record(
-                delivery_type="terminal_write",
-                sender=sender,
-                target=target,
-                backend="tmux",
-                backend_ref=backend_ref or f"tmux:{getattr(terminal, 'SESSION_NAME', fleet or 'aura')}:{name}",
-                state="blocked",
-                seat=name,
-                transport="tmux",
-                error=blocker,
-                enter=submit,
-                keys=key_sequence,
-                capture_before_lines=len(preflight_capture),
-            )
-            delivery.append_attempt(record, state="blocked", evidence={
-                "blocker": blocker,
-                "preflight_capture_lines": len(preflight_capture),
-            })
-            record = delivery.append_record(record)
-            return seat_schema.enrich({
-                "ok": False,
-                "schema": "aura.write.v1",
-                "type": "write",
-                "blocked": True,
-                "reason": blocker,
-                "error": f"target not ready for paste: {blocker}",
-                "target": target,
-                "name": name,
-                "fleet": fleet or (reg_agent or {}).get("fleet"),
-                "sender": sender,
-                "transport": "tmux",
-                "backend_ref": record.get("backend_ref"),
-                "state": "blocked",
-                "submitted": False,
-                "submitted_verified": False,
-                "submit_retry": False,
-                "record": record,
-            })
 
     before = None
     if getattr(args, "capture_before", False):
@@ -173,27 +116,12 @@ def run(args):
 
     after = None
     submit_verified = None
-    submit_retry = False
+    submit_retry = None
     verify_reason = None
     if getattr(args, "capture_after", False):
         after = terminal.capture_output(terminal_target, lines)
 
-    if (
-        getattr(args, "ensure_submit", False)
-        and submit
-        and not key_sequence
-        and result.get("ok")
-    ):
-        from lib.terminal_submit import verify_submit
-
-        verify = verify_submit(terminal, terminal_target, message_id=message_id, lines=lines)
-        submit_verified = verify["submitted_verified"]
-        submit_retry = verify["submit_retry"]
-        verify_reason = verify.get("verify_reason")
-        if after is not None:
-            after = verify["capture"][-lines:]
-
-    state = "delivered" if result.get("ok") and submit_verified is not False else "failed"
+    state = "attempted" if result.get("ok") else "failed"
     delivery.append_attempt(pending, state="attempted", evidence={
         "write_ok": bool(result.get("ok")),
         "terminal_ref": result.get("target") or pending.get("backend_ref"),

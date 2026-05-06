@@ -37,8 +37,8 @@ def main():
         description="AI-first agent orchestration",
         epilog=(
             "Agent primitives: spawn, seat, send, queue, report, view, inspect, event. "
-            "Operator tools: capture, sense, watch, route, dash, deferred, sessions, "
-            "ether, discord, clawhip, write, ledger."
+            "Operator tools: capture, sense, watch, dash, deferred, sessions, "
+            "discord, clawhip, write, ledger."
         ),
     )
     parser.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
@@ -253,8 +253,6 @@ def main():
                          help="Include terminal capture before the write")
     p_write.add_argument("--capture-after", action="store_true",
                          help="Include terminal capture after the write")
-    p_write.add_argument("--ensure-submit", action="store_true",
-                         help="After --enter, verify the terminal did not leave a queued message; retry Enter once if needed")
     p_write.add_argument("--allow-hidden", action="store_true",
                          help="Allow writing to hidden/internal seats such as Ether panels")
     p_write.add_argument("--lines", type=int, default=20,
@@ -329,7 +327,7 @@ def main():
                            help="Capture format: text or ansi (default: text)")
 
     # sense
-    p_sense = subparsers.add_parser("sense", help="Sense inferred semantic state for a seat")
+    p_sense = subparsers.add_parser("sense", help="Diagnostic inferred semantic state for a seat")
     p_sense.add_argument("name", help="Seat/agent name")
     p_sense.add_argument("--lines", type=int, default=80,
                          help="Number of captured output lines to inspect (default: 80)")
@@ -349,7 +347,7 @@ def main():
                          help="Seconds to wait for local LLM sense before fallback/error (default: 8)")
 
     # watch
-    p_watch = subparsers.add_parser("watch", help="Watch a seat through capture/check/sense")
+    p_watch = subparsers.add_parser("watch", help="Watch a seat through mechanical capture/check")
     p_watch.add_argument("name", nargs="?", help="Seat/agent name")
     p_watch.add_argument("--fleet", "-f", metavar="NAME",
                          help="Watch all seats in a fleet; currently requires --once")
@@ -361,8 +359,10 @@ def main():
                          help="Take one sample and exit")
     p_watch.add_argument("--iterations", type=int,
                          help="Take N bounded samples and exit")
+    p_watch.add_argument("--sense", action="store_true",
+                         help="Also run diagnostic sense for each sample")
     p_watch.add_argument("--no-sense", action="store_true",
-                         help="Only capture/check watch state; do not run sense")
+                         help=argparse.SUPPRESS)
     p_watch.add_argument("--fresh-sense", action="store_true",
                          help="Re-run sense even when terminal output is unchanged")
     p_watch.add_argument("--question", help="Optional question passed through to sense")
@@ -381,7 +381,7 @@ def main():
                          help="Seconds to wait for local LLM sense before fallback/error")
 
     # route
-    p_route = subparsers.add_parser("route", help="Evaluate or execute bounded seat-to-seat routing")
+    p_route = subparsers.add_parser("route", help=argparse.SUPPRESS)
     p_route.add_argument("--fleet", "-f", metavar="NAME", required=True,
                          help="Fleet name to observe and route within")
     mode_group = p_route.add_mutually_exclusive_group()
@@ -619,7 +619,7 @@ def main():
     p_discord_listen.add_argument("--ready-once", action="store_true", help="Connect, print ready state, and exit")
 
     # ether — objective coordination recommendations
-    p_ether = subparsers.add_parser("ether", help="Inspect Aura Ether objectives and recommendations")
+    p_ether = subparsers.add_parser("ether", help=argparse.SUPPRESS)
     ether_sub = p_ether.add_subparsers(dest="ether_area", required=True)
 
     p_ether_objective = ether_sub.add_parser("objective", help="Manage Ether objectives")

@@ -70,7 +70,7 @@ def test_standard_send_tmux_does_not_preflight_block_busy_target(monkeypatch, tm
     assert result["ok"] is True
     record = result["record"]
     assert record["schema"] == "aura.delivery.v2"
-    assert record["state"] == "delivered"
+    assert record["state"] == "attempted"
     assert record["attempts"][-1]["evidence"]["paste_ok"] is True
 
 
@@ -144,7 +144,7 @@ def test_send_infers_current_seat_sender(monkeypatch, tmp_path):
     assert result["record"]["sender"] == "unitfleet:lead"
 
 
-def test_send_tmux_delivered_record_has_attempt_evidence(monkeypatch, tmp_path):
+def test_send_tmux_attempted_record_has_attempt_evidence(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
 
     from commands import send
@@ -177,9 +177,9 @@ def test_send_tmux_delivered_record_has_attempt_evidence(monkeypatch, tmp_path):
     record = result["record"]
     assert record["schema"] == "aura.delivery.v2"
     assert record["delivery_type"] == "semantic_send"
-    assert record["state"] == "delivered"
+    assert record["state"] == "attempted"
     assert [attempt["state"] for attempt in record["attempts"]] == ["pending", "attempted"]
-    assert record["attempts"][-1]["evidence"]["submitted_verified"] is True
+    assert record["attempts"][-1]["evidence"]["submitted_verified"] is None
 
     lines = (tmp_path / "deliveries.jsonl").read_text(encoding="utf-8").splitlines()
     parsed = [json.loads(line) for line in lines]

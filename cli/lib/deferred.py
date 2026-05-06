@@ -171,6 +171,7 @@ def run_due(*, limit: int | None = None) -> dict[str, Any]:
         "ok": True,
         "count": len(results),
         "delivered": sum(1 for result in results if result.get("state") == "delivered"),
+        "attempted": sum(1 for result in results if result.get("state") == "attempted"),
         "blocked": sum(1 for result in results if result.get("state") == "blocked"),
         "failed": sum(1 for result in results if result.get("state") == "failed"),
         "expired": sum(1 for result in results if result.get("reason") == "expired"),
@@ -213,7 +214,7 @@ def run_once(deferred_id: str) -> dict[str, Any]:
     }
     record.setdefault("attempts", []).append(attempt)
     recovery = None
-    if parsed.get("blocked") and parsed.get("reason") in {"target-busy", "target-input-queued", "target-input-active", "submit-unverified"}:
+    if parsed.get("blocked") and parsed.get("reason") in {"target-busy", "target-input-queued", "target-input-active"}:
         if parsed.get("reason") == "target-input-queued":
             recovery = _maybe_nudge_queued_input(record)
         record["status"] = "retrying"
@@ -222,13 +223,20 @@ def run_once(deferred_id: str) -> dict[str, Any]:
             record.setdefault("recovery_attempts", []).append(recovery)
         save(record)
         return {"ok": True, "ran": True, "state": "blocked", "recovery": recovery, "record": record}
-    parsed_delivered = parsed.get("ok") and parsed.get("state") != "failed"
+    parsed_delivered = parsed.get("ok") and parsed.get("state") == "delivered"
     if parsed_delivered:
         record["status"] = "delivered"
         record["delivered_at"] = now_iso()
         record["delivery_result"] = parsed
         save(record)
         return {"ok": True, "ran": True, "state": "delivered", "record": record}
+    parsed_attempted = parsed.get("ok") and parsed.get("state") == "attempted"
+    if parsed_attempted:
+        record["status"] = "attempted"
+        record["attempted_at"] = now_iso()
+        record["delivery_result"] = parsed
+        save(record)
+        return {"ok": True, "ran": True, "state": "attempted", "record": record}
     record["status"] = "failed"
     record["failed_at"] = now_iso()
     record["failure_result"] = parsed
