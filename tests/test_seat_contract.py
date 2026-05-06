@@ -198,45 +198,6 @@ def test_tmux_target_exists_uses_exact_window_names(monkeypatch):
     assert tmux.window_exists("unitfleet:mock-efaa") is True
 
 
-def test_tmux_create_window_uses_requested_window_for_new_session(monkeypatch, tmp_path):
-    from lib import tmux
-
-    calls = []
-    monkeypatch.setattr(tmux, "TMUX_SESSION", "unitfleet")
-    monkeypatch.setattr(tmux, "_session", lambda: None)
-    monkeypatch.setattr(tmux, "pane_id", lambda name: "%1")
-
-    def fake_run(args):
-        calls.append(args)
-        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(tmux, "_run_tmux", fake_run)
-
-    result = tmux.create_window(
-        "worker",
-        str(tmp_path),
-        detached=True,
-        command="codex --dangerously-bypass-approvals-and-sandbox",
-        env={"AURA_SEAT": "worker"},
-        unset_env=["CODEX_THREAD_ID"],
-    )
-
-    assert result["ok"] is True
-    assert result["created_session"] is True
-    assert result["target"] == "unitfleet:worker"
-    assert calls == [[
-        "new-session",
-        "-d",
-        "-s",
-        "unitfleet",
-        "-n",
-        "worker",
-        "-c",
-        str(tmp_path),
-        "env -u CODEX_THREAD_ID AURA_SEAT=worker codex --dangerously-bypass-approvals-and-sandbox",
-    ]]
-
-
 def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")

@@ -19,28 +19,6 @@ def run(args):
         terminal.configure_session(args.name.split(":", 1)[0])
     terminal_target = (agent or {}).get("pane_ref") or (agent or {}).get("terminal_ref") or args.name
     terminal_alive = _target_exists(terminal_target)
-    host_status = None
-    host_tail = None
-    if (agent or {}).get("host_socket"):
-        try:
-            from lib import host_client
-
-            host_status = host_client.request((agent or {}).get("host_socket"), {
-                "op": "status",
-                "launch_id": (agent or {}).get("host_launch_id") or (agent or {}).get("aura_launch_id"),
-            })
-            if getattr(args, "output", False):
-                host_tail = host_client.request((agent or {}).get("host_socket"), {
-                    "op": "tail",
-                    "launch_id": (agent or {}).get("host_launch_id") or (agent or {}).get("aura_launch_id"),
-                    "lines": args.lines,
-                })
-        except Exception as exc:
-            host_status = {
-                "ok": False,
-                "error": str(exc),
-                "outcome": "host_request_failed",
-            }
     target_diagnostic = None
     if not terminal_alive and terminal_target != args.name and _target_exists(args.name):
         target_diagnostic = {
@@ -54,10 +32,7 @@ def run(args):
     if not agent and not terminal_alive:
         return {"ok": False, "error": f"agent not found: {args.name}", "status": "stopped"}
 
-    if host_status and host_status.get("ok") and host_status.get("child_alive"):
-        status = "alive"
-    else:
-        status = registry.infer_status(args.name, terminal, (agent or {}).get("status", "unknown"), target=terminal_target) if terminal_alive else (agent or {}).get("status", "dead")
+    status = registry.infer_status(args.name, terminal, (agent or {}).get("status", "unknown"), target=terminal_target) if terminal_alive else (agent or {}).get("status", "dead")
     if reg_agent and status != reg_agent.get("status"):
         registry.mark_status(args.name, status, fleet=reg_agent.get("fleet"))
 
@@ -86,13 +61,7 @@ def run(args):
         "mode": (agent or {}).get("delivery_mode", "immediate"),
         "registered": bool((agent or {}).get("socket_path")) or bool((agent or {}).get("registered")),
         "terminal": "alive" if terminal_alive else "missing",
-        "host": "alive" if host_status and host_status.get("ok") else ("unavailable" if host_status else None),
-        "child": "alive" if host_status and host_status.get("child_alive") else ("dead" if host_status and host_status.get("ok") else None),
-        "host_status": host_status,
-        "backend": (agent or {}).get("control_backend") or ("tmux" if terminal_alive or (agent or {}).get("terminal_ref") else None),
-        "control_backend": (agent or {}).get("control_backend"),
-        "delivery_backend": (agent or {}).get("delivery_backend"),
-        "viewport_backend": (agent or {}).get("viewport_backend"),
+        "backend": "tmux" if terminal_alive or (agent or {}).get("terminal_ref") else None,
         "terminal_ref": (agent or {}).get("terminal_ref") or (f"{display_fleet}:{display_name}" if terminal_alive else None),
         "backend_ref": (agent or {}).get("backend_ref") or ((agent or {}).get("terminal_ref") or "").removeprefix("tmux:"),
         "pane_ref": (agent or {}).get("pane_ref"),
@@ -105,9 +74,6 @@ def run(args):
     if args.output and terminal_alive:
         response["output"] = terminal.capture_output(terminal_target, args.lines, ansi=capture_format == "ansi")
         response["output_format"] = capture_format
-    elif args.output and host_tail and host_tail.get("ok"):
-        response["output"] = host_tail.get("output", [])
-        response["output_format"] = "host-tail"
 
     from lib import seat_schema
     return seat_schema.enrich({k: v for k, v in response.items() if v is not None})

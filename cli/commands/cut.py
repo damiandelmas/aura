@@ -30,34 +30,8 @@ def run(args):
 
     runtime = (reg_agent or {}).get("runtime")
     graceful_exit = runtimes.graceful_exit(runtime)
-    host_stop = None
 
-    if (reg_agent or {}).get("host_socket"):
-        try:
-            from lib import host_client
-
-            host_stop = host_client.request((reg_agent or {}).get("host_socket"), {
-                "op": "stop",
-                "launch_id": (reg_agent or {}).get("host_launch_id") or (reg_agent or {}).get("aura_launch_id"),
-                "mode": "force" if force else "graceful",
-                "graceful_text": graceful_exit,
-            })
-        except Exception as exc:
-            host_stop = {"ok": False, "error": str(exc), "outcome": "host_request_failed"}
-        if not host_stop.get("ok") or host_stop.get("child_alive"):
-            result = {
-                "ok": False,
-                "name": args.name,
-                "cut": False,
-                "force": force,
-                "terminal": "alive" if target_exists else "missing",
-                "host_stop": host_stop,
-                "error": "host stop failed; refusing to mark host-backed seat dead",
-            }
-            _record_stop(result, reg_agent, terminal_target)
-            return result
-
-    if target_exists and not force and not (reg_agent or {}).get("host_socket"):
+    if target_exists and not force:
         graceful_attempted = True
         terminal.send_text(terminal_target, graceful_exit, submit=True)
         time.sleep(1.0)
@@ -78,7 +52,6 @@ def run(args):
             "graceful_attempted": graceful_attempted,
             "graceful_exit": graceful_exit if graceful_attempted else None,
             "terminal": "killed",
-            "host_stop": host_stop,
         }
         _record_stop(result, reg_agent, terminal_target)
         return result
@@ -96,7 +69,6 @@ def run(args):
         "graceful_attempted": graceful_attempted,
         "graceful_exit": graceful_exit if graceful_attempted else None,
         "note": "window not found",
-        "host_stop": host_stop,
     }
     _record_stop(result, reg_agent, terminal_target)
     return result
@@ -139,7 +111,6 @@ def _record_stop(result: dict, reg_agent: dict | None, terminal_target: str) -> 
                 "graceful_exit": result.get("graceful_exit"),
                 "terminal": result.get("terminal"),
                 "note": result.get("note"),
-                "host_stop": result.get("host_stop"),
             },
             source_command="aura seat cut",
         )
