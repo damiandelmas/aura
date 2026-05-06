@@ -53,6 +53,7 @@ def test_tag_writes_allowed_keys_and_returns_updated_record(aura_state):
         target="test-fleet:engineer",
         set=["desks_identity_id=r_6be5b613"],
         unset=[],
+        expect_seat_instance_id=None,
     )
     result = seat_cmd._tag(args, registry)
 
@@ -78,6 +79,7 @@ def test_tag_writes_generic_identity_binding(aura_state):
             "identity_bind_confidence=explicit",
         ],
         unset=[],
+        expect_seat_instance_id=None,
     )
     result = seat_cmd._tag(args, registry)
 
@@ -100,6 +102,7 @@ def test_tag_unset_removes_key_when_value_empty(aura_state):
         target="test-fleet:engineer",
         set=["desks_identity_id="],
         unset=[],
+        expect_seat_instance_id=None,
     )
     result = seat_cmd._tag(args, registry)
 
@@ -119,6 +122,7 @@ def test_tag_explicit_unset_flag_removes_key(aura_state):
         target="test-fleet:engineer",
         set=[],
         unset=["flex_project_root"],
+        expect_seat_instance_id=None,
     )
     result = seat_cmd._tag(args, registry)
 
@@ -137,6 +141,7 @@ def test_tag_rejects_key_outside_allowlist(aura_state):
         target="test-fleet:engineer",
         set=["arbitrary_key=value"],
         unset=[],
+        expect_seat_instance_id=None,
     )
     result = seat_cmd._tag(args, registry)
 
@@ -156,11 +161,59 @@ def test_tag_rejects_target_without_registry_row(aura_state):
         target="test-fleet:nope",
         set=["desks_identity_id=r_x"],
         unset=[],
+        expect_seat_instance_id=None,
     )
     result = seat_cmd._tag(args, registry)
 
     assert result["ok"] is False
     assert result["error"] == "no-such-seat"
+
+
+def test_tag_rejects_stale_expected_seat_instance_id(aura_state):
+    from commands import seat as seat_cmd
+    from lib import registry
+
+    _seed_seat(seat_instance_id="si_current123")
+
+    args = argparse.Namespace(
+        seat_action="tag",
+        target="test-fleet:engineer",
+        set=["identity_provider=desks", "identity_id=r_new"],
+        unset=[],
+        expect_seat_instance_id="si_stale999",
+    )
+    result = seat_cmd._tag(args, registry)
+
+    assert result["ok"] is False
+    assert result["error"] == "seat-instance-id-mismatch"
+    assert result["actual_seat_instance_id"] == "si_current123"
+    record = registry.get_agent("test-fleet:engineer")
+    assert "identity_provider" not in record
+    assert "identity_id" not in record
+
+
+def test_tag_accepts_matching_expected_seat_instance_id(aura_state):
+    from commands import seat as seat_cmd
+    from lib import registry, session_ledger
+
+    _seed_seat(seat_instance_id="si_current123")
+
+    args = argparse.Namespace(
+        seat_action="tag",
+        target="test-fleet:engineer",
+        set=["identity_provider=desks", "identity_id=r_new"],
+        unset=[],
+        expect_seat_instance_id="si_current123",
+    )
+    result = seat_cmd._tag(args, registry)
+
+    assert result["ok"] is True
+    assert result["record"]["identity_provider"] == "desks"
+    assert result["record"]["identity_id"] == "r_new"
+    rows = session_ledger.iter_records()
+    matches = [r for r in rows if r.get("event") == "seat_metadata_tagged"]
+    assert matches[-1]["seat_instance_id"] == "si_current123"
+    assert matches[-1]["evidence"]["expected_seat_instance_id"] == "si_current123"
 
 
 def test_tag_appends_session_ledger_event_with_before_after(aura_state):
@@ -174,6 +227,7 @@ def test_tag_appends_session_ledger_event_with_before_after(aura_state):
         target="test-fleet:engineer",
         set=["desks_identity_id=r_new"],
         unset=[],
+        expect_seat_instance_id=None,
     )
     seat_cmd._tag(args, registry)
 
@@ -200,6 +254,7 @@ def test_tag_is_idempotent_on_no_change(aura_state):
         target="test-fleet:engineer",
         set=["desks_identity_id=r_same"],
         unset=[],
+        expect_seat_instance_id=None,
     )
     result = seat_cmd._tag(args, registry)
 
@@ -224,6 +279,7 @@ def test_tag_records_caller_from_environment(monkeypatch, aura_state):
         target="test-fleet:engineer",
         set=["desks_identity_id=r_6be5b613"],
         unset=[],
+        expect_seat_instance_id=None,
     )
     seat_cmd._tag(args, registry)
 

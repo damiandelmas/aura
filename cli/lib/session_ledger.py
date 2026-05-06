@@ -49,6 +49,7 @@ SNAPSHOT_FIELDS = (
     "fleet",
     "fleet_id",
     "seat_ref",
+    "seat_instance_id",
     "runtime",
     "command",
     "cwd",
@@ -82,6 +83,9 @@ SNAPSHOT_FIELDS = (
     "runtime_process_started_at_epoch",
     "runtime_process_argv",
     "status",
+    "identity_provider",
+    "identity_id",
+    "identity_label",
     "desks_identity_id",
     "flex_project_manifest",
     "flex_project_root",
@@ -148,6 +152,7 @@ def append_seat_event(
     session_id = _first_present(after_snap, before_snap, key="session_id") or _first_present(after_snap, before_snap, key="runtime_session_id")
     runtime_session_id = _first_present(after_snap, before_snap, key="runtime_session_id") or session_id
     launch_id = _first_present(after_snap, before_snap, key="aura_launch_id")
+    seat_instance_id = _first_present(after_snap, before_snap, key="seat_instance_id")
     identity_provider = _first_present(after_snap, before_snap, key="identity_provider")
     identity_id = _first_present(after_snap, before_snap, key="identity_id")
     identity_label = _first_present(after_snap, before_snap, key="identity_label")
@@ -176,6 +181,7 @@ def append_seat_event(
         "runtime_session_confidence": _first_present(after_snap, before_snap, key="runtime_session_confidence"),
         "runtime_session_source": _first_present(after_snap, before_snap, key="runtime_session_source"),
         "aura_launch_id": launch_id,
+        "seat_instance_id": seat_instance_id,
         "identity_provider": identity_provider,
         "identity_id": identity_id,
         "identity_label": identity_label,

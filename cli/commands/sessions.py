@@ -81,6 +81,7 @@ def run(args):
             "runtime_session_diagnostics": row.get("runtime_session_diagnostics"),
             "runtime_session_possible_matches": row.get("runtime_session_possible_matches"),
             "aura_launch_id": row.get("aura_launch_id"),
+            "seat_instance_id": row.get("seat_instance_id"),
             "pane_ref": row.get("pane_ref"),
             "cwd": row.get("runtime_session_cwd") or row.get("cwd") or row.get("workdir"),
             "identity_provider": seat_schema.identity_provider_for(row),

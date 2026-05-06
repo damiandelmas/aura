@@ -62,6 +62,12 @@ def main():
                          help="JSONL session to resume")
     p_spawn.add_argument("--resume-session", metavar="SESSION_ID",
                          help="Runtime-native session id to resume for terminal runtimes such as Codex")
+    p_spawn.add_argument("--identity-provider", metavar="PROVIDER",
+                         help="Explicit external identity provider for this live spawn, e.g. desks")
+    p_spawn.add_argument("--identity-id", metavar="ID",
+                         help="Explicit external identity id for this live spawn")
+    p_spawn.add_argument("--identity-label", metavar="LABEL",
+                         help="Human-readable external identity label for this live spawn")
     p_spawn.add_argument("--at", "-a", metavar="REF",
                          help="Slice at: content search, 'L225' (line), '42' (msg#), or UUID")
     p_spawn.add_argument("--slice", "-s", metavar="N",
@@ -171,6 +177,13 @@ def main():
                               help="Include hidden/internal seats")
     p_seat_sweep.add_argument("--confirm", action="store_true",
                               help="Remove stale registry records; default is dry-run")
+    p_seat_audit = seat_sub.add_parser(
+        "audit",
+        help="Read-only audit of current seat projection risks",
+    )
+    p_seat_audit.add_argument("--fleet", "-f", metavar="NAME", help="Limit audit to one fleet")
+    p_seat_audit.add_argument("--include-hidden", action="store_true",
+                              help="Include hidden/internal seats")
     p_seat_archive = seat_sub.add_parser(
         "archive",
         help="Move one non-live current seat row to historical ledger and remove it from current registry",
@@ -205,6 +218,8 @@ def main():
                             help="Opaque key=value pair; repeatable. Empty value unsets.")
     p_seat_tag.add_argument("--unset", action="append", default=[], metavar="KEY",
                             help="Remove a key entirely; repeatable.")
+    p_seat_tag.add_argument("--expect-seat-instance-id", metavar="ID",
+                            help="Only tag if the current row has this seat_instance_id.")
 
 
     # write

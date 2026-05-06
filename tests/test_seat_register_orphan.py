@@ -61,6 +61,7 @@ def test_register_orphan_inserts_record_for_existing_pane(monkeypatch, aura_stat
     assert record["runtime"] == "codex"
     assert record["pane_ref"] == "tmux:flex-leaders-2:%48"
     assert record["registered_via"] == "register-orphan"
+    assert record["seat_instance_id"].startswith("si_")
     assert record["registered_pane_pid"] == 1848341
     assert record["runtime_session_binding"] == "unbound"
     assert record["aura_launch_id"] is None
@@ -186,6 +187,8 @@ def test_register_orphan_writes_session_ledger_event(monkeypatch, aura_state):
     assert matching, "expected a seat_registered_orphan ledger event"
     row = matching[-1]
     assert row["seat_ref"] == "flex-leaders-2:engineer"
+    assert row["seat_instance_id"] == result["record"]["seat_instance_id"]
+    assert row["after"]["seat_instance_id"] == result["record"]["seat_instance_id"]
     assert row["evidence"]["pane_ref"] == "tmux:flex-leaders-2:%48"
     assert row["evidence"]["runtime"] == "codex"
     # before is null because no prior row existed; ledger snapshot omits None.

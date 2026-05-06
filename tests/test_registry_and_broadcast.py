@@ -432,6 +432,68 @@ def test_seat_sweep_dry_run_lists_stale_registered_seats(tmp_path, monkeypatch):
     assert registry.get_agent("stale", fleet="fleet") is not None
 
 
+def test_seat_audit_reports_identity_and_instance_risks_without_mutation(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import seat
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "alive",
+        "fleet": "fleet",
+        "runtime": "codex",
+        "pane_ref": "tmux:fleet:%1",
+        "seat_instance_id": "si_alive",
+        "runtime_session_id": "session-1",
+        "identity_provider": "desks",
+        "identity_id": "r_alive",
+    })
+    registry.upsert_agent({
+        "name": "stale",
+        "fleet": "fleet",
+        "runtime": "codex",
+        "status": "dead",
+        "pane_ref": "tmux:fleet:%2",
+        "desks_identity_id": "r_stale",
+    })
+
+    before = registry.read_registry()
+
+    class FakeTerminal:
+        @staticmethod
+        def configure_session(fleet):
+            return fleet
+
+        @staticmethod
+        def target_exists(target):
+            return target == "tmux:fleet:%1"
+
+    monkeypatch.setattr(seat, "_pane_exists_anywhere", lambda pane_ref: False)
+
+    result = seat._audit(argparse.Namespace(
+        seat_action="audit",
+        fleet="fleet",
+        include_hidden=False,
+    ), registry, FakeTerminal)
+
+    assert result["ok"] is True
+    assert result["schema"] == "aura.seat_audit.v1"
+    assert result["read_only"] is True
+    assert result["checked"] == 2
+    by_ref = {row["seat_ref"]: row for row in result["rows"]}
+    assert by_ref["fleet:alive"]["risk_flags"] == []
+    stale_flags = set(by_ref["fleet:stale"]["risk_flags"])
+    assert {
+        "missing-pane",
+        "dead-process",
+        "identity-on-dead-row",
+        "missing-seat-instance-id",
+        "runtime-session-missing",
+        "legacy-desks-alias-only",
+    } <= stale_flags
+    assert by_ref["fleet:stale"]["suggested_action"] == "archive-or-restore"
+    assert registry.read_registry() == before
+
+
 def test_seat_sweep_missing_active_seat_is_suspect_not_stale(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     from commands import seat

@@ -21,14 +21,21 @@ def test_append_seat_event_normalizes_before_after(monkeypatch, tmp_path):
         "name": "engineer",
         "fleet": "flex-leaders",
         "runtime": "codex",
+        "seat_instance_id": "si_before123",
         "runtime_session_id": "old-session",
+        "identity_provider": "desks",
+        "identity_id": "r_before",
+        "identity_label": "old:name",
         "cwd": "/repo",
         "ignored_noise": "nope",
     }
     after = {
         **before,
         "fleet": "flex-leaders-2",
+        "seat_instance_id": "si_after456",
         "runtime_session_id": "new-session",
+        "identity_id": "r_after",
+        "identity_label": "new:name",
         "desks_role_id": "leader-engineer",
     }
 
@@ -43,9 +50,17 @@ def test_append_seat_event_normalizes_before_after(monkeypatch, tmp_path):
     assert event["schema"] == "aura.seat_history.v1"
     assert event["event_id"].startswith("aura-seat-history-")
     assert event["seat_ref"] == "flex-leaders-2:engineer"
+    assert event["seat_instance_id"] == "si_after456"
+    assert event["identity_provider"] == "desks"
+    assert event["identity_id"] == "r_after"
+    assert event["identity_label"] == "new:name"
     assert event["runtime_session_id"] == "new-session"
     assert event["before"]["seat_ref"] == "flex-leaders:engineer"
+    assert event["before"]["seat_instance_id"] == "si_before123"
+    assert event["before"]["identity_id"] == "r_before"
     assert event["after"]["seat_ref"] == "flex-leaders-2:engineer"
+    assert event["after"]["seat_instance_id"] == "si_after456"
+    assert event["after"]["identity_id"] == "r_after"
     assert "ignored_noise" not in event["before"]
     assert "desks_role_id" not in event
     assert "desks_role_id" not in event["after"]

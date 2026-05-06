@@ -12,12 +12,17 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from typing import Any
+import uuid
 
 from lib import state
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def new_seat_instance_id() -> str:
+    return f"si_{uuid.uuid4().hex[:12]}"
 
 
 def registry_path():

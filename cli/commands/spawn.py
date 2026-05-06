@@ -356,6 +356,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     native_state_ref = workspace_state.infer_native_state_ref(workdir_path, spec)
     fleet = getattr(terminal, "SESSION_NAME", None) or registry.current_fleet(default="aura")
     launch_id = f"aura-launch-{uuid.uuid4().hex[:16]}"
+    seat_instance_id = registry.new_seat_instance_id()
 
     launch_env = {
         "AURA_AGENT_NAME": args.name,
@@ -368,7 +369,28 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "FORCE_COLOR": "1",
         "CLICOLOR_FORCE": "1",
     }
-    role_meta = getattr(args, "_role_manifest_meta", None) or {}
+    role_meta = dict(getattr(args, "_role_manifest_meta", None) or {})
+    identity_provider_arg = getattr(args, "identity_provider", None)
+    identity_id_arg = getattr(args, "identity_id", None)
+    identity_label_arg = getattr(args, "identity_label", None)
+    if identity_provider_arg or identity_id_arg or identity_label_arg:
+        if not identity_provider_arg or not identity_id_arg:
+            return result_fn({
+                "ok": False,
+                "error": "identity-provider-and-id-required",
+                "detail": "--identity-provider and --identity-id are required when passing spawn identity metadata",
+                "name": args.name,
+            })
+        role_meta.update({
+            "identity_provider": identity_provider_arg,
+            "identity_id": identity_id_arg,
+            "identity_bind_source": "aura-spawn",
+            "identity_bind_confidence": "explicit",
+        })
+        if identity_label_arg:
+            role_meta["identity_label"] = identity_label_arg
+        if identity_provider_arg == "desks":
+            role_meta["desks_identity_id"] = identity_id_arg
     flex_manifest, flex_root = _resolve_launch_flex_project(workdir_path, role_meta)
     flex_meta = {}
     if flex_manifest and flex_root:
@@ -489,6 +511,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "runtime_home": _runtime_home(runtime, profile),
         "native_state_ref": native_state_ref,
         "aura_launch_id": launch_id,
+        "seat_instance_id": seat_instance_id,
         "source_session_id": resume_session,
         "runtime_session_mode": "native-resume" if resume_session else None,
         "isolation": "shared-native-thread" if resume_session and runtime == "codex" else None,
@@ -540,6 +563,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "profile": profile if runtime == "hermes" else None,
             "command": command,
             "aura_launch_id": launch_id,
+            "seat_instance_id": seat_instance_id,
             "source_session_id": resume_session,
             "runtime_session_mode": "native-resume" if resume_session else None,
             "isolation": "shared-native-thread" if resume_session and runtime == "codex" else None,
@@ -583,6 +607,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "runtime_home": _runtime_home(runtime, profile),
         "native_state_ref": native_state_ref,
         "aura_launch_id": launch_id,
+        "seat_instance_id": seat_instance_id,
         "source_session_id": resume_session,
         "runtime_session_mode": "native-resume" if resume_session else None,
         "isolation": "shared-native-thread" if resume_session and runtime == "codex" else None,

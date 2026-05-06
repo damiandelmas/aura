@@ -114,6 +114,7 @@ def run(args):
             "runtime_session_env": a.get("runtime_session_env"),
             "runtime_session_cwd": a.get("runtime_session_cwd"),
             "aura_launch_id": a.get("aura_launch_id"),
+            "seat_instance_id": a.get("seat_instance_id"),
             "status": status,
             "mode": a.get("delivery_mode", "immediate"),
             "registered": bool(a.get("socket_path")) or bool(a.get("registered")),

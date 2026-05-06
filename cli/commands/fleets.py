@@ -192,6 +192,7 @@ def fleet_history(target: str | None) -> dict:
                 "cwd": cwd,
                 "runtime_session_id": session_id,
                 "runtime_session_binding": binding.get("runtime_session_binding"),
+                "seat_instance_id": snap.get("seat_instance_id"),
                 "identity_provider": seat_schema.identity_provider_for(snap),
                 "identity_id": seat_schema.identity_id_for(snap),
                 "identity_label": snap.get("identity_label") or snap.get("desks_current_name"),

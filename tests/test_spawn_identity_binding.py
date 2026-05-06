@@ -50,6 +50,9 @@ def _args(tmp_path, **overrides):
         "prompt": None,
         "as_pane": True,
         "_role_manifest_meta": {},
+        "identity_provider": None,
+        "identity_id": None,
+        "identity_label": None,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -70,6 +73,7 @@ def test_fresh_spawn_does_not_inherit_stale_identity_binding(aura_state, tmp_pat
         "identity_provider": "desks",
         "identity_id": "r_old",
         "identity_label": "old:name",
+        "seat_instance_id": "si_oldoldold01",
         "runtime_session_id": "old-session",
         "runtime_session_binding": "bound",
     })
@@ -79,6 +83,8 @@ def test_fresh_spawn_does_not_inherit_stale_identity_binding(aura_state, tmp_pat
     assert result["ok"] is True
     record = registry.get_agent("unitfleet:worker")
     assert record["pane_ref"] == "tmux:unitfleet:%9"
+    assert record["seat_instance_id"].startswith("si_")
+    assert record["seat_instance_id"] != "si_oldoldold01"
     assert "desks_identity_id" not in record
     assert "identity_provider" not in record
     assert "identity_id" not in record
@@ -113,3 +119,45 @@ def test_spawn_from_desks_metadata_sets_generic_identity_binding(aura_state, tmp
     assert FakeTerminal.last_env["AURA_IDENTITY_PROVIDER"] == "desks"
     assert FakeTerminal.last_env["AURA_IDENTITY_ID"] == "r_new"
     assert FakeTerminal.last_env["AURA_IDENTITY_LABEL"] == "flex:engine:lead"
+
+
+def test_spawn_identity_args_set_generic_identity_in_one_operation(aura_state, tmp_path):
+    from commands import spawn
+    from lib import registry
+
+    args = _args(
+        tmp_path,
+        identity_provider="desks",
+        identity_id="r_direct",
+        identity_label="flex:systems:operations:lead",
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda base: base)
+
+    assert result["ok"] is True
+    assert result["identity_provider"] == "desks"
+    assert result["identity_id"] == "r_direct"
+    assert result["identity_label"] == "flex:systems:operations:lead"
+    assert result["desks_identity_id"] == "r_direct"
+    assert result["seat_instance_id"].startswith("si_")
+    record = registry.get_agent("unitfleet:worker")
+    assert record["identity_provider"] == "desks"
+    assert record["identity_id"] == "r_direct"
+    assert record["identity_label"] == "flex:systems:operations:lead"
+    assert record["desks_identity_id"] == "r_direct"
+    assert record["seat_instance_id"] == result["seat_instance_id"]
+    assert FakeTerminal.last_env["AURA_IDENTITY_PROVIDER"] == "desks"
+    assert FakeTerminal.last_env["AURA_IDENTITY_ID"] == "r_direct"
+
+
+def test_spawn_identity_args_require_provider_and_id(aura_state, tmp_path):
+    from commands import spawn
+
+    result = spawn._spawn_terminal_runtime(
+        _args(tmp_path, identity_provider="desks"),
+        FakeTerminal,
+        lambda base: base,
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "identity-provider-and-id-required"

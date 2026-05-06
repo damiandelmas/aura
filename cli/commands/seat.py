@@ -829,6 +829,7 @@ def _restart(args, registry, terminal) -> dict:
     old_pid = terminal.pane_pid(target) if hasattr(terminal, "pane_pid") else None
     old = {
         "runtime_session_id": record.get("runtime_session_id") or record.get("session_id"),
+        "seat_instance_id": record.get("seat_instance_id"),
         "pid": old_pid,
         "pane_ref": record.get("pane_ref"),
         "terminal_ref": record.get("terminal_ref"),
@@ -850,6 +851,7 @@ def _restart(args, registry, terminal) -> dict:
         }
 
     launch_id = f"aura-launch-{uuid.uuid4().hex[:16]}"
+    seat_instance_id = registry.new_seat_instance_id()
     launch_env = {
         "AURA_AGENT_NAME": name,
         "AURA_SEAT": name,
@@ -861,11 +863,34 @@ def _restart(args, registry, terminal) -> dict:
         "FORCE_COLOR": "1",
         "CLICOLOR_FORCE": "1",
     }
-    role_meta = plan.get("role_meta") or {}
+    role_meta = dict(plan.get("role_meta") or {})
+    carried_identity = {
+        key: record.get(key)
+        for key in (
+            "identity_provider",
+            "identity_id",
+            "identity_label",
+            "identity_bound_at",
+            "identity_bind_source",
+            "identity_bind_confidence",
+            "desks_identity_id",
+        )
+        if record.get(key) is not None
+    }
+    explicit_role_package = bool(getattr(args, "manifest", None) or getattr(args, "role_home", None))
+    identity_carried_forward = bool(carried_identity) and not explicit_role_package
+    if identity_carried_forward:
+        role_meta.update(carried_identity)
     if role_meta:
         from commands import spawn
 
         launch_env.update(spawn._desks_launch_env(role_meta))
+        if role_meta.get("identity_provider"):
+            launch_env["AURA_IDENTITY_PROVIDER"] = str(role_meta["identity_provider"])
+        if role_meta.get("identity_id"):
+            launch_env["AURA_IDENTITY_ID"] = str(role_meta["identity_id"])
+        if role_meta.get("identity_label"):
+            launch_env["AURA_IDENTITY_LABEL"] = str(role_meta["identity_label"])
     if role_meta.get("flex_project_manifest"):
         launch_env["FLEX_PROJECT_MANIFEST"] = role_meta["flex_project_manifest"]
     if role_meta.get("flex_project_root"):
@@ -978,6 +1003,7 @@ def _restart(args, registry, terminal) -> dict:
         "cwd": plan["cwd"],
         "workdir": plan["cwd"],
         "aura_launch_id": launch_id,
+        "seat_instance_id": seat_instance_id,
         "previous_aura_launch_id": old.get("aura_launch_id"),
         "previous_runtime_session_id": old.get("runtime_session_id"),
         "restart_from_session_id": old.get("runtime_session_id"),
@@ -1049,6 +1075,7 @@ def _restart(args, registry, terminal) -> dict:
     new_pid = terminal.pane_pid(new_pane_ref or terminal_ref) if hasattr(terminal, "pane_pid") else None
     new = {
         "runtime_session_id": updated.get("runtime_session_id"),
+        "seat_instance_id": updated.get("seat_instance_id"),
         "pid": new_pid,
         "pane_ref": new_pane_ref,
         "terminal_ref": terminal_ref,
@@ -1080,6 +1107,9 @@ def _restart(args, registry, terminal) -> dict:
             "cwd": plan["cwd"],
             "old_runtime_session_id": old.get("runtime_session_id"),
             "new_runtime_session_id": new.get("runtime_session_id"),
+            "old_seat_instance_id": old.get("seat_instance_id"),
+            "new_seat_instance_id": new.get("seat_instance_id"),
+            "identity_carried_forward": identity_carried_forward,
             "old_pid": old.get("pid"),
             "new_pid": new.get("pid"),
             "old_pane_ref": old.get("pane_ref"),
@@ -1099,6 +1129,9 @@ def _restart(args, registry, terminal) -> dict:
                 "restart_id": restart_id,
                 "old_runtime_session_id": old.get("runtime_session_id"),
                 "new_runtime_session_id": new.get("runtime_session_id"),
+                "old_seat_instance_id": old.get("seat_instance_id"),
+                "new_seat_instance_id": new.get("seat_instance_id"),
+                "identity_carried_forward": identity_carried_forward,
                 "old_pid": old.get("pid"),
                 "new_pid": new.get("pid"),
                 "old_pane_ref": old.get("pane_ref"),
@@ -1112,6 +1145,9 @@ def _restart(args, registry, terminal) -> dict:
             restart_id=restart_id,
             old_runtime_session_id=old.get("runtime_session_id"),
             new_runtime_session_id=new.get("runtime_session_id"),
+            old_seat_instance_id=old.get("seat_instance_id"),
+            new_seat_instance_id=new.get("seat_instance_id"),
+            identity_carried_forward=identity_carried_forward,
             old_pid=old.get("pid"),
             new_pid=new.get("pid"),
             old_pane_ref=old.get("pane_ref"),
@@ -1207,6 +1243,17 @@ def _tag(args, registry, terminal=None) -> dict:
         return {"ok": False, "error": "no-such-seat",
                 "detail": f"registry has no row for {target!r}"}
 
+    expected_instance_id = getattr(args, "expect_seat_instance_id", None)
+    current_instance_id = record.get("seat_instance_id")
+    if expected_instance_id and current_instance_id != expected_instance_id:
+        return {
+            "ok": False,
+            "error": "seat-instance-id-mismatch",
+            "target": target,
+            "expected_seat_instance_id": expected_instance_id,
+            "actual_seat_instance_id": current_instance_id,
+        }
+
     set_pairs: dict[str, str] = {}
     for raw in getattr(args, "set", None) or []:
         parsed = _parse_set_pair(raw)
@@ -1272,6 +1319,7 @@ def _tag(args, registry, terminal=None) -> dict:
                 "set_keys": sorted(set_pairs.keys()),
                 "unset_keys": sorted(unset_keys),
                 "changed_keys": changed_keys,
+                "expected_seat_instance_id": expected_instance_id,
                 "rehome": os.environ.get("DESKS_REHOME") == "true",
                 "before": before,
                 "after": after,
@@ -1452,6 +1500,7 @@ def _register_orphan(args, registry, terminal=None, ledger=None) -> dict:
         "runtime_session_binding": "unbound",
         "runtime_session_bind_method": None,
         "aura_launch_id": None,
+        "seat_instance_id": registry.new_seat_instance_id(),
     }
     inserted = registry.upsert_agent(record)
     try:
@@ -1590,6 +1639,93 @@ def _sweep(args, registry, terminal) -> dict:
     }
 
 
+def _audit(args, registry, terminal) -> dict:
+    include_hidden = bool(getattr(args, "include_hidden", False))
+    agents = registry.list_agents(getattr(args, "fleet", None), include_hidden=include_hidden)
+    rows = []
+    risk_counts: dict[str, int] = {}
+    for agent in agents:
+        fleet = agent.get("fleet")
+        if fleet and hasattr(terminal, "configure_session"):
+            terminal.configure_session(fleet)
+        targets = _seat_targets(agent)
+        alive_targets = [target for target in targets if _target_exists(terminal, target)]
+        pane_exists = _pane_exists_anywhere(agent.get("pane_ref"))
+        has_identity = bool(
+            agent.get("identity_provider")
+            or agent.get("identity_id")
+            or agent.get("identity_label")
+            or agent.get("desks_identity_id")
+        )
+        has_generic_identity = bool(agent.get("identity_provider") or agent.get("identity_id"))
+        risk_flags = []
+        if not alive_targets:
+            risk_flags.append("missing-pane")
+        if not alive_targets and not pane_exists:
+            risk_flags.append("dead-process")
+        if has_identity and not alive_targets:
+            risk_flags.append("identity-on-dead-row")
+        if not agent.get("seat_instance_id"):
+            risk_flags.append("missing-seat-instance-id")
+        if not agent.get("runtime_session_id") and agent.get("runtime") not in ("shell", "command"):
+            risk_flags.append("runtime-session-missing")
+        if agent.get("desks_identity_id") and not has_generic_identity:
+            risk_flags.append("legacy-desks-alias-only")
+        seat = agent.get("name") or agent.get("seat")
+        expected_ref = registry.seat_ref(fleet, seat)
+        if (agent.get("seat_ref") and agent.get("seat_ref") != expected_ref) or (
+            agent.get("terminal_ref") and agent.get("terminal_ref") not in targets
+        ):
+            risk_flags.append("reused-address-suspected")
+        for flag in risk_flags:
+            risk_counts[flag] = risk_counts.get(flag, 0) + 1
+        if "dead-process" in risk_flags:
+            suggested_action = "archive-or-restore"
+        elif "missing-pane" in risk_flags:
+            suggested_action = "inspect-or-register-orphan"
+        elif "missing-seat-instance-id" in risk_flags:
+            suggested_action = "restart-or-repair-current-projection"
+        elif "legacy-desks-alias-only" in risk_flags:
+            suggested_action = "repair-generic-identity-binding"
+        else:
+            suggested_action = "none"
+        rows.append({
+            "seat": seat,
+            "fleet": fleet,
+            "seat_ref": expected_ref,
+            "status": agent.get("status"),
+            "runtime": agent.get("runtime"),
+            "terminal_ref": agent.get("terminal_ref"),
+            "backend_ref": agent.get("backend_ref"),
+            "pane_ref": agent.get("pane_ref"),
+            "checked_targets": targets,
+            "alive_targets": alive_targets,
+            "pane_exists_anywhere": pane_exists,
+            "runtime_session_id": agent.get("runtime_session_id"),
+            "seat_instance_id": agent.get("seat_instance_id"),
+            "identity_provider": agent.get("identity_provider") or ("desks" if agent.get("desks_identity_id") else None),
+            "identity_id": agent.get("identity_id") or agent.get("desks_identity_id"),
+            "identity_label": agent.get("identity_label") or agent.get("desks_current_name"),
+            "desks_identity_id": agent.get("desks_identity_id"),
+            "last_seen": agent.get("last_seen"),
+            "risk_flags": risk_flags,
+            "suggested_action": suggested_action,
+        })
+
+    risky = [row for row in rows if row["risk_flags"]]
+    return {
+        "ok": True,
+        "schema": "aura.seat_audit.v1",
+        "read_only": True,
+        "fleet": getattr(args, "fleet", None),
+        "include_hidden": include_hidden,
+        "checked": len(rows),
+        "risky_count": len(risky),
+        "risk_counts": risk_counts,
+        "rows": rows,
+    }
+
+
 def _archive(args, registry, terminal) -> dict:
     target = getattr(args, "target", None) or ""
     if not target or target.count(":") != 1 or target.startswith(":") or target.endswith(":"):
@@ -1680,6 +1816,10 @@ def run(args):
         from lib import terminal
 
         return _sweep(args, registry, terminal)
+    if action == "audit":
+        from lib import terminal
+
+        return _audit(args, registry, terminal)
     if action == "archive":
         from lib import terminal
 

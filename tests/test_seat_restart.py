@@ -131,7 +131,14 @@ def test_restart_preserves_seat_and_records_seat_history(monkeypatch, tmp_path):
     from lib import registry
 
     RestartTerminal.reset()
-    registry.upsert_agent(_record(tmp_path))
+    registry.upsert_agent(_record(
+        tmp_path,
+        seat_instance_id="si_oldrestart1",
+        identity_provider="desks",
+        identity_id="r_restart",
+        identity_label="flex:engine:lead",
+        desks_identity_id="r_restart",
+    ))
 
     result = seat._restart(_args(prompt="fresh start"), registry, RestartTerminal)
 
@@ -139,8 +146,11 @@ def test_restart_preserves_seat_and_records_seat_history(monkeypatch, tmp_path):
     assert result["schema"] == "aura.seat_restart.v1"
     assert result["seat_ref"] == "unitfleet:engineer"
     assert result["old"]["runtime_session_id"] == "old-session"
+    assert result["old"]["seat_instance_id"] == "si_oldrestart1"
     assert result["old"]["pid"] == 111
     assert result["new"]["pid"] == 222
+    assert result["new"]["seat_instance_id"].startswith("si_")
+    assert result["new"]["seat_instance_id"] != "si_oldrestart1"
     assert result["new"]["pane_ref"] == "tmux:unitfleet:%1"
     assert result["same_viewport"] is True
     assert RestartTerminal.killed == []
@@ -154,6 +164,9 @@ def test_restart_preserves_seat_and_records_seat_history(monkeypatch, tmp_path):
     assert env["AURA_SEAT"] == "engineer"
     assert env["AURA_FLEET"] == "unitfleet"
     assert env["AURA_LAUNCH_ID"].startswith("aura-launch-")
+    assert env["AURA_IDENTITY_PROVIDER"] == "desks"
+    assert env["AURA_IDENTITY_ID"] == "r_restart"
+    assert env["AURA_IDENTITY_LABEL"] == "flex:engine:lead"
     assert RestartTerminal.sent[0][0] == "tmux:unitfleet:%1"
     assert "fresh start" in RestartTerminal.sent[0][1]
 
@@ -166,6 +179,9 @@ def test_restart_preserves_seat_and_records_seat_history(monkeypatch, tmp_path):
     assert updated["pane_ref"] == "tmux:unitfleet:%1"
     assert updated["terminal_ref"] == "unitfleet:engineer"
     assert updated["restart_count"] == 1
+    assert updated["seat_instance_id"] == result["new"]["seat_instance_id"]
+    assert updated["identity_provider"] == "desks"
+    assert updated["identity_id"] == "r_restart"
 
     rows = [
         json.loads(line)
@@ -174,8 +190,13 @@ def test_restart_preserves_seat_and_records_seat_history(monkeypatch, tmp_path):
     assert any(row["event"] == "seat_restart" for row in rows)
     seat_history = [row for row in rows if row["event"] == "seat_restarted"][-1]
     assert seat_history["schema"] == "aura.seat_history.v1"
+    assert seat_history["before"]["seat_instance_id"] == "si_oldrestart1"
+    assert seat_history["after"]["seat_instance_id"] == result["new"]["seat_instance_id"]
     assert seat_history["evidence"]["old_runtime_session_id"] == "old-session"
     assert seat_history["evidence"]["new_pane_ref"] == "tmux:unitfleet:%1"
+    assert seat_history["evidence"]["old_seat_instance_id"] == "si_oldrestart1"
+    assert seat_history["evidence"]["new_seat_instance_id"] == result["new"]["seat_instance_id"]
+    assert seat_history["evidence"]["identity_carried_forward"] is True
 
 
 def test_restart_uses_native_resume_for_codex(monkeypatch, tmp_path):
