@@ -342,7 +342,7 @@ def _confirm_delivery(target, message, sender, timeout=10, interval=2):
 
     # Timeout — message not confirmed. Warn sender.
     warning = (
-        f"[aura] Message to {target} may not have been delivered after {timeout}s. "
+        f"[aura] Message to {target} was not confirmed after {timeout}s. "
         f"Try: aura send {target} \"\" --nudge"
     )
 

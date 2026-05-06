@@ -125,9 +125,9 @@ def main():
     p_send.add_argument("--transport", choices=["auto", "tmux", "mesh"], default="auto",
                         help="Delivery transport: auto uses tmux window if present, otherwise mesh")
     p_send.add_argument("--dedupe-key", metavar="KEY",
-                        help="Skip send if this key was already delivered to the target")
+                        help="Skip send if this key was already attempted for the target")
     p_send.add_argument("--force", action="store_true",
-                        help="Send even if dedupe-key was already delivered")
+                        help="Send even if dedupe-key was already attempted")
     p_send.add_argument("--allow-hidden", action="store_true",
                         help="Allow sending to hidden/internal seats such as Ether panels")
     p_send.add_argument("--defer-if-busy", action="store_true",
@@ -219,7 +219,7 @@ def main():
         help="Adopt an unregistered live tmux pane into the Aura registry.",
     )
     p_seat_register.add_argument("target", help="FLEET:SEAT")
-    p_seat_register.add_argument("--pane", help="Explicit tmux pane ref, e.g. tmux:flex-leaders-2:%48")
+    p_seat_register.add_argument("--pane", help="Explicit tmux pane ref, e.g. tmux:flex-leaders-2:%%48")
     p_seat_register.add_argument("--runtime", help="Runtime name (codex, claude-code, shell, command)")
     p_seat_register.add_argument("--cwd", help="Override the registered cwd; defaults to pane current path")
     p_seat_tag = seat_sub.add_parser(
@@ -275,7 +275,7 @@ def main():
     p_broadcast.add_argument("--dedupe-key", metavar="KEY",
                              help="Base dedupe key; target name is appended")
     p_broadcast.add_argument("--force", action="store_true",
-                             help="Send even if dedupe-key was already delivered")
+                             help="Send even if dedupe-key was already attempted")
     p_broadcast.add_argument("--include-shell", action="store_true",
                              help="Also send to unregistered shell windows like bash")
     p_broadcast.add_argument("--allow-hidden", action="store_true",
