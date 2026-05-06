@@ -417,3 +417,216 @@ def test_queue_command_infers_current_seat_sender(tmp_path):
     assert result["ok"] is True
     listed = run_aura(["queue", "--list", "--status", "pending"], env)
     assert listed["records"][0]["sender"] == "unitfleet:lead"
+
+
+def test_event_subscribe_reports_creates_named_subscription(tmp_path):
+    env = {
+        **os.environ,
+        "AURA_STATE_DIR": str(tmp_path / ".aura"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+    result = run_aura(
+        [
+            "event",
+            "subscribe",
+            "reports",
+            "--name",
+            "unit-checkins",
+            "--fleet",
+            "unitfleet",
+            "--state",
+            "blocked",
+            "--state",
+            "complete",
+            "--to",
+            "unitfleet:lead",
+        ],
+        env,
+    )
+
+    subscription = result["subscription"]
+    assert result["ok"] is True
+    assert result["schema"] == "aura.event.report_subscription_ack.v1"
+    assert subscription["name"] == "unit-checkins"
+    assert subscription["fleet"] == "unitfleet"
+    assert subscription["states"] == ["blocked", "complete"]
+    assert subscription["to"] == "unitfleet:lead"
+
+    listed = run_aura(["event", "subscriptions"], env)
+    assert listed["subscriptions"][0]["subscription_id"] == subscription["subscription_id"]
+
+    shown = run_aura(["event", "subscription", "show", "unit-checkins"], env)
+    assert shown["subscription"]["subscription_id"] == subscription["subscription_id"]
+
+
+def test_event_subscribe_reports_requires_source_filter(tmp_path):
+    env = {
+        **os.environ,
+        "AURA_STATE_DIR": str(tmp_path / ".aura"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+    raw = subprocess.run(
+        [
+            sys.executable,
+            str(AURA),
+            "event",
+            "subscribe",
+            "reports",
+            "--name",
+            "too-broad",
+            "--to",
+            "unitfleet:lead",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    result = json.loads(raw.stdout)
+
+    assert raw.returncode == 1
+    assert result["ok"] is False
+    assert result["error"] == "report subscriptions require --fleet or --target"
+
+
+def test_event_subscribe_reports_rejects_duplicate_active_name(tmp_path):
+    env = {
+        **os.environ,
+        "AURA_STATE_DIR": str(tmp_path / ".aura"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+    args = [
+        "event",
+        "subscribe",
+        "reports",
+        "--name",
+        "unit-checkins",
+        "--fleet",
+        "unitfleet",
+        "--to",
+        "unitfleet:lead",
+    ]
+    first = run_aura(args, env)
+    raw = subprocess.run(
+        [sys.executable, str(AURA), *args],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    second = json.loads(raw.stdout)
+
+    assert first["ok"] is True
+    assert raw.returncode == 1
+    assert second["error"] == "report subscription already exists: unit-checkins"
+
+
+def test_report_command_schedules_report_subscription_after_ack(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+
+    from commands import report as report_cmd
+    from lib import report_subscriptions
+
+    started = []
+    monkeypatch.setattr(report_cmd, "_start_report_subscription_worker", lambda report_id: started.append(report_id))
+
+    report_subscriptions.create(
+        name="unit-checkins",
+        to="unitfleet:lead",
+        fleet="unitfleet",
+        states=["complete"],
+    )
+    args = argparse.Namespace(
+        report_action="complete",
+        work="done",
+        done=[],
+        receipt=[],
+        next_action=None,
+        blocker=[],
+        ack=True,
+    )
+    result = report_cmd.run(args)
+
+    assert result["ok"] is True
+    assert result["scheduled_report_subscriptions"] == 1
+    assert result["report_subscription_delay_seconds"] == 1.5
+    assert started == [result["report_id"]]
+    subscription = report_subscriptions.load("unit-checkins")
+    scheduled = subscription["reports"][result["report_id"]]
+    assert scheduled["status"] == "scheduled"
+    assert scheduled["release_delay_seconds"] == 1.5
+
+
+def test_paused_report_subscription_does_not_schedule(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+
+    from lib import report_subscriptions, reports
+
+    report_subscriptions.create(
+        name="unit-checkins",
+        to="unitfleet:lead",
+        fleet="unitfleet",
+        states=["complete"],
+    )
+    report_subscriptions.set_status("unit-checkins", "paused")
+    report = reports.append_report({"state": "complete", "work": "done"})
+
+    assert reports.schedule_report_subscriptions(report) == []
+
+
+def test_event_release_report_subscriptions_sends_scheduled_notification(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+
+    from commands import event as event_cmd, send
+    from lib import report_subscriptions, reports
+
+    sent = []
+
+    def fake_send(args):
+        sent.append((args.target, args.message, args.sender, args.dedupe_key))
+        return {"ok": True, "message_id": "aura-msg-report-sub"}
+
+    monkeypatch.setattr(send, "run", fake_send)
+
+    subscription = report_subscriptions.create(
+        name="unit-checkins",
+        to="unitfleet:lead",
+        fleet="unitfleet",
+        states=["complete"],
+    )
+    report = reports.append_report({
+        "state": "complete",
+        "work": "done",
+        "receipts": ["tests passed"],
+        "next": "move on",
+    })
+    scheduled = reports.schedule_report_subscriptions(report, delay_seconds=1.5)
+    assert scheduled[0]["reports"][report["report_id"]]["status"] == "scheduled"
+
+    result = event_cmd.run(argparse.Namespace(
+        event_action="release-report-subscriptions",
+        ref=report["report_id"],
+        delay="0",
+    ))
+
+    assert result["ok"] is True
+    assert result["released"] == 1
+    assert sent[0][0] == "unitfleet:lead"
+    assert sent[0][2] == "aura-event"
+    assert sent[0][3] == f"report-sub:{subscription['subscription_id']}:{report['report_id']}"
+    assert "[AURA REPORT state=complete from=unitfleet:worker]" in sent[0][1]
+    assert "work: done" in sent[0][1]
+    assert "report_id: " + report["report_id"] in sent[0][1]
+    saved = report_subscriptions.load("unit-checkins")
+    state = saved["reports"][report["report_id"]]
+    assert state["status"] == "notified"
+    assert state["message_id"] == "aura-msg-report-sub"

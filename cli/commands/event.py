@@ -261,6 +261,70 @@ def _daemon(job_id: str) -> dict:
 
 def run(args):
     action = args.event_action
+    if action == "subscribe":
+        if getattr(args, "subscribe_source", None) != "reports":
+            return {"ok": False, "error": f"unknown subscription source: {getattr(args, 'subscribe_source', None)}"}
+        if not getattr(args, "fleet", None) and not getattr(args, "target", None):
+            return {"ok": False, "error": "report subscriptions require --fleet or --target"}
+        from lib import report_subscriptions
+
+        try:
+            existing = report_subscriptions.load(args.name)
+        except FileNotFoundError:
+            existing = None
+        if existing and existing.get("status") != "removed":
+            return {"ok": False, "error": f"report subscription already exists: {args.name}"}
+
+        record = report_subscriptions.create(
+            name=args.name,
+            to=args.to,
+            fleet=getattr(args, "fleet", None),
+            target=getattr(args, "target", None),
+            states=getattr(args, "state", None) or [],
+            sender=getattr(args, "sender", None) or "aura-event",
+        )
+        return {"ok": True, "schema": "aura.event.report_subscription_ack.v1", "subscription": record}
+    if action == "subscriptions":
+        from lib import report_subscriptions
+
+        return {
+            "ok": True,
+            "schema": "aura.event.report_subscription_list.v1",
+            "subscriptions": report_subscriptions.list_records(
+                status=getattr(args, "status", None),
+                include_removed=getattr(args, "include_removed", False),
+            ),
+        }
+    if action == "subscription":
+        from lib import report_subscriptions
+
+        subscription_action = getattr(args, "subscription_action", None)
+        if subscription_action == "show":
+            return {"ok": True, "subscription": report_subscriptions.load(args.ref)}
+        if subscription_action == "pause":
+            return {"ok": True, "subscription": report_subscriptions.set_status(args.ref, "paused")}
+        if subscription_action == "resume":
+            return {"ok": True, "subscription": report_subscriptions.set_status(args.ref, "active")}
+        if subscription_action == "remove":
+            return {"ok": True, "subscription": report_subscriptions.set_status(args.ref, "removed")}
+        return {"ok": False, "error": f"unknown subscription action: {subscription_action}"}
+    if action == "release-report-subscriptions":
+        delay = float(getattr(args, "delay", None) or 0)
+        if delay > 0:
+            time.sleep(delay)
+        from lib import report_subscriptions, reports
+
+        report = reports.find_report(args.ref)
+        if not report:
+            return {"ok": False, "error": f"report not found: {args.ref}"}
+        released = report_subscriptions.release_for_report(report)
+        return {
+            "ok": True,
+            "schema": "aura.event.report_subscription_release.v1",
+            "report_id": args.ref,
+            "released": len(released),
+            "subscriptions": released,
+        }
     if action == "start":
         job = _make_job(args)
         events.save_state(job)

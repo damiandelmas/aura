@@ -10,6 +10,7 @@ from lib import reports
 
 
 QUEUE_RELEASE_DELAY_SECONDS = 1.5
+REPORT_SUBSCRIPTION_DELAY_SECONDS = 1.5
 
 
 def _start_queued_release_worker(report_id: str) -> None:
@@ -22,6 +23,28 @@ def _start_queued_release_worker(report_id: str) -> None:
         report_id,
         "--delay",
         str(QUEUE_RELEASE_DELAY_SECONDS),
+    ]
+    subprocess.Popen(
+        cmd,
+        cwd=os.getcwd(),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _start_report_subscription_worker(report_id: str) -> None:
+    env = os.environ.copy()
+    cmd = [
+        sys.executable,
+        sys.argv[0],
+        "event",
+        "release-report-subscriptions",
+        report_id,
+        "--delay",
+        str(REPORT_SUBSCRIPTION_DELAY_SECONDS),
     ]
     subprocess.Popen(
         cmd,
@@ -108,6 +131,12 @@ def run(args):
     scheduled = reports.schedule_queued_messages(created, delay_seconds=QUEUE_RELEASE_DELAY_SECONDS)
     if scheduled:
         _start_queued_release_worker(created.get("report_id"))
+    scheduled_subscriptions = reports.schedule_report_subscriptions(
+        created,
+        delay_seconds=REPORT_SUBSCRIPTION_DELAY_SECONDS,
+    )
+    if scheduled_subscriptions:
+        _start_report_subscription_worker(created.get("report_id"))
     if not getattr(args, "ack", False):
         return None
     return {
@@ -121,5 +150,7 @@ def run(args):
         "warnings": created.get("warnings") or [],
         "scheduled_queued": len(scheduled),
         "queue_release_delay_seconds": QUEUE_RELEASE_DELAY_SECONDS,
+        "scheduled_report_subscriptions": len(scheduled_subscriptions),
+        "report_subscription_delay_seconds": REPORT_SUBSCRIPTION_DELAY_SECONDS,
         "reports_path": str(reports.reports_path()),
     }

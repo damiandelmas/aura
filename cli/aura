@@ -527,8 +527,37 @@ def main():
     p_event_run = event_sub.add_parser("run", help="Run one event tick now")
     p_event_run.add_argument("ref", help="Job id or name")
 
+    p_event_subscribe = event_sub.add_parser("subscribe", help="Create an event subscription")
+    subscribe_sub = p_event_subscribe.add_subparsers(dest="subscribe_source", required=True)
+    p_event_subscribe_reports = subscribe_sub.add_parser("reports", help="Subscribe a seat to report check-ins")
+    p_event_subscribe_reports.add_argument("--name", required=True, help="Subscription name")
+    p_event_subscribe_reports.add_argument("--to", required=True, help="Subscriber target seat")
+    p_event_subscribe_reports.add_argument("--fleet", help="Only match reports from this fleet")
+    p_event_subscribe_reports.add_argument("--target", help="Only match reports from this reporting seat")
+    p_event_subscribe_reports.add_argument("--state", action="append", choices=["working", "blocked", "needs_decision", "handoff", "complete", "parked", "failed"],
+                                           help="Only match this report state; repeatable")
+    p_event_subscribe_reports.add_argument("--as", dest="sender", default="aura-event", help="Sender label for notifications")
+
+    p_event_subscriptions = event_sub.add_parser("subscriptions", help="List event subscriptions")
+    p_event_subscriptions.add_argument("--status", choices=["active", "paused", "removed"], help="Filter subscriptions by status")
+    p_event_subscriptions.add_argument("--include-removed", action="store_true", help="Include removed subscriptions")
+
+    p_event_subscription = event_sub.add_parser("subscription", help="Inspect or control one event subscription")
+    subscription_sub = p_event_subscription.add_subparsers(dest="subscription_action", required=True)
+    p_event_subscription_show = subscription_sub.add_parser("show", help="Show a subscription")
+    p_event_subscription_show.add_argument("ref", help="Subscription id or name")
+    p_event_subscription_pause = subscription_sub.add_parser("pause", help="Pause a subscription")
+    p_event_subscription_pause.add_argument("ref", help="Subscription id or name")
+    p_event_subscription_resume = subscription_sub.add_parser("resume", help="Resume a subscription")
+    p_event_subscription_resume.add_argument("ref", help="Subscription id or name")
+    p_event_subscription_remove = subscription_sub.add_parser("remove", help="Remove a subscription")
+    p_event_subscription_remove.add_argument("ref", help="Subscription id or name")
+
     p_event_daemon = event_sub.add_parser("daemon", help=argparse.SUPPRESS)
     p_event_daemon.add_argument("ref", help="Job id")
+    p_event_release_subs = event_sub.add_parser("release-report-subscriptions", help=argparse.SUPPRESS)
+    p_event_release_subs.add_argument("ref", help="Report id")
+    p_event_release_subs.add_argument("--delay", default="0", help=argparse.SUPPRESS)
 
     # deferred — blocked-send outbox
     p_deferred = subparsers.add_parser("deferred", help="Manage deferred delivery jobs")

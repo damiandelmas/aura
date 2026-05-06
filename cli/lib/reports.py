@@ -123,6 +123,12 @@ def schedule_queued_messages(report: dict[str, Any], *, delay_seconds: float = 1
     return queued_messages.schedule_for_report(report, delay_seconds=delay_seconds)
 
 
+def schedule_report_subscriptions(report: dict[str, Any], *, delay_seconds: float = 1.5) -> list[dict[str, Any]]:
+    from lib import report_subscriptions
+
+    return report_subscriptions.schedule_for_report(report, delay_seconds=delay_seconds)
+
+
 def iter_reports(limit: int | None = None) -> list[dict[str, Any]]:
     path = reports_path()
     if not path.exists():
