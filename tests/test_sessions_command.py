@@ -71,3 +71,46 @@ def test_sessions_rows_fall_back_to_legacy_name(monkeypatch):
     assert result["rows"][0]["seat"] == "engineer"
     assert "name" not in result["rows"][0]
     assert result["rows"][0]["target"] == "flex-leaders-2:engineer"
+
+
+def test_sessions_fleets_counts_same_seat_name_per_fleet(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "fleet-a")
+
+    from commands import sessions
+    from lib import registry, terminal
+
+    registry.upsert_agent({
+        "name": "lead",
+        "fleet": "fleet-a",
+        "runtime": "codex",
+        "registered": True,
+        "terminal_ref": "fleet-a:lead",
+        "runtime_session_id": "session-a",
+        "runtime_session_source": "argv:codex-resume",
+        "identity_provider": "desks",
+        "identity_id": "r_a",
+    })
+    registry.upsert_agent({
+        "name": "lead",
+        "fleet": "fleet-b",
+        "runtime": "codex",
+        "registered": True,
+        "terminal_ref": "fleet-b:lead",
+        "runtime_session_id": "session-b",
+        "runtime_session_source": "argv:codex-resume",
+    })
+
+    monkeypatch.setattr(terminal, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal, "target_exists", lambda target: target in {"fleet-a:lead", "fleet-b:lead"})
+    monkeypatch.setattr(terminal, "capture_output", lambda target, lines=20: ["ready"])
+
+    result = sessions.run(argparse.Namespace(sessions_action="fleets"))
+
+    by_fleet = {row["fleet"]: row for row in result["fleets"]}
+    assert by_fleet["fleet-a"]["registry_seats"] == 1
+    assert by_fleet["fleet-b"]["registry_seats"] == 1
+    assert by_fleet["fleet-a"]["live_seats"] == 1
+    assert by_fleet["fleet-b"]["live_seats"] == 1
+    assert by_fleet["fleet-a"]["bound_seats"] == 1
+    assert by_fleet["fleet-b"]["bound_seats"] == 1

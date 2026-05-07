@@ -83,7 +83,15 @@ def run(args):
         return untile(args)
     if action == "layout":
         return layout(args)
-    return {"ok": False, "error": "dash requires an action: tile, untile, or layout"}
+    if action == "identity":
+        return identity(args)
+    return {"ok": False, "error": "dash requires an action: tile, untile, layout, or identity"}
+
+
+def identity(args):
+    from lib import dashboard_identity, terminal
+
+    return dashboard_identity.build_dashboard_identity(getattr(args, "target", None), terminal=terminal)
 
 
 def tile(args):

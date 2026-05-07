@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lib import deferred, queued_messages, registry, reports
+from lib import deferred, queued_messages, reports, seat_status
 
 
 def _role_field(record: dict, name: str) -> str | None:
@@ -75,12 +75,20 @@ def _target_in_scope(record: dict, scope: dict, seats: set[str], fleets: set[str
     return target in seats
 
 
-def _last_reports_by_seat(rows: list[dict]) -> dict[str, dict]:
+def _target_for(row: dict) -> str | None:
+    seat = row.get("seat") or row.get("name")
+    fleet = row.get("fleet")
+    if not seat:
+        return None
+    return f"{fleet}:{seat}" if fleet else str(seat)
+
+
+def _last_reports_by_target(rows: list[dict]) -> dict[str, dict]:
     latest = {}
     for row in rows:
-        seat = row.get("seat")
-        if seat:
-            latest[seat] = row
+        target = _target_for(row)
+        if target:
+            latest[target] = row
     return latest
 
 
@@ -106,7 +114,7 @@ def run(args):
 
     agents = [
         agent
-        for agent in registry.list_agents(include_hidden=include_hidden)
+        for agent in seat_status.list_seat_statuses(include_hidden=include_hidden)
         if _matches_scope(agent, scope)
     ]
     report_rows = [
@@ -115,7 +123,7 @@ def run(args):
         if _matches_scope(row, scope)
     ]
     report_rows = report_rows[-limit:]
-    last_reports = _last_reports_by_seat(report_rows)
+    last_reports = _last_reports_by_target(report_rows)
 
     all_colleagues = []
     for agent in agents:
@@ -127,12 +135,18 @@ def run(args):
             "status": agent.get("status"),
             "terminal": agent.get("terminal"),
             "session_id": agent.get("session_id") or agent.get("runtime_session_id"),
+            "managed_state": agent.get("managed_state"),
+            "runtime_session_binding": agent.get("runtime_session_binding"),
+            "seat_instance_id": agent.get("seat_instance_id"),
+            "identity": agent.get("identity"),
+            "org": agent.get("org"),
+            "risk_flags": agent.get("risk_flags") or [],
             "role": {
                 key: agent.get(key)
                 for key in ("desks_role_id", "desks_product", "desks_unit", "desks_role_home")
                 if agent.get(key)
             },
-            "last_report": _report_summary(last_reports.get(seat)),
+            "last_report": _report_summary(last_reports.get(_target_for(agent))),
         })
     colleagues = all_colleagues[:limit]
 

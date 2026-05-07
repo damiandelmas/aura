@@ -659,11 +659,14 @@ def test_spawn_codex_prompt_embeds_aura_launch_context(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert result["aura_launch_id"] == "aura-launch-abcdef1234567890"
-    assert sent == [(
-        "builder",
-        "[AURA SEAT CONTEXT]\nfleet=unitfleet\nseat=builder\nlaunch_id=aura-launch-abcdef1234567890\n[/AURA SEAT CONTEXT]\n\nbuild the artifact",
-        True,
-    )]
+    assert sent[0][0] == "builder"
+    assert sent[0][2] is True
+    assert sent[0][1].startswith(
+        "[AURA SEAT CONTEXT]\nfleet=unitfleet\nseat=builder\nlaunch_id=aura-launch-abcdef1234567890\n[/AURA SEAT CONTEXT]\n\n"
+    )
+    assert "[AURA AGENT MAP]\nself:\n  target: unitfleet:builder" in sent[0][1]
+    assert sent[0][1].endswith("[/AURA AGENT MAP]\n\nbuild the artifact")
+    assert result["agent_map_injected"] is True
 
 
 def test_spawn_codex_prompt_retries_submit_before_session_observation(monkeypatch, tmp_path):

@@ -122,18 +122,9 @@ def create_window(
                   Use when spawning workers from a session a human is attached to.
         unset_env: Environment variables to remove from the launched command.
     """
-    sess = _session()
-    if sess is None:
-        ensure_session()
-        sess = _session()
-
-    if command:
-        args = ["new-window", "-t", TMUX_SESSION, "-n", name]
-        if detached:
-            args.append("-d")
-        if workdir:
-            args.extend(["-c", workdir])
-        env_prefix = ""
+    def _command_with_env(command_text: str | None) -> str | None:
+        if not command_text:
+            return None
         env_parts = []
         if unset_env:
             env_parts.append("env")
@@ -141,10 +132,48 @@ def create_window(
                 env_parts.extend(["-u", shlex.quote(str(key))])
         if env:
             env_parts.extend(f"{key}={shlex.quote(str(value))}" for key, value in env.items())
-        if env_parts:
-            env_prefix = " ".join(env_parts) + " "
-        args.append(env_prefix + command)
-        result = _run_tmux(args)
+        env_prefix = " ".join(env_parts) + " " if env_parts else ""
+        return env_prefix + command_text
+
+    def _create_initial_session(command_text: str | None = None):
+        args = ["new-session", "-d", "-s", TMUX_SESSION, "-n", name]
+        if workdir:
+            args.extend(["-c", workdir])
+        if command_text:
+            args.append(command_text)
+        return _run_tmux(args)
+
+    def _new_window(command_text: str | None = None):
+        args = ["new-window", "-t", TMUX_SESSION, "-n", name]
+        if detached:
+            args.append("-d")
+        if workdir:
+            args.extend(["-c", workdir])
+        if command_text:
+            args.append(command_text)
+        return _run_tmux(args)
+
+    command_text = _command_with_env(command)
+    sess = _session()
+    if sess is None:
+        result = _create_initial_session(command_text)
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "duplicate session" in stderr.lower():
+                result = _new_window(command_text)
+            if result.returncode != 0:
+                return {"ok": False, "error": result.stderr.strip() or "tmux new-session failed", "name": name}
+        pane = pane_id(name)
+        return {
+            "ok": True,
+            "name": name,
+            "target": _backend_ref(name),
+            "pane_id": pane,
+            "pane_ref": f"{TMUX_SESSION}:{pane}" if pane else None,
+        }
+
+    if command:
+        result = _new_window(command_text)
         if result.returncode != 0:
             return {"ok": False, "error": result.stderr.strip() or "tmux new-window failed", "name": name}
         pane = pane_id(name)

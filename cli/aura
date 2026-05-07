@@ -20,7 +20,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, start as start_cmd, send, queue as queue_cmd, seat as seat_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd
+from commands import spawn, start as start_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd
 from lib.output import output
 
 
@@ -111,6 +111,10 @@ def main():
                          help="Working directory for the seat (default: current dir)")
     p_start.add_argument("--model", metavar="MODEL",
                          help="Codex model option passed through to the runtime")
+
+    # agent-map
+    p_agent_map = subparsers.add_parser("agent-map", help="Render status-derived map for one managed seat")
+    p_agent_map.add_argument("target", help="Seat ref, usually FLEET:SEAT")
 
     # send
     p_send = subparsers.add_parser("send", help="Send message to agent")
@@ -224,6 +228,20 @@ def main():
     p_seat_register.add_argument("--pane", help="Explicit tmux pane ref, e.g. tmux:flex-leaders-2:%%48")
     p_seat_register.add_argument("--runtime", help="Runtime name (codex, claude-code, shell, command)")
     p_seat_register.add_argument("--cwd", help="Override the registered cwd; defaults to pane current path")
+    p_seat_adopt = seat_sub.add_parser(
+        "adopt",
+        help="Adopt an unmanaged tmux pane into a managed Aura seat",
+    )
+    p_seat_adopt.add_argument("--pane", required=True, help="Explicit tmux pane ref, e.g. tmux:flex-leaders-2:%%48")
+    p_seat_adopt.add_argument("--as", dest="target", required=True, help="Managed Aura target FLEET:SEAT")
+    p_seat_adopt.add_argument("--rename-window", action="store_true",
+                              help="Rename the tmux window to the adopted seat name")
+    p_seat_adopt.add_argument("--runtime", help="Runtime name (codex, claude-code, shell, command)")
+    p_seat_adopt.add_argument("--cwd", default="auto",
+                              help="Registered cwd, or auto to use pane current path (default: auto)")
+    p_seat_adopt.add_argument("--identity-provider", help="Explicit external identity provider, e.g. desks")
+    p_seat_adopt.add_argument("--identity-id", help="Explicit external identity id")
+    p_seat_adopt.add_argument("--identity-label", help="Human-readable external identity label")
     p_seat_tag = seat_sub.add_parser(
         "tag",
         help="Write opaque metadata onto a seat.",
@@ -259,6 +277,35 @@ def main():
                          help="Allow writing to hidden/internal seats such as Ether panels")
     p_write.add_argument("--lines", type=int, default=20,
                          help="Capture line count for --capture-before/after (default: 20)")
+
+    # holding
+    p_holding = subparsers.add_parser("holding", help="Discover and manage unresolved runtime bodies")
+    holding_sub = p_holding.add_subparsers(dest="holding_action", required=True)
+    p_holding_discover = holding_sub.add_parser("discover", help="Discover unmanaged tmux panes")
+    p_holding_discover.add_argument("--tmux", action="store_true", default=True,
+                                    help="Discover tmux panes")
+    p_holding_discover.add_argument("--fleet", "-f", metavar="NAME",
+                                    help="Limit discovery to one fleet")
+    p_holding_discover.add_argument("--all-fleets", action="store_true",
+                                    help="Discover unmanaged panes across all tmux sessions")
+    p_holding_discover.add_argument("--all", action="store_true",
+                                    help="Also include already-managed panes in output")
+    p_holding_discover.add_argument("--create", action="store_true",
+                                    help="Create holding records for unmanaged panes")
+    p_holding_list = holding_sub.add_parser("list", help="List holding records")
+    p_holding_list.add_argument("--fleet", "-f", metavar="NAME", help="Limit to one fleet")
+    p_holding_list.add_argument("--status", choices=["holding", "adopted", "archived", "released"],
+                                help="Filter by holding record state")
+    p_holding_list.add_argument("--include-resolved", action="store_true",
+                                help="Include adopted/archived/released records")
+    p_holding_adopt = holding_sub.add_parser("adopt", help="Adopt a holding record into a managed Aura seat")
+    p_holding_adopt.add_argument("holding_id")
+    p_holding_adopt.add_argument("--as", dest="target", required=True, help="Managed Aura target FLEET:SEAT")
+    p_holding_adopt.add_argument("--rename-window", action="store_true",
+                                 help="Rename the tmux window to the adopted seat name")
+    p_holding_adopt.add_argument("--runtime", help="Runtime name override")
+    p_holding_adopt.add_argument("--cwd", default="auto",
+                                 help="Registered cwd, or auto to use pane current path (default: auto)")
 
     # broadcast
     p_broadcast = subparsers.add_parser("broadcast", help="Broadcast message to a fleet")
@@ -415,6 +462,8 @@ def main():
     p_dash_layout.add_argument("--fleet", "-f", metavar="NAME", help="Fleet name")
     p_dash_layout.add_argument("--dashboard", default="dashboard", help="Dashboard window name (default: dashboard)")
     p_dash_layout.add_argument("--layout", default="tiled", choices=["tiled", "even-horizontal", "even-vertical", "main-horizontal", "main-vertical"], help="Tmux layout to apply")
+    p_dash_identity = dash_sub.add_parser("identity", help="Render dashboard identity surface for one seat")
+    p_dash_identity.add_argument("target", help="Seat ref, usually FLEET:SEAT")
 
     # set
     p_set = subparsers.add_parser("set", help="Set agent properties")
@@ -707,6 +756,10 @@ def main():
             result = queue_cmd.run(args)
         elif args.command == "seat":
             result = seat_cmd.run(args)
+        elif args.command == "holding":
+            result = holding_cmd.run(args)
+        elif args.command == "agent-map":
+            result = agent_map_cmd.run(args)
         elif args.command == "broadcast":
             result = broadcast.run(args)
         elif args.command == "write":

@@ -39,7 +39,7 @@ def _list_tmux_panes() -> list[dict]:
         "list-panes",
         "-a",
         "-F",
-        "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}",
+        "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}",
     ])
     if result.returncode != 0:
         return []
@@ -49,9 +49,9 @@ def _list_tmux_panes() -> list[dict]:
         if len(parts) < 5:
             continue
         # Pad with empty strings for backwards compatibility with older tmux outputs.
-        while len(parts) < 7:
+        while len(parts) < 8:
             parts.append("")
-        session, window_index, window_name, pane_id, pane_pid, pane_current_command, pane_current_path = parts[:7]
+        session, window_index, window_name, pane_index, pane_id, pane_pid, pane_current_command, pane_current_path = parts[:8]
         try:
             pid = int(pane_pid)
         except ValueError:
@@ -60,6 +60,7 @@ def _list_tmux_panes() -> list[dict]:
             "session": session,
             "window_index": window_index,
             "window_name": window_name,
+            "pane_index": pane_index,
             "pane_id": pane_id,
             "pane_pid": pid,
             "pane_current_command": pane_current_command,
@@ -1221,6 +1222,22 @@ ORPHAN_RESET_FIELDS = {
 }
 
 
+ORPHAN_SESSION_RESET_KEYS = {
+    "runtime_session_id",
+    "session_id",
+    "source_session_id",
+    "runtime_session_binding",
+    "runtime_session_bind_method",
+    "runtime_session_bind_source",
+    "runtime_session_confidence",
+    "runtime_session_source",
+    "runtime_session_evidence",
+    "runtime_session_pid",
+    "runtime_session_mode",
+    "isolation",
+}
+
+
 def _parse_set_pair(arg: str) -> tuple[str, str] | dict:
     if not arg or "=" not in arg:
         return {"ok": False, "error": "malformed-set-pair", "arg": arg}
@@ -1400,20 +1417,33 @@ def _discover_orphan_pane(fleet: str, seat: str, panes: list[dict] | None = None
 
 def _validate_explicit_orphan_pane(pane_ref: str, fleet: str) -> dict:
     target = _tmux_target(pane_ref)
+    declared_fleet = None
+    if str(pane_ref).startswith("tmux:"):
+        value = str(pane_ref)[len("tmux:"):]
+        if ":" in value:
+            declared_fleet, subject = value.split(":", 1)
+            if subject.startswith("%"):
+                target = subject
+    if declared_fleet and declared_fleet != fleet:
+        return {
+            "ok": False,
+            "error": "not-a-fleet-pane",
+            "detail": f"--pane declares session {declared_fleet!r}, expected {fleet!r}",
+        }
     if not target.startswith("%"):
         return {"ok": False, "error": "not-a-fleet-pane",
                 "detail": "--pane must be a tmux pane id ref like tmux:<fleet>:%<id>"}
     info = _run_tmux([
         "display-message", "-p", "-t", target,
-        "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}",
+        "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}",
     ])
     if info.returncode != 0:
         return {"ok": False, "error": "pane-not-found",
                 "detail": info.stderr.strip() or f"tmux pane not found: {pane_ref}"}
     parts = info.stdout.strip().split("\t")
-    while len(parts) < 7:
+    while len(parts) < 8:
         parts.append("")
-    session, window_index, window_name, pane_id, pane_pid, pane_current_command, pane_current_path = parts[:7]
+    session, window_index, window_name, pane_index, pane_id, pane_pid, pane_current_command, pane_current_path = parts[:8]
     if session != fleet:
         return {
             "ok": False,
@@ -1428,6 +1458,7 @@ def _validate_explicit_orphan_pane(pane_ref: str, fleet: str) -> dict:
         "session": session,
         "window_index": window_index,
         "window_name": window_name,
+        "pane_index": pane_index,
         "pane_id": pane_id,
         "pane_pid": pid,
         "pane_current_command": pane_current_command,
@@ -1436,18 +1467,277 @@ def _validate_explicit_orphan_pane(pane_ref: str, fleet: str) -> dict:
     return {"ok": True, "pane": pane, "discovered_by": "explicit"}
 
 
-def _register_orphan(args, registry, terminal=None, ledger=None) -> dict:
-    target = getattr(args, "target", None) or ""
+def _normalize_adoption_target(target: str) -> tuple[str | None, str | None, dict | None]:
     if not target or target.count(":") != 1 or target.startswith(":") or target.endswith(":"):
-        return {"ok": False, "error": "empty-target",
-                "detail": "target must be FLEET:SEAT"}
+        return None, None, {
+            "ok": False,
+            "error": "empty-target",
+            "detail": "target must be FLEET:SEAT",
+        }
     fleet, seat = target.split(":", 1)
+    return fleet, seat, None
+
+
+def _runtime_session_fields(runtime: str, pane: dict, seat: str) -> dict:
+    try:
+        from lib import runtime_session
+
+        discovered = runtime_session.discover_from_pane_pid(
+            runtime,
+            pane.get("pane_pid"),
+            seat_name=seat,
+            launch_id=None,
+        )
+        if not discovered:
+            return {}
+        return runtime_session.mark_binding(discovered)
+    except Exception:
+        return {}
+
+
+def _rename_adopted_window(*, fleet: str, seat: str, pane: dict) -> dict:
+    pane_id = pane.get("pane_id")
+    if not pane_id:
+        return {"ok": False, "error": "missing-pane-id"}
+    collision = _destination_collision(fleet=fleet, name=seat, source_pane_id=pane_id)
+    if collision:
+        return collision
+    rename = _run_tmux(["rename-window", "-t", pane_id, seat])
+    if rename.returncode != 0:
+        return {"ok": False, "error": rename.stderr.strip() or "tmux rename-window failed"}
+    return {
+        "ok": True,
+        "terminal_ref": f"{fleet}:{seat}",
+        "backend_ref": f"{fleet}:{seat}",
+        "renamed_window": True,
+    }
+
+
+def _adopt_pane_as_seat(
+    *,
+    target: str,
+    pane: dict,
+    registry,
+    runtime_arg: str | None = None,
+    cwd_arg: str | None = None,
+    discovered_by: str | None = None,
+    source_command: str = "aura seat adopt",
+    registered_via: str = "adopt",
+    action: str = "adopt",
+    rename_window: bool = False,
+    adoption_source: str | None = None,
+    identity_provider: str | None = None,
+    identity_id: str | None = None,
+    identity_label: str | None = None,
+) -> dict:
+    fleet, seat, error = _normalize_adoption_target(target)
+    if error:
+        return error
 
     existing = registry.get_agent(target)
     if existing:
-        return {"ok": False, "error": "already-registered",
-                "detail": f"registry already has a row for {target!r}; cut or sweep first",
-                "record": existing}
+        return {
+            "ok": False,
+            "error": "already-registered",
+            "detail": f"registry already has a row for {target!r}; cut or sweep first",
+            "record": existing,
+        }
+
+    if pane.get("session") != fleet:
+        return {
+            "ok": False,
+            "error": "not-a-fleet-pane",
+            "detail": f"pane belongs to session {pane.get('session')!r}, expected {fleet!r}",
+            "target": target,
+        }
+
+    pane_id = pane.get("pane_id")
+    pane_command = pane.get("pane_current_command") or pane.get("command") or ""
+    runtime_inferred = False
+    if runtime_arg:
+        runtime = runtime_arg
+    else:
+        runtime = _infer_orphan_runtime(pane_command)
+        runtime_inferred = True
+
+    if cwd_arg == "auto":
+        cwd = pane.get("pane_current_path") or pane.get("cwd") or ""
+    else:
+        cwd = cwd_arg or pane.get("pane_current_path") or pane.get("cwd") or ""
+
+    pane_ref = f"tmux:{fleet}:{pane_id}"
+    if action == "adopt":
+        terminal_ref = pane_ref
+        backend_ref = pane_ref
+    else:
+        terminal_ref = f"{fleet}:{seat}"
+        backend_ref = f"{fleet}:{seat}"
+    rename_result = None
+    if rename_window:
+        rename_result = _rename_adopted_window(fleet=fleet, seat=seat, pane=pane)
+        if not rename_result.get("ok"):
+            return {"target": target, **rename_result}
+        terminal_ref = rename_result["terminal_ref"]
+        backend_ref = rename_result["backend_ref"]
+
+    now = registry.now_iso()
+    session_fields = _runtime_session_fields(runtime, pane, seat)
+    bound = bool(session_fields.get("runtime_session_binding") == "bound" and session_fields.get("runtime_session_id"))
+    managed_state = f"adopted_{'bound' if bound else 'unbound'}"
+    record = {
+        "name": seat,
+        "seat": seat,
+        "fleet": fleet,
+        "runtime": runtime,
+        "backend": "tmux",
+        "backend_ref": backend_ref,
+        "terminal_ref": terminal_ref,
+        "seat_ref": f"{fleet}:{seat}",
+        "pane_ref": pane_ref,
+        "status": "unknown",
+        "registered": True,
+        "delivery_mode": "immediate",
+        "kind": "terminal",
+        "cwd": cwd,
+        "workdir": cwd,
+        "transport": "tmux",
+        "created_at": now,
+        "last_seen": now,
+        "registered_via": registered_via,
+        "registered_at": now,
+        "registered_pane_pid": pane.get("pane_pid"),
+        "registered_pane_command": pane_command,
+        "runtime_session_id": None,
+        "runtime_session_binding": "unbound",
+        "runtime_session_bind_method": None,
+        "aura_launch_id": None,
+        "adoption_id": f"adopt_{uuid.uuid4().hex[:12]}",
+        "adoption_source": adoption_source,
+        "managed_state": managed_state,
+        "seat_instance_id": registry.new_seat_instance_id(),
+        **session_fields,
+    }
+    if not bound:
+        record["runtime_session_id"] = None
+        record["session_id"] = None
+        record["runtime_session_binding"] = "unbound"
+        record["managed_state"] = "adopted_unbound"
+    if identity_provider and identity_id:
+        record.update({
+            "identity_provider": identity_provider,
+            "identity_id": identity_id,
+            "identity_label": identity_label,
+            "identity_bound_at": now,
+            "identity_bind_source": source_command,
+            "identity_bind_confidence": "explicit",
+        })
+        if identity_provider == "desks":
+            record["desks_identity_id"] = identity_id
+
+    inserted = registry.upsert_agent(record)
+    try:
+        data = registry.read_registry()
+        key = registry._key(fleet, seat)
+        stored = dict(data.get(key, inserted))
+        stored.update(record)
+        for reset_key, reset_value in ORPHAN_RESET_FIELDS.items():
+            if reset_key in {"identity_provider", "identity_id", "identity_label", "desks_identity_id"} and identity_provider and identity_id:
+                continue
+            if bound and reset_key in ORPHAN_SESSION_RESET_KEYS:
+                continue
+            if reset_value is None:
+                stored.pop(reset_key, None)
+            else:
+                stored[reset_key] = reset_value
+        if not bound:
+            stored["runtime_session_id"] = None
+            stored.pop("session_id", None)
+            stored["runtime_session_binding"] = "unbound"
+            stored["runtime_session_bind_method"] = None
+        if identity_provider and identity_id:
+            stored.update({
+                "identity_provider": identity_provider,
+                "identity_id": identity_id,
+                "identity_label": identity_label,
+                "identity_bound_at": now,
+                "identity_bind_source": source_command,
+                "identity_bind_confidence": "explicit",
+            })
+            if identity_provider == "desks":
+                stored["desks_identity_id"] = identity_id
+        data[key] = stored
+        registry.write_registry(data)
+        inserted = stored
+    except Exception:
+        pass
+
+    provenance = {
+        "discovered_by": discovered_by,
+        "pane_ref": record["pane_ref"],
+        "pane_pid": pane.get("pane_pid"),
+        "pane_command": pane_command,
+        "pane_cwd": pane.get("pane_current_path") or pane.get("cwd"),
+        "runtime": runtime,
+        "runtime_inferred": runtime_inferred,
+        "registered_at": now,
+        "adoption_source": adoption_source,
+        "rename_window": bool(rename_window),
+    }
+
+    try:
+        from lib import session_ledger
+
+        session_ledger.append_seat_event(
+            event="seat_adopted" if action == "adopt" else "seat_registered_orphan",
+            before=None,
+            after=inserted,
+            evidence={
+                "source_command": source_command,
+                "pane_ref": record["pane_ref"],
+                "pane_pid": pane.get("pane_pid"),
+                "pane_command": pane_command,
+                "pane_cwd": pane.get("pane_current_path") or pane.get("cwd"),
+                "discovered_by": discovered_by,
+                "runtime": runtime,
+                "runtime_inferred": runtime_inferred,
+                "runtime_session_binding": inserted.get("runtime_session_binding"),
+                "adoption_source": adoption_source,
+                "rename_window": bool(rename_window),
+            },
+            source_command=source_command,
+        )
+    except Exception:
+        pass
+
+    response = {
+        "ok": True,
+        "action": action,
+        "target": target,
+        "record": inserted,
+        "provenance": provenance,
+    }
+    if action == "adopt":
+        response.update({
+            "pane_ref": inserted.get("pane_ref"),
+            "seat_instance_id": inserted.get("seat_instance_id"),
+            "managed_state": inserted.get("managed_state"),
+            "runtime": inserted.get("runtime"),
+            "cwd": inserted.get("cwd"),
+            "runtime_session_binding": inserted.get("runtime_session_binding"),
+            "runtime_session_id": inserted.get("runtime_session_id"),
+        })
+        if inserted.get("runtime_session_binding") != "bound" and inserted.get("runtime") != "shell":
+            response["next_command"] = f"aura sessions bind-current --target {target} --runtime {runtime}"
+        if rename_result:
+            response["rename_window"] = rename_result
+    return response
+
+
+def _register_orphan(args, registry, terminal=None, ledger=None) -> dict:
+    target = getattr(args, "target", None) or ""
+    fleet, seat, error = _normalize_adoption_target(target)
+    if error:
+        return error
 
     explicit_pane = getattr(args, "pane", None)
     if explicit_pane:
@@ -1458,114 +1748,17 @@ def _register_orphan(args, registry, terminal=None, ledger=None) -> dict:
     if not discovery.get("ok"):
         return {"ok": False, **discovery, "target": target}
 
-    pane = discovery["pane"]
-    pane_id = pane.get("pane_id")
-    pane_command = pane.get("pane_current_command") or ""
-    runtime_arg = getattr(args, "runtime", None)
-    runtime_inferred = False
-    if runtime_arg:
-        runtime = runtime_arg
-    else:
-        runtime = _infer_orphan_runtime(pane_command)
-        runtime_inferred = True
-
-    cwd_override = getattr(args, "cwd", None)
-    cwd = cwd_override or pane.get("pane_current_path") or ""
-
-    now = registry.now_iso()
-    record = {
-        "name": seat,
-        "seat": seat,
-        "fleet": fleet,
-        "runtime": runtime,
-        "backend": "tmux",
-        "backend_ref": f"{fleet}:{seat}",
-        "terminal_ref": f"{fleet}:{seat}",
-        "seat_ref": f"{fleet}:{seat}",
-        "pane_ref": f"tmux:{fleet}:{pane_id}",
-        "status": "unknown",
-        "registered": True,
-        "delivery_mode": "immediate",
-        "kind": "terminal",
-        "cwd": cwd,
-        "workdir": cwd,
-        "transport": "tmux",
-        "created_at": now,
-        "last_seen": now,
-        "registered_via": "register-orphan",
-        "registered_at": now,
-        "registered_pane_pid": pane.get("pane_pid"),
-        "registered_pane_command": pane_command,
-        "runtime_session_id": None,
-        "runtime_session_binding": "unbound",
-        "runtime_session_bind_method": None,
-        "aura_launch_id": None,
-        "seat_instance_id": registry.new_seat_instance_id(),
-    }
-    inserted = registry.upsert_agent(record)
-    try:
-        data = registry.read_registry()
-        key = registry._key(fleet, seat)
-        stored = dict(data.get(key, inserted))
-        stored.update(record)
-        for reset_key, reset_value in ORPHAN_RESET_FIELDS.items():
-            if reset_value is None:
-                stored.pop(reset_key, None)
-            else:
-                stored[reset_key] = reset_value
-        stored["runtime_session_id"] = None
-        stored["runtime_session_binding"] = "unbound"
-        stored["runtime_session_bind_method"] = None
-        stored["aura_launch_id"] = None
-        data[key] = stored
-        registry.write_registry(data)
-        inserted = stored
-    except Exception:
-        # Registration should still succeed if the defensive cleanup write
-        # fails; the ledger event below preserves the attempted record.
-        pass
-
-    provenance = {
-        "discovered_by": discovery.get("discovered_by"),
-        "pane_ref": record["pane_ref"],
-        "pane_pid": pane.get("pane_pid"),
-        "pane_command": pane_command,
-        "pane_cwd": pane.get("pane_current_path"),
-        "runtime": runtime,
-        "runtime_inferred": runtime_inferred,
-        "registered_at": now,
-    }
-
-    try:
-        from lib import session_ledger
-
-        session_ledger.append_seat_event(
-            event="seat_registered_orphan",
-            before=None,
-            after=inserted,
-            evidence={
-                "source_command": "aura seat register-orphan",
-                "pane_ref": record["pane_ref"],
-                "pane_pid": pane.get("pane_pid"),
-                "pane_command": pane_command,
-                "pane_cwd": pane.get("pane_current_path"),
-                "discovered_by": discovery.get("discovered_by"),
-                "runtime": runtime,
-                "runtime_inferred": runtime_inferred,
-            },
-            source_command="aura seat register-orphan",
-        )
-    except Exception:
-        # ledger append failures should not block registration; the seat is in.
-        pass
-
-    return {
-        "ok": True,
-        "action": "register-orphan",
-        "target": target,
-        "record": inserted,
-        "provenance": provenance,
-    }
+    return _adopt_pane_as_seat(
+        target=target,
+        pane=discovery["pane"],
+        registry=registry,
+        runtime_arg=getattr(args, "runtime", None),
+        cwd_arg=getattr(args, "cwd", None),
+        discovered_by=discovery.get("discovered_by"),
+        source_command="aura seat register-orphan",
+        registered_via="register-orphan",
+        action="register-orphan",
+    )
 
 
 def _sweep(args, registry, terminal) -> dict:
@@ -1837,41 +2030,36 @@ def run(args):
 
         return _restart(args, registry, terminal)
     if action == "adopt":
-        try:
-            metadata = _load_role_metadata(getattr(args, "role_home", None), getattr(args, "manifest", None))
-        except Exception as exc:
-            return {"ok": False, "error": f"failed to load role metadata: {exc}"}
-        metadata = {key: value for key, value in metadata.items() if value}
-        if not metadata:
-            return {"ok": False, "error": "adopt requires --manifest or --role-home"}
-        existing = registry.get_agent(args.target)
-        if not existing:
-            return {"ok": False, "error": f"agent not found: {args.target}"}
-        result = registry.rehome_agent(
-            args.target,
-            metadata=metadata,
-            alias_old=False,
+        target = getattr(args, "target", None)
+        fleet, _, error = _normalize_adoption_target(target)
+        if error:
+            return error
+        pane_ref = getattr(args, "pane", None)
+        if not pane_ref:
+            return {
+                "ok": False,
+                "error": "pane-required",
+                "detail": "seat adopt requires --pane tmux:<fleet>:%<pane-id>",
+            }
+        discovery = _validate_explicit_orphan_pane(pane_ref, fleet)
+        if not discovery.get("ok"):
+            return {"ok": False, **discovery, "target": target}
+        return _adopt_pane_as_seat(
+            target=target,
+            pane=discovery["pane"],
+            registry=registry,
+            runtime_arg=getattr(args, "runtime", None),
+            cwd_arg=getattr(args, "cwd", None),
+            discovered_by=discovery.get("discovered_by"),
+            source_command="aura seat adopt",
+            registered_via="adopt",
+            action="adopt",
+            rename_window=bool(getattr(args, "rename_window", False)),
+            adoption_source="direct-pane",
+            identity_provider=getattr(args, "identity_provider", None),
+            identity_id=getattr(args, "identity_id", None),
+            identity_label=getattr(args, "identity_label", None),
         )
-        if result.get("ok"):
-            try:
-                from lib import session_ledger
-
-                session_ledger.append_seat_event(
-                    event="seat_role_adopted",
-                    before=existing,
-                    after=result.get("record"),
-                    evidence={
-                        "source": result.get("source"),
-                        "target": result.get("target"),
-                        "metadata_keys": sorted(metadata.keys()),
-                    },
-                    source_command="aura seat adopt",
-                    source_ref=result.get("source"),
-                    target_ref=result.get("target"),
-                )
-            except Exception:
-                pass
-        return result
     if action == "rehome":
         try:
             metadata = _load_role_metadata(getattr(args, "role_home", None), getattr(args, "manifest", None))

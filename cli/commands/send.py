@@ -30,6 +30,39 @@ def _is_current_seat(target: str, record: dict | None) -> bool:
     return False
 
 
+def _target_exists(terminal, target: str | None) -> bool:
+    if not target:
+        return False
+    if hasattr(terminal, "target_exists"):
+        return bool(terminal.target_exists(target))
+    return bool(terminal.window_exists(target))
+
+
+def _logical_target(target: str, record: dict | None) -> str:
+    record = record or {}
+    fleet = record.get("fleet")
+    seat = record.get("name") or record.get("seat")
+    if fleet and seat:
+        return f"{fleet}:{seat}"
+    return target
+
+
+def _resolve_terminal_target(target: str, record: dict | None, terminal) -> tuple[str, bool, dict | None]:
+    registered_target = (record or {}).get("pane_ref") or (record or {}).get("terminal_ref") or target
+    target_exists = _target_exists(terminal, registered_target)
+    if target_exists:
+        return registered_target, True, None
+
+    fallback_target = _logical_target(target, record)
+    if fallback_target != registered_target and _target_exists(terminal, fallback_target):
+        return fallback_target, True, {
+            "reason": "registered-target-missing-window-name-alive",
+            "registered_target": registered_target,
+            "fallback_target": fallback_target,
+        }
+    return registered_target, False, None
+
+
 def run(args):
     """Send message to agent."""
     from lib import delivery, identity, mesh, registry, terminal
@@ -73,14 +106,16 @@ def run(args):
         terminal.configure_session(reg_agent.get("fleet"))
     elif ":" in args.target and not args.target.startswith("tmux:") and hasattr(terminal, "configure_session"):
         terminal.configure_session(args.target.split(":", 1)[0])
-    terminal_target = (reg_agent or {}).get("pane_ref") or (reg_agent or {}).get("terminal_ref") or args.target
-    target_exists = terminal.target_exists(terminal_target) if hasattr(terminal, "target_exists") else terminal.window_exists(terminal_target)
+    terminal_target, target_exists, target_diagnostic = _resolve_terminal_target(args.target, reg_agent, terminal)
 
     # --nudge: send a literal Enter key as a delivery kick.
     if nudge:
         if target_exists:
             result = terminal.send_keys(terminal_target, "Enter", enter=False) or {}
-            return {"ok": True, "nudged": True, "name": args.target, "terminal_ref": result.get("target")}
+            response = {"ok": True, "nudged": True, "name": args.target, "terminal_ref": result.get("target")}
+            if target_diagnostic:
+                response["target_diagnostic"] = target_diagnostic
+            return response
         return {"error": f"window not found: {args.target}"}
 
     transport = getattr(args, 'transport', 'auto') or 'auto'
@@ -88,7 +123,12 @@ def run(args):
         transport = 'tmux' if target_exists else 'mesh'
 
     if transport == 'tmux':
-        return _send_tmux(args, terminal, delivery, terminal_target=terminal_target, sender=sender)
+        result = _send_tmux(args, terminal, delivery, terminal_target=terminal_target, sender=sender)
+        if target_diagnostic:
+            result["target_diagnostic"] = target_diagnostic
+            if isinstance(result.get("record"), dict):
+                result["record"]["target_diagnostic"] = target_diagnostic
+        return result
 
     # Legacy mesh path remains available for wrapper-managed Claude sessions.
     mode = args.mode

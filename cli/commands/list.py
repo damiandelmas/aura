@@ -17,17 +17,29 @@ def run(args):
         mesh_agents = [a for a in mesh_agents if a.get("fleet") == fleet_filter]
     if not include_hidden:
         mesh_agents = [a for a in mesh_agents if not registry.is_hidden_agent(a)]
-    by_name = {a.get("name"): dict(a) for a in mesh_agents if a.get("name")}
+
+    def _agent_key(agent: dict, *, default_fleet: str | None = None) -> str | None:
+        name = agent.get("seat") or agent.get("name")
+        if not name:
+            return None
+        agent_fleet = agent.get("fleet") or default_fleet
+        return f"{agent_fleet}:{name}" if agent_fleet else str(name)
+
+    by_target = {
+        key: dict(a)
+        for a in mesh_agents
+        if (key := _agent_key(a, default_fleet=fleet_filter or current_fleet))
+    }
 
     registry_agents = registry.list_agents(fleet_filter, include_hidden=include_hidden) if fleet_filter else registry.list_agents(include_hidden=include_hidden)
     for agent in registry_agents:
-        name = agent.get("name")
-        if not name:
+        key = _agent_key(agent, default_fleet=fleet_filter or current_fleet)
+        if not key:
             continue
-        existing = by_name.get(name, {})
+        existing = by_target.get(key, {})
         merged = {**agent, **existing}
         merged.setdefault("registered", True)
-        by_name[name] = merged
+        by_target[key] = merged
 
     fleet = fleet_filter or current_fleet
     if registry.is_hidden_fleet(fleet) and not include_hidden:
@@ -39,7 +51,7 @@ def run(args):
     if terminal_windows is None:
         terminal_windows = terminal.list_windows()
     for window in terminal_windows:
-        by_name.setdefault(window, {
+        by_target.setdefault(f"{fleet}:{window}", {
             "name": window,
             "fleet": fleet,
             "status": "unknown",
@@ -48,7 +60,7 @@ def run(args):
             "registered": False,
         })
 
-    agents = list(by_name.values())
+    agents = list(by_target.values())
 
     if args.status:
         agents = [a for a in agents if a.get("status") == args.status]
@@ -57,7 +69,7 @@ def run(args):
 
     from lib import runtime_session, seat_schema
     rows = []
-    for a in sorted(agents, key=lambda x: x.get("name", "")):
+    for a in sorted(agents, key=lambda x: (x.get("fleet", ""), x.get("name", ""))):
         name = a.get("name")
         agent_fleet = a.get("fleet") or fleet
         if agent_fleet and hasattr(terminal, "configure_session"):

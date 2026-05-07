@@ -109,6 +109,63 @@ def test_send_refuses_current_seat_without_force(monkeypatch, tmp_path):
     assert result["reason"] == "target-is-current-seat"
 
 
+def test_send_retargets_stale_pane_ref_to_live_logical_window(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / ".aura" / "registry" / "deliveries.jsonl"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import send
+    from lib import registry, terminal
+
+    registry.upsert_agent({
+        "name": "worker",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "registered": True,
+        "pane_ref": "tmux:unitfleet:%99",
+        "terminal_ref": "unitfleet:worker",
+    })
+
+    sent = {}
+
+    monkeypatch.setattr(terminal, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal, "target_exists", lambda target: target == "unitfleet:worker")
+
+    def fake_send_text(target, text, submit=True):
+        sent["target"] = target
+        sent["text"] = text
+        return {"ok": True, "target": target, "bytes": len(text), "submitted": submit}
+
+    monkeypatch.setattr(terminal, "send_text", fake_send_text)
+
+    args = argparse.Namespace(
+        target="unitfleet:worker",
+        message="hello stale pane",
+        sender="tester",
+        transport="auto",
+        mode="auto",
+        force=False,
+        nudge=False,
+        allow_hidden=False,
+        dedupe_key="unit-stale-pane",
+        defer_if_busy=False,
+    )
+
+    result = send.run(args)
+
+    assert result["ok"] is True
+    assert result["transport"] == "tmux"
+    assert sent["target"] == "unitfleet:worker"
+    assert result["terminal_ref"] == "unitfleet:worker"
+    assert result["target_diagnostic"] == {
+        "reason": "registered-target-missing-window-name-alive",
+        "registered_target": "tmux:unitfleet:%99",
+        "fallback_target": "unitfleet:worker",
+    }
+    assert result["record"]["backend_ref"] == "unitfleet:worker"
+    assert result["record"]["target_diagnostic"] == result["target_diagnostic"]
+
+
 def test_send_infers_current_seat_sender(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")

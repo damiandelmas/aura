@@ -110,22 +110,9 @@ def run(args):
 
 def _fleets(args) -> dict:
     """Roster of fleets: per-fleet live seat count, registry seat count, last lifecycle event."""
-    from lib import fleets as fleets_lib, registry as registry_lib, runtime_session, session_ledger
+    from lib import fleets as fleets_lib, seat_status, session_ledger, terminal
 
-    rows = list_cmd.run(argparse.Namespace(
-        fleet=None,
-        status=None,
-        mode=None,
-        include_hidden=True,
-    ))
-
-    raw = registry_lib.read_registry()
-    raw_by_target: dict[str, dict] = {}
-    for k, v in (raw.items() if isinstance(raw, dict) else []):
-        if not isinstance(v, dict):
-            continue
-        target = f"{v.get('fleet','?')}:{v.get('seat') or v.get('name','?')}"
-        raw_by_target[target] = v
+    rows = seat_status.list_seat_statuses(include_hidden=True, terminal=terminal)
 
     def _new_bucket(fleet: str) -> dict:
         fleet_record = fleets_lib.ensure_fleet(fleet)
@@ -144,7 +131,6 @@ def _fleets(args) -> dict:
 
     by_fleet: dict[str, dict] = {}
     for row in rows:
-        row = runtime_session.mark_binding(dict(row))
         fleet = row.get("fleet")
         if not fleet:
             continue
@@ -154,9 +140,7 @@ def _fleets(args) -> dict:
             bucket["live_seats"] += 1
         if row.get("runtime_session_binding") == "bound":
             bucket["bound_seats"] += 1
-        target = f"{fleet}:{row.get('name')}"
-        raw_row = raw_by_target.get(target) or {}
-        if seat_schema.identity_id_for(raw_row):
+        if seat_schema.identity_id_for(row):
             bucket["adopted_seats"] += 1
 
     # Last event per fleet from session ledger

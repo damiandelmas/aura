@@ -124,3 +124,37 @@ def test_view_includes_pending_queue_for_scoped_targets(monkeypatch, tmp_path):
 
     assert result["counts"]["pending_queue"] == 1
     assert result["pending_queue"][0]["queue_id"] == queued["queue_id"]
+
+
+def test_view_keys_latest_reports_by_fleet_and_seat(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_RUNTIME", "codex")
+    monkeypatch.setenv("DESKS_PRODUCT", "flex")
+
+    from lib import registry, reports
+    from commands import view
+
+    registry.upsert_agent({
+        "name": "lead",
+        "fleet": "fleet-a",
+        "runtime": "codex",
+        "desks_product": "flex",
+    })
+    registry.upsert_agent({
+        "name": "lead",
+        "fleet": "fleet-b",
+        "runtime": "codex",
+        "desks_product": "flex",
+    })
+
+    monkeypatch.setenv("AURA_SEAT", "lead")
+    monkeypatch.setenv("AURA_FLEET", "fleet-a")
+    reports.append_report({"state": "working", "work": "fleet-a work"})
+    monkeypatch.setenv("AURA_FLEET", "fleet-b")
+    reports.append_report({"state": "blocked", "work": "fleet-b work"})
+
+    result = view.run(argparse.Namespace(scope=None, limit=10, include_hidden=False))
+
+    by_target = {f"{row['fleet']}:{row['seat']}": row for row in result["colleagues"]}
+    assert by_target["fleet-a:lead"]["last_report"]["work"] == "fleet-a work"
+    assert by_target["fleet-b:lead"]["last_report"]["work"] == "fleet-b work"

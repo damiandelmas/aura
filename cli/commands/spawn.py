@@ -108,10 +108,6 @@ def run(args):
         base["window"] = f"{fleet_name}:{name}"
         return base
 
-    # Ensure terminal session exists; this is the baseline substrate for both
-    # generic runtimes and the legacy Claude wrapper path.
-    terminal.ensure_session()
-
     # Check if window already exists
     if terminal.window_exists(args.name):
         return {"ok": False, "error": f"agent already exists: {args.name}"}
@@ -624,6 +620,20 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         **session_meta,
     }
 
+    agent_map_packet = None
+    if prompt_text:
+        try:
+            from lib import agent_map
+
+            agent_map_result = agent_map.build_agent_map(f"{fleet}:{args.name}", terminal=terminal)
+            if agent_map_result.get("ok"):
+                agent_map_packet = agent_map_result.get("packet")
+                result["agent_map_ready"] = bool(agent_map_packet)
+            else:
+                result["agent_map_warning"] = agent_map_result.get("error") or "agent-map-unavailable"
+        except Exception as exc:
+            result["agent_map_warning"] = str(exc)
+
     if prompt_text:
         time.sleep(1)
         prompt_target = pane_ref or launch.get("target") or args.name
@@ -637,10 +647,12 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 seat=args.name,
                 launch_id=launch_id,
                 flex_packet=flex_packet,
+                agent_map_packet=agent_map_packet if runtime == "codex" else None,
             ),
             submit=True,
         )
         result["prompt_sent"] = bool(prompt_result.get("ok"))
+        result["agent_map_injected"] = bool(prompt_result.get("ok") and runtime == "codex" and agent_map_packet)
         if prompt_result.get("ok") and flex_packet and flex_manifest and flex_root:
             try:
                 from lib import delivery
@@ -1088,6 +1100,7 @@ def _augment_runtime_prompt(
     seat: str,
     launch_id: str,
     flex_packet: str | None = None,
+    agent_map_packet: str | None = None,
 ) -> str:
     if runtime != "codex":
         return prompt_text
@@ -1101,6 +1114,8 @@ def _augment_runtime_prompt(
     ]
     if flex_packet:
         lines.extend([flex_packet, ""])
+    if agent_map_packet:
+        lines.extend([agent_map_packet, ""])
     lines.append(prompt_text)
     return "\n".join(lines)
 

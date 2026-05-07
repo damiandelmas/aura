@@ -198,6 +198,128 @@ def test_tmux_target_exists_uses_exact_window_names(monkeypatch):
     assert tmux.window_exists("unitfleet:mock-efaa") is True
 
 
+def test_tmux_create_window_uses_requested_window_for_new_session(monkeypatch, tmp_path):
+    from lib import tmux
+
+    calls = []
+
+    monkeypatch.setattr(tmux, "TMUX_SESSION", "freshfleet")
+    monkeypatch.setattr(tmux, "_session", lambda: None)
+    monkeypatch.setattr(tmux, "pane_id", lambda name: "%77" if name == "worker" else None)
+
+    def fake_run(args):
+        calls.append(args)
+        if args[:6] == ["new-session", "-d", "-s", "freshfleet", "-n", "worker"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(tmux, "_run_tmux", fake_run)
+
+    result = tmux.create_window(
+        "worker",
+        str(tmp_path),
+        detached=True,
+        command="printf ready",
+        env={"AURA_SEAT": "worker"},
+        unset_env=["NO_COLOR"],
+    )
+
+    assert result["ok"] is True
+    assert result["target"] == "freshfleet:worker"
+    assert result["pane_id"] == "%77"
+    assert calls == [
+        [
+            "new-session",
+            "-d",
+            "-s",
+            "freshfleet",
+            "-n",
+            "worker",
+            "-c",
+            str(tmp_path),
+            "env -u NO_COLOR AURA_SEAT=worker printf ready",
+        ]
+    ]
+
+
+def test_tmux_create_window_retries_new_window_on_duplicate_session(monkeypatch, tmp_path):
+    from lib import tmux
+
+    calls = []
+
+    monkeypatch.setattr(tmux, "TMUX_SESSION", "racefleet")
+    monkeypatch.setattr(tmux, "_session", lambda: None)
+    monkeypatch.setattr(tmux, "pane_id", lambda name: "%78" if name == "worker-b" else None)
+
+    def fake_run(args):
+        calls.append(args)
+        if args[:6] == ["new-session", "-d", "-s", "racefleet", "-n", "worker-b"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="duplicate session: racefleet")
+        if args[:5] == ["new-window", "-t", "racefleet", "-n", "worker-b"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(tmux, "_run_tmux", fake_run)
+
+    result = tmux.create_window("worker-b", str(tmp_path), detached=True, command="sleep 60")
+
+    assert result["ok"] is True
+    assert result["target"] == "racefleet:worker-b"
+    assert calls == [
+        ["new-session", "-d", "-s", "racefleet", "-n", "worker-b", "-c", str(tmp_path), "sleep 60"],
+        ["new-window", "-t", "racefleet", "-n", "worker-b", "-d", "-c", str(tmp_path), "sleep 60"],
+    ]
+
+
+def test_spawn_run_does_not_precreate_tmux_session(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import spawn
+    from lib import terminal as terminal_module
+
+    calls = []
+
+    def fail_ensure_session():
+        raise AssertionError("spawn.run should let create_window create a missing fleet")
+
+    def fake_create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+        calls.append(("create_window", name, workdir, detached, command))
+        return {"ok": True, "target": f"freshfleet:{name}", "pane_id": "%79"}
+
+    monkeypatch.setattr(terminal_module, "configure_session", lambda name: setattr(terminal_module, "SESSION_NAME", name) or name)
+    monkeypatch.setattr(terminal_module, "ensure_session", fail_ensure_session)
+    monkeypatch.setattr(terminal_module, "window_exists", lambda name: False)
+    monkeypatch.setattr(terminal_module, "create_window", fake_create_window)
+
+    args = argparse.Namespace(
+        name="worker",
+        manifest=None,
+        role_home=None,
+        fleet="freshfleet",
+        fleet_id=None,
+        runtime="command",
+        launch_command="sleep 60",
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(tmp_path),
+        context=None,
+        resume_session=None,
+        identity_provider=None,
+        identity_id=None,
+        identity_label=None,
+    )
+
+    result = spawn.run(args)
+
+    assert result["ok"] is True
+    assert result["fleet"] == "freshfleet"
+    assert calls == [("create_window", "worker", str(tmp_path), True, "sleep 60")]
+
+
 def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
@@ -299,8 +421,10 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
     assert env["CLICOLOR_FORCE"] == "1"
     assert unset_env == ["NO_COLOR", "AURA_RUNTIME_SESSION_ID", "AURA_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID"]
     assert sent[0][1].startswith("[AURA SEAT CONTEXT]\nfleet=unitfleet\nseat=codex-seat\nlaunch_id=aura-launch-")
-    assert sent[0][1].endswith("[/AURA SEAT CONTEXT]\n\nDo the unit work.\n")
+    assert "[AURA AGENT MAP]\nself:\n  target: unitfleet:codex-seat" in sent[0][1]
+    assert sent[0][1].endswith("[/AURA AGENT MAP]\n\nDo the unit work.\n")
     assert result["prompt_sent"] is True
+    assert result["agent_map_injected"] is True
     assert result["context_file"] == str(context_file)
     assert result["work_file"] == str(work_file)
 
@@ -310,6 +434,50 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
     assert rows[-1]["runtime"] == "codex"
     assert rows[-1]["cwd"] == str(unit)
     assert rows[-1]["work_file"] == str(work_file)
+
+
+def test_spawn_non_codex_does_not_claim_agent_map_injected(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+    sent = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            return {"ok": True, "target": f"unitfleet:{name}", "pane_id": "%55"}
+
+        @staticmethod
+        def send_text(name, text, submit=True, submit_key="Enter"):
+            sent.append((name, text, submit, submit_key))
+            return {"ok": True}
+
+    args = argparse.Namespace(
+        name="shell-seat",
+        runtime="command",
+        resume_session=None,
+        launch_command="bash",
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt="hello",
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["agent_map_ready"] is True
+    assert result["agent_map_injected"] is False
+    assert sent[0][1] == "hello"
 
 
 def test_spawn_sets_flex_project_env_without_launch_packet(monkeypatch, tmp_path):
@@ -819,7 +987,11 @@ def test_spawn_manifest_resume_does_not_send_bootstrap_prompt(monkeypatch, tmp_p
     result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
 
     assert result["ok"] is True
-    assert result["command"] == f"codex --dangerously-bypass-approvals-and-sandbox resume {session_id}"
+    expected_command = (
+        f"codex --cd {tmp_path / 'unit'} "
+        f"--dangerously-bypass-approvals-and-sandbox resume {session_id}"
+    )
+    assert result["command"] == expected_command
     assert result["runtime_session_binding"] == "bound"
     assert result["runtime_session_id"] == session_id
     assert result["desks_role_home"] == str(role_home)

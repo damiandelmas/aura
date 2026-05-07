@@ -1,0 +1,186 @@
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "cli"))
+
+
+@pytest.fixture
+def aura_state(monkeypatch, tmp_path):
+    state_root = tmp_path / ".aura"
+    desks_root = tmp_path / ".desks"
+    state_root.mkdir(parents=True, exist_ok=True)
+    desks_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AURA_STATE_DIR", str(state_root))
+    monkeypatch.setenv("DESKS_ROOT", str(desks_root))
+    monkeypatch.setenv("AURA_FLEET", "runway-engineering")
+    return state_root
+
+
+class FakeTerminal:
+    SESSION_NAME = "runway-engineering"
+    alive = {"tmux:runway-engineering:%191", "tmux:runway-engineering:%222"}
+    configured = []
+
+    @classmethod
+    def configure_session(cls, fleet):
+        cls.configured.append(fleet)
+        cls.SESSION_NAME = fleet
+        return fleet
+
+    @classmethod
+    def target_exists(cls, target):
+        return target in cls.alive
+
+    @staticmethod
+    def capture_output(_target, _lines=20):
+        return ["ready"]
+
+
+def test_status_projects_adopted_unbound_risks_without_session_id(aura_state):
+    from lib import deferred, holding, queued_messages, registry, seat_status
+
+    registry.upsert_agent({
+        "name": "research-2",
+        "seat": "research-2",
+        "fleet": "runway-engineering",
+        "runtime": "codex",
+        "status": "unknown",
+        "registered": True,
+        "registered_via": "adopt",
+        "managed_state": "adopted_unbound",
+        "seat_instance_id": "si_status001",
+        "pane_ref": "tmux:runway-engineering:%191",
+        "terminal_ref": "runway-engineering:research-2",
+        "backend_ref": "runway-engineering:research-2",
+        "runtime_session_binding": "unbound",
+        "runtime_session_id": None,
+    })
+    holding.create_from_candidate({
+        "source": "tmux",
+        "pane_ref": "tmux:runway-engineering:%999",
+        "tmux_session": "runway-engineering",
+        "window_name": "bash",
+        "pane_id": "%999",
+    })
+    queued_messages.create(target="runway-engineering:research-2", message="after report", sender="tester")
+    deferred.create(
+        target="runway-engineering:research-2",
+        message="when free",
+        sender="tester",
+        dedupe_key="unit-dedupe",
+    )
+
+    row = seat_status.build_seat_status("runway-engineering:research-2", terminal=FakeTerminal)
+
+    assert row["ok"] is True
+    assert row["target"] == "runway-engineering:research-2"
+    assert row["managed_state"] == "adopted_unbound"
+    assert row["liveness"] == "alive"
+    assert row["runtime_session_binding"] == "unbound"
+    assert row["runtime_session_id"] is None
+    assert row["session_id"] is None
+    assert {
+        "unbound_runtime_session",
+        "identity_missing",
+        "queued_messages_pending",
+        "deferred_deliveries_pending",
+        "holding_records_nearby",
+    } <= set(row["risk_flags"])
+
+
+def test_status_keeps_weak_codex_match_out_of_runtime_session_id(aura_state):
+    from lib import registry, seat_status
+
+    registry.upsert_agent({
+        "name": "research-weak",
+        "fleet": "runway-engineering",
+        "runtime": "codex",
+        "registered": True,
+        "seat_instance_id": "si_status002",
+        "pane_ref": "tmux:runway-engineering:%191",
+        "runtime_session_id": "019dd797-1169-7931-b2f7-17824b3b7134",
+        "runtime_session_source": "codex-state:cwd-start",
+        "runtime_session_evidence": {"reason": "cwd-start-seat-name"},
+        "runtime_session_cwd": "/repo",
+    })
+
+    row = seat_status.build_seat_status("runway-engineering:research-weak", terminal=FakeTerminal)
+
+    assert row["runtime_session_binding"] == "unbound"
+    assert row["runtime_session_id"] is None
+    assert row["session_id"] is None
+    assert row["runtime_session_possible_matches"][0]["runtime_session_id"] == "019dd797-1169-7931-b2f7-17824b3b7134"
+    assert "possible_runtime_session_matches" in row["risk_flags"]
+
+
+def test_status_joins_desks_identity_and_org_position(aura_state, tmp_path):
+    from lib import registry, seat_status
+
+    desks_root = Path(tmp_path / ".desks")
+    identity_dir = desks_root / "identities" / "r_status001"
+    identity_dir.mkdir(parents=True)
+    (identity_dir / "identity.json").write_text(
+        json.dumps({
+            "schema": "desks.identity.v1",
+            "identity_id": "r_status001",
+            "current_name": "flex:systems:specialist:workstreams",
+            "aliases": [],
+        }),
+        encoding="utf-8",
+    )
+    org_dir = desks_root / "organizations" / "flex"
+    org_dir.mkdir(parents=True)
+    (org_dir / "current-organization.yaml").write_text(
+        """
+product: flex
+units:
+  - unit: systems
+    programs:
+      - program: archeology
+        fleets:
+          - fleet/project: flex-systems-archeology
+            seats:
+              - seat: specialist-workstreams
+                role: flex:systems:specialist:workstreams
+                identity_id: r_status001
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    registry.upsert_agent({
+        "name": "specialist-workstreams",
+        "fleet": "runway-engineering",
+        "runtime": "codex",
+        "registered": True,
+        "seat_instance_id": "si_status003",
+        "pane_ref": "tmux:runway-engineering:%222",
+        "identity_provider": "desks",
+        "identity_id": "r_status001",
+        "desks_identity_id": "r_status001",
+        "desks_product": "flex",
+        "runtime_session_id": "019dd797-1169-7931-b2f7-17824b3b7134",
+        "runtime_session_source": "argv:codex-resume",
+    })
+
+    row = seat_status.build_seat_status("runway-engineering:specialist-workstreams", terminal=FakeTerminal)
+
+    assert row["runtime_session_binding"] == "bound"
+    assert row["runtime_session_id"] == "019dd797-1169-7931-b2f7-17824b3b7134"
+    assert row["restore_ready"] is True
+    assert row["identity"] == {
+        "provider": "desks",
+        "id": "r_status001",
+        "name": "flex:systems:specialist:workstreams",
+        "current": {"position": "flex:systems:specialist:workstreams"},
+    }
+    assert row["org"]["unit"] == "systems"
+    assert row["org"]["program"] == "archeology"
+    assert "identity_missing" not in row["risk_flags"]
+    assert "org_position_missing" not in row["risk_flags"]
