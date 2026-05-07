@@ -106,6 +106,55 @@ def test_holding_discover_does_not_hide_duplicate_window_name_by_managed_target(
     assert {row["pane_ref"] for row in result["unmanaged"]} == {"tmux:runway-engineering:%201"}
 
 
+def test_holding_discover_resolves_registered_logical_target_to_live_pane(monkeypatch, aura_state):
+    from commands import holding as holding_cmd
+    from commands import seat as seat_cmd
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "developer",
+        "seat": "developer",
+        "fleet": "runway-engineering",
+        "runtime": "codex",
+        "pane_ref": "tmux:runway-engineering:%159",
+        "terminal_ref": "runway-engineering:developer",
+        "backend_ref": "runway-engineering:developer",
+        "registered": True,
+    })
+    panes = [
+        _pane(window_name="developer", pane_id="%195", pid=97913),
+    ]
+    monkeypatch.setattr(seat_cmd, "_list_tmux_panes", lambda: panes)
+
+    def fake_run_tmux(args):
+        if args[:4] == ["display-message", "-p", "-t", "%159"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="can't find pane")
+        if args[:4] == ["display-message", "-p", "-t", "runway-engineering:developer"]:
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout="runway-engineering\t%195\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(seat_cmd, "_run_tmux", fake_run_tmux)
+
+    args = argparse.Namespace(
+        holding_action="discover",
+        tmux=True,
+        fleet="runway-engineering",
+        all_fleets=False,
+        all=True,
+        create=False,
+    )
+    result = holding_cmd.run(args)
+
+    assert result["ok"] is True
+    assert {row["pane_ref"] for row in result["managed"]} == {"tmux:runway-engineering:%195"}
+    assert result["unmanaged"] == []
+
+
 def test_holding_list_explicit_resolved_status_includes_resolved_records(aura_state):
     from lib import holding
 

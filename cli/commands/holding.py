@@ -8,12 +8,36 @@ def _pane_ref(pane: dict) -> str:
 
 
 def _managed_refs(registry) -> set[str]:
+    from commands import seat as seat_cmd
+
+    def live_pane_ref(value: str | None) -> str | None:
+        if not value:
+            return None
+        target = seat_cmd._tmux_target(str(value))
+        result = seat_cmd._run_tmux([
+            "display-message",
+            "-p",
+            "-t",
+            target,
+            "#{session_name}\t#{pane_id}",
+        ])
+        if result.returncode != 0:
+            return None
+        parts = result.stdout.strip().split("\t")
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            return None
+        return f"tmux:{parts[0]}:{parts[1]}"
+
     refs: set[str] = set()
     for record in registry.list_agents(include_hidden=True):
-        for key in ("pane_ref",):
+        for key in ("pane_ref", "terminal_ref", "backend_ref"):
             value = record.get(key)
-            if value:
+            if value and key == "pane_ref":
                 refs.add(str(value))
+            if value:
+                resolved = live_pane_ref(str(value))
+                if resolved:
+                    refs.add(resolved)
     return refs
 
 
