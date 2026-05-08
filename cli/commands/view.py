@@ -1,8 +1,192 @@
-"""Show the current bounded mesh view."""
+"""Show Aura managed-seat views."""
 
 from __future__ import annotations
 
 from lib import deferred, queued_messages, reports, seat_status
+
+
+def _compact_identity(row: dict) -> dict | None:
+    identity = row.get("identity")
+    if not isinstance(identity, dict):
+        return None
+    current = identity.get("current") if isinstance(identity.get("current"), dict) else {}
+    result = {
+        "provider": identity.get("provider") or row.get("identity_provider"),
+        "id": identity.get("id") or row.get("identity_id"),
+        "name": identity.get("name") or row.get("identity_label"),
+        "current_position": current.get("position"),
+    }
+    return {key: value for key, value in result.items() if value}
+
+
+def _current_position(row: dict) -> str | None:
+    identity = row.get("identity")
+    if isinstance(identity, dict):
+        current = identity.get("current")
+        if isinstance(current, dict) and current.get("position"):
+            return current.get("position")
+    org = row.get("org")
+    if isinstance(org, dict):
+        return org.get("role")
+    return None
+
+
+def _compact_status(row: dict) -> dict:
+    return {
+        key: value
+        for key, value in {
+            "target": row.get("target") or _target_for(row),
+            "fleet": row.get("fleet"),
+            "seat": row.get("seat") or row.get("name"),
+            "status": row.get("status"),
+            "liveness": row.get("liveness"),
+            "managed_state": row.get("managed_state"),
+            "runtime": row.get("runtime"),
+            "runtime_session_binding": row.get("runtime_session_binding"),
+            "runtime_session_id": row.get("runtime_session_id") or row.get("session_id"),
+            "seat_instance_id": row.get("seat_instance_id"),
+            "identity": _compact_identity(row),
+            "current_position": _current_position(row),
+            "risk_flags": row.get("risk_flags") or [],
+            "last_report": row.get("latest_report"),
+        }.items()
+        if value not in (None, {}, [])
+    }
+
+
+def _row_matches_pane(row: dict, pane: str | None) -> bool:
+    if not pane:
+        return False
+    for key in ("pane_ref", "terminal_ref", "backend_ref"):
+        value = str(row.get(key) or "")
+        if value == pane or value.endswith(f":{pane}"):
+            return True
+    return False
+
+
+def _row_target(row: dict) -> str | None:
+    return row.get("target") or row.get("seat_ref") or _target_for(row)
+
+
+def _is_routable(row: dict) -> bool:
+    return row.get("managed_state") not in {"missing_pane", "stopped"}
+
+
+def _one_self_match(rows: list[dict], matches: list[dict], source: str) -> dict:
+    routable = [row for row in matches if _is_routable(row)]
+    selected = routable or matches
+    if len(selected) == 1:
+        return {"ok": True, "source": source, "row": selected[0]}
+    if len(selected) > 1:
+        return {
+            "ok": False,
+            "source": source,
+            "error": "self-resolved-to-multiple-seats",
+            "match_count": len(selected),
+            "matches": [_row_target(row) for row in selected],
+        }
+    return {"ok": False, "source": source, "error": "self-not-resolved", "match_count": 0}
+
+
+def _resolve_self(rows: list[dict], context: dict) -> dict:
+    pane_match = _one_self_match(
+        rows,
+        [row for row in rows if _row_matches_pane(row, context.get("pane"))],
+        "tmux-pane",
+    )
+    if pane_match.get("ok") or pane_match.get("match_count"):
+        return pane_match
+
+    env_target = (
+        f"{context.get('fleet')}:{context.get('seat')}"
+        if context.get("fleet") and context.get("seat")
+        else None
+    )
+    if env_target:
+        env_match = _one_self_match(
+            rows,
+            [row for row in rows if _row_target(row) == env_target],
+            "aura-env",
+        )
+        if env_match.get("ok") or env_match.get("match_count"):
+            return env_match
+
+    session_id = context.get("runtime_session_id") or context.get("session_id")
+    if session_id:
+        session_match = _one_self_match(
+            rows,
+            [
+                row for row in rows
+                if session_id in {row.get("runtime_session_id"), row.get("session_id")}
+            ],
+            "runtime-session",
+        )
+        if session_match.get("ok") or session_match.get("match_count"):
+            return session_match
+
+    return {"ok": False, "source": "none", "error": "self-not-resolved", "match_count": 0}
+
+
+def _status_rows(*, include_hidden: bool):
+    from lib import terminal
+
+    return seat_status.list_seat_statuses(include_hidden=include_hidden, terminal=terminal)
+
+
+def _run_self(*, include_hidden: bool) -> dict:
+    context = reports.infer_context()
+    rows = _status_rows(include_hidden=include_hidden)
+    resolved = _resolve_self(rows, context)
+    if not resolved.get("ok"):
+        return {
+            "ok": False,
+            "schema": "aura.view.self.v1",
+            "current": context,
+            "error": resolved.get("error"),
+            "source": resolved.get("source"),
+            "match_count": resolved.get("match_count", 0),
+            "matches": resolved.get("matches") or [],
+        }
+    return {
+        "ok": True,
+        "schema": "aura.view.self.v1",
+        "source": resolved.get("source"),
+        "self": _compact_status(resolved["row"]),
+    }
+
+
+def _run_fleet(*, include_hidden: bool) -> dict:
+    context = reports.infer_context()
+    rows = _status_rows(include_hidden=include_hidden)
+    resolved = _resolve_self(rows, context)
+    fleet = None
+    self_row = None
+    if resolved.get("ok"):
+        self_row = resolved["row"]
+        fleet = self_row.get("fleet")
+    fleet = fleet or context.get("fleet")
+    fleet_rows = [row for row in rows if row.get("fleet") == fleet] if fleet else []
+    return {
+        "ok": bool(fleet),
+        "schema": "aura.view.fleet.v1",
+        "fleet": fleet,
+        "self": _compact_status(self_row) if self_row else None,
+        "source": resolved.get("source"),
+        "counts": {"seats": len(fleet_rows)},
+        "seats": [_compact_status(row) for row in fleet_rows],
+    }
+
+
+def _run_roster(*, include_hidden: bool) -> dict:
+    rows = _status_rows(include_hidden=include_hidden)
+    fleets = sorted({row.get("fleet") for row in rows if row.get("fleet")})
+    return {
+        "ok": True,
+        "schema": "aura.view.roster.v1",
+        "counts": {"fleets": len(fleets), "seats": len(rows)},
+        "fleets": fleets,
+        "seats": [_compact_status(row) for row in rows],
+    }
 
 
 def _role_field(record: dict, name: str) -> str | None:
@@ -107,8 +291,16 @@ def _report_summary(row: dict | None) -> dict | None:
 
 
 def run(args):
-    limit = int(getattr(args, "limit", None) or 10)
+    action = getattr(args, "view_action", None)
     include_hidden = bool(getattr(args, "include_hidden", False))
+    if action == "self":
+        return _run_self(include_hidden=include_hidden)
+    if action == "fleet":
+        return _run_fleet(include_hidden=include_hidden)
+    if action == "roster":
+        return _run_roster(include_hidden=include_hidden)
+
+    limit = int(getattr(args, "limit", None) or 10)
     context = reports.infer_context()
     scope = _infer_scope(context, getattr(args, "scope", None))
 

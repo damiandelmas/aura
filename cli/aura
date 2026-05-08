@@ -666,8 +666,10 @@ def main():
     p_report.add_argument("--cwd-prefix",
                           help="For list/latest, include only reports whose cwd starts with this path")
 
-    # view — bounded mesh worldview
-    p_view = subparsers.add_parser("view", help="Show current bounded mesh view")
+    # view — simple managed-seat views
+    p_view = subparsers.add_parser("view", help="Show current Aura seat views")
+    p_view.add_argument("view_action", nargs="?", choices=["self", "fleet", "roster"],
+                        help="View self, current fleet, or all managed seats")
     p_view.add_argument("--scope",
                         help="Override inferred scope: fleet:NAME, product:NAME, unit:PRODUCT:UNIT, or NAME")
     p_view.add_argument("--limit", "-n", type=int, default=10,

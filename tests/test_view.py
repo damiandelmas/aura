@@ -158,3 +158,73 @@ def test_view_keys_latest_reports_by_fleet_and_seat(monkeypatch, tmp_path):
     by_target = {f"{row['fleet']}:{row['seat']}": row for row in result["colleagues"]}
     assert by_target["fleet-a:lead"]["last_report"]["work"] == "fleet-a work"
     assert by_target["fleet-b:lead"]["last_report"]["work"] == "fleet-b work"
+
+
+def test_view_self_returns_current_managed_seat(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "runway-engineering")
+    monkeypatch.setenv("AURA_SEAT", "lead-engineer")
+    monkeypatch.setenv("AURA_RUNTIME", "codex")
+
+    from lib import registry
+    from commands import view
+
+    registry.upsert_agent({
+        "name": "lead-engineer",
+        "fleet": "runway-engineering",
+        "runtime": "codex",
+        "runtime_session_id": "session-self",
+        "runtime_session_binding": "bound",
+        "seat_instance_id": "si_self",
+        "identity_provider": "desks",
+        "identity_id": "r_self",
+        "identity_label": "runway:engineering:lead:engineer",
+    })
+
+    result = view.run(argparse.Namespace(view_action="self", scope=None, limit=10, include_hidden=False))
+
+    assert result["ok"] is True
+    assert result["schema"] == "aura.view.self.v1"
+    assert result["self"]["target"] == "runway-engineering:lead-engineer"
+    assert result["self"]["runtime_session_id"] == "session-self"
+    assert result["self"]["identity"]["id"] == "r_self"
+
+
+def test_view_fleet_returns_same_fleet_rows(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "runway-engineering")
+    monkeypatch.setenv("AURA_SEAT", "lead-engineer")
+
+    from lib import registry
+    from commands import view
+
+    registry.upsert_agent({"name": "lead-engineer", "fleet": "runway-engineering", "runtime": "codex"})
+    registry.upsert_agent({"name": "worker", "fleet": "runway-engineering", "runtime": "codex"})
+    registry.upsert_agent({"name": "other", "fleet": "runway-marketing", "runtime": "codex"})
+
+    result = view.run(argparse.Namespace(view_action="fleet", scope=None, limit=10, include_hidden=False))
+
+    assert result["ok"] is True
+    assert result["schema"] == "aura.view.fleet.v1"
+    assert result["fleet"] == "runway-engineering"
+    assert {row["target"] for row in result["seats"]} == {
+        "runway-engineering:lead-engineer",
+        "runway-engineering:worker",
+    }
+
+
+def test_view_roster_returns_all_managed_rows(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from lib import registry
+    from commands import view
+
+    registry.upsert_agent({"name": "lead-engineer", "fleet": "runway-engineering", "runtime": "codex"})
+    registry.upsert_agent({"name": "research-lead", "fleet": "runway-research", "runtime": "codex"})
+
+    result = view.run(argparse.Namespace(view_action="roster", scope=None, limit=10, include_hidden=False))
+
+    assert result["ok"] is True
+    assert result["schema"] == "aura.view.roster.v1"
+    assert result["counts"] == {"fleets": 2, "seats": 2}
+    assert result["fleets"] == ["runway-engineering", "runway-research"]
