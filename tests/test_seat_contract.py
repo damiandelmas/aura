@@ -211,6 +211,13 @@ def test_tmux_create_window_uses_requested_window_for_new_session(monkeypatch, t
         calls.append(args)
         if args[:6] == ["new-session", "-d", "-s", "freshfleet", "-n", "worker"]:
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args in (
+            ["set-option", "-t", "freshfleet", "base-index", "1"],
+            ["set-window-option", "-t", "freshfleet", "pane-base-index", "1"],
+            ["set-option", "-t", "freshfleet", "renumber-windows", "on"],
+            ["move-window", "-r", "-t", "freshfleet"],
+        ):
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         raise AssertionError(args)
 
     monkeypatch.setattr(tmux, "_run_tmux", fake_run)
@@ -238,8 +245,36 @@ def test_tmux_create_window_uses_requested_window_for_new_session(monkeypatch, t
             "-c",
             str(tmp_path),
             "env -u NO_COLOR AURA_SEAT=worker printf ready",
-        ]
+        ],
+        ["set-option", "-t", "freshfleet", "base-index", "1"],
+        ["set-window-option", "-t", "freshfleet", "pane-base-index", "1"],
+        ["set-option", "-t", "freshfleet", "renumber-windows", "on"],
+        ["move-window", "-r", "-t", "freshfleet"],
     ]
+
+
+def test_tmux_create_window_index_defaults_can_be_disabled(monkeypatch, tmp_path):
+    from lib import tmux
+
+    calls = []
+
+    monkeypatch.setenv("AURA_TMUX_INDEX_DEFAULTS", "0")
+    monkeypatch.setattr(tmux, "TMUX_SESSION", "zero-ok")
+    monkeypatch.setattr(tmux, "_session", lambda: None)
+    monkeypatch.setattr(tmux, "pane_id", lambda name: "%77" if name == "worker" else None)
+
+    def fake_run(args):
+        calls.append(args)
+        if args[:6] == ["new-session", "-d", "-s", "zero-ok", "-n", "worker"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(tmux, "_run_tmux", fake_run)
+
+    result = tmux.create_window("worker", str(tmp_path), detached=True, command="sleep 60")
+
+    assert result["ok"] is True
+    assert calls == [["new-session", "-d", "-s", "zero-ok", "-n", "worker", "-c", str(tmp_path), "sleep 60"]]
 
 
 def test_tmux_create_window_retries_new_window_on_duplicate_session(monkeypatch, tmp_path):
@@ -255,6 +290,13 @@ def test_tmux_create_window_retries_new_window_on_duplicate_session(monkeypatch,
         calls.append(args)
         if args[:6] == ["new-session", "-d", "-s", "racefleet", "-n", "worker-b"]:
             return subprocess.CompletedProcess(args, 1, stdout="", stderr="duplicate session: racefleet")
+        if args in (
+            ["set-option", "-t", "racefleet", "base-index", "1"],
+            ["set-window-option", "-t", "racefleet", "pane-base-index", "1"],
+            ["set-option", "-t", "racefleet", "renumber-windows", "on"],
+            ["move-window", "-r", "-t", "racefleet"],
+        ):
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if args[:5] == ["new-window", "-t", "racefleet", "-n", "worker-b"]:
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         raise AssertionError(args)
@@ -267,6 +309,10 @@ def test_tmux_create_window_retries_new_window_on_duplicate_session(monkeypatch,
     assert result["target"] == "racefleet:worker-b"
     assert calls == [
         ["new-session", "-d", "-s", "racefleet", "-n", "worker-b", "-c", str(tmp_path), "sleep 60"],
+        ["set-option", "-t", "racefleet", "base-index", "1"],
+        ["set-window-option", "-t", "racefleet", "pane-base-index", "1"],
+        ["set-option", "-t", "racefleet", "renumber-windows", "on"],
+        ["move-window", "-r", "-t", "racefleet"],
         ["new-window", "-t", "racefleet", "-n", "worker-b", "-d", "-c", str(tmp_path), "sleep 60"],
     ]
 
@@ -364,6 +410,7 @@ def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, 
 def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_CODEX_STARTUP_READY_TIMEOUT", "0")
 
     from commands import spawn
 
@@ -420,11 +467,9 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
     assert env["FORCE_COLOR"] == "1"
     assert env["CLICOLOR_FORCE"] == "1"
     assert unset_env == ["NO_COLOR", "AURA_RUNTIME_SESSION_ID", "AURA_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID"]
-    assert sent[0][1].startswith("[AURA SEAT CONTEXT]\nfleet=unitfleet\nseat=codex-seat\nlaunch_id=aura-launch-")
-    assert "[AURA AGENT MAP]\nself:\n  target: unitfleet:codex-seat" in sent[0][1]
-    assert sent[0][1].endswith("[/AURA AGENT MAP]\n\nDo the unit work.\n")
-    assert result["prompt_sent"] is True
-    assert result["agent_map_injected"] is True
+    assert sent[0][1] == "Do the unit work.\n"
+    assert result["prompt_delivery"]["submitted"] is True
+    assert "agent_map_included" not in result["prompt_delivery"]
     assert result["context_file"] == str(context_file)
     assert result["work_file"] == str(work_file)
 
@@ -475,14 +520,14 @@ def test_spawn_non_codex_does_not_claim_agent_map_injected(monkeypatch, tmp_path
     result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
 
     assert result["ok"] is True
-    assert result["agent_map_ready"] is True
-    assert result["agent_map_injected"] is False
+    assert "agent_map_included" not in result["prompt_delivery"]
     assert sent[0][1] == "hello"
 
 
 def test_spawn_sets_flex_project_env_without_launch_packet(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_CODEX_STARTUP_READY_TIMEOUT", "0")
 
     from commands import spawn
 
@@ -858,6 +903,7 @@ def test_spawn_manifest_rejects_absolute_role_file(tmp_path):
 def test_spawn_manifest_metadata_reaches_registry_and_workspace_record(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_CODEX_STARTUP_READY_TIMEOUT", "0")
 
     from commands import spawn
     from lib import registry

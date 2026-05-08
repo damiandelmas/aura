@@ -621,6 +621,7 @@ def test_spawn_codex_resume_polls_cwd_choice_before_resending(monkeypatch, tmp_p
 def test_spawn_codex_prompt_embeds_aura_launch_context(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_CODEX_STARTUP_READY_TIMEOUT", "0")
 
     from commands import spawn
     monkeypatch.setattr(spawn.uuid, "uuid4", lambda: type("U", (), {"hex": "abcdef1234567890ffff"})())
@@ -661,12 +662,9 @@ def test_spawn_codex_prompt_embeds_aura_launch_context(monkeypatch, tmp_path):
     assert result["aura_launch_id"] == "aura-launch-abcdef1234567890"
     assert sent[0][0] == "builder"
     assert sent[0][2] is True
-    assert sent[0][1].startswith(
-        "[AURA SEAT CONTEXT]\nfleet=unitfleet\nseat=builder\nlaunch_id=aura-launch-abcdef1234567890\n[/AURA SEAT CONTEXT]\n\n"
-    )
-    assert "[AURA AGENT MAP]\nself:\n  target: unitfleet:builder" in sent[0][1]
-    assert sent[0][1].endswith("[/AURA AGENT MAP]\n\nbuild the artifact")
-    assert result["agent_map_injected"] is True
+    assert sent[0][1] == "build the artifact"
+    assert "startup_handshake" not in result
+    assert "agent_map_included" not in result["prompt_delivery"]
 
 
 def test_spawn_codex_prompt_retries_submit_before_session_observation(monkeypatch, tmp_path):
@@ -674,6 +672,7 @@ def test_spawn_codex_prompt_retries_submit_before_session_observation(monkeypatc
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
     monkeypatch.setenv("AURA_SPAWN_SESSION_OBSERVE_TIMEOUT", "0")
+    monkeypatch.setenv("AURA_CODEX_STARTUP_READY_TIMEOUT", "0")
 
     from commands import spawn
     from lib import runtime_session
@@ -738,13 +737,84 @@ def test_spawn_codex_prompt_retries_submit_before_session_observation(monkeypatc
     result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
 
     assert result["ok"] is True
-    assert result["prompt_sent"] is True
-    assert result["prompt_submit_retry"]["ok"] is True
-    assert result["prompt_submit_retry"]["session_seen"] is True
-    assert result["prompt_submit_retry"]["attempts"] == 1
-    assert keys == [("tmux:unitfleet:%44", "Enter", False)]
+    assert result["prompt_delivery"]["submitted"] is True
+    assert result["prompt_delivery"]["submit_retry"]["ok"] is True
+    assert result["prompt_delivery"]["submit_retry"]["session_seen"] is True
+    assert result["prompt_delivery"]["submit_retry"]["attempts"] == 1
+    assert keys == [
+        ("tmux:unitfleet:%44", "Enter", False),
+    ]
     assert "runtime_session_id" not in result
     assert sent[0][0] == "builder"
+    assert sent[0][1] == "build the artifact"
+
+
+def test_spawn_codex_startup_handshake_waits_for_hook_bound_registry(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_CODEX_STARTUP_HANDSHAKE", "1")
+    monkeypatch.setenv("AURA_CODEX_STARTUP_READY_TIMEOUT", "1")
+
+    from commands import spawn
+    from lib import registry
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+    sent = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            return {"ok": True, "target": "unitfleet:builder", "pane_id": "%44"}
+
+        @staticmethod
+        def send_text(name, text, submit=False):
+            sent.append((name, text, submit))
+            row = registry.get_agent("builder", fleet="unitfleet")
+            registry.upsert_agent({
+                **row,
+                "name": "builder",
+                "fleet": "unitfleet",
+                "runtime_session_id": "codex-hook-thread",
+                "session_id": "codex-hook-thread",
+                "runtime_session_source": "codex-hook:session-start",
+                "runtime_session_binding": "bound",
+                "runtime_session_bind_method": "codex-hook",
+                "runtime_session_bind_source": "codex-hook:session-start",
+                "runtime_session_confidence": "exact",
+            })
+            return {"ok": True}
+
+        @staticmethod
+        def pane_pid(target):
+            return 1001
+
+    args = argparse.Namespace(
+        name="builder",
+        runtime="codex",
+        resume_session=None,
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert sent[0][1].startswith("[AURA STARTUP]")
+    assert result["startup_readiness"]["ready"] is True
+    assert result["ready"] is True
+    assert result["ready_reason"] == "hook-bound"
+    assert result["runtime_session_id"] == "codex-hook-thread"
+    assert result["session_observation"]["status"] == "already-bound"
 
 
 def test_spawn_auto_observes_codex_session_by_launch_id(monkeypatch, tmp_path):
@@ -1190,6 +1260,41 @@ def test_sessions_bind_current_is_idempotent(monkeypatch, tmp_path):
     assert second["ok"] is True
     assert second["session_id"] == "thread-current"
     assert registry.get_agent("engineer", fleet="fleet-a")["runtime_session_confidence"] == "exact"
+
+
+def test_sessions_bind_hook_follows_rehome_alias_without_recreating_source(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from commands import sessions
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "operator",
+        "fleet": "aura-refresh-test",
+        "runtime": "codex",
+        "registered": True,
+        "seat_instance_id": "si_hook",
+        "pane_ref": "tmux:aura-refresh-test:%341",
+    })
+    rehome = registry.rehome_agent("aura-refresh-test:operator", new_name="pilot")
+    assert rehome["ok"] is True
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="bind-hook",
+        runtime="codex",
+        target="aura-refresh-test:operator",
+        session_id="thread-hook",
+        nonce=None,
+        transcript_path="/tmp/thread.jsonl",
+        hook_event="UserPromptSubmit",
+        seat_instance_id="si_hook",
+    ))
+
+    assert result["ok"] is True
+    assert result["target"] == "aura-refresh-test:pilot"
+    assert set(registry.read_registry().keys()) == {"aura-refresh-test:pilot"}
+    assert registry.get_agent("aura-refresh-test:pilot")["runtime_session_id"] == "thread-hook"
+    assert registry.get_agent("aura-refresh-test:operator")["resolved_from"] == "aura-refresh-test:operator"
 
 
 def test_sessions_bind_current_requires_exact_session(monkeypatch):

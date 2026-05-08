@@ -443,19 +443,16 @@ def _packet_already_present(record: dict, terminal, target: str | None, manifest
 def _mark_flex_packet(record: dict, registry, *, manifest: Path, root: Path, source: str, sent: bool) -> dict:
     from lib import delivery
 
-    session_key = _packet_session_key(record)
     now = delivery.now_iso()
-    delivered = bool(sent) or bool(record.get("flex_project_packet_delivered"))
     updated = registry.upsert_agent({
         **record,
         "flex_project_manifest": str(manifest),
         "flex_project_root": str(root),
-        "flex_project_packet_delivered": delivered,
-        "flex_project_packet_delivered_at": now if sent else record.get("flex_project_packet_delivered_at"),
-        "flex_project_packet_source": source,
-        "flex_project_packet_manifest": str(manifest),
-        "flex_project_packet_session_key": session_key,
     })
+    updated["flex_project_packet_delivered_at"] = now if sent else record.get("flex_project_packet_delivered_at")
+    updated["flex_project_packet_source"] = source
+    updated["flex_project_packet_manifest"] = str(manifest)
+    updated["flex_project_packet_session_key"] = _packet_session_key(record)
     return updated
 
 
@@ -955,16 +952,14 @@ def _restart(args, registry, terminal) -> dict:
         terminal_ref = old.get("terminal_ref") or f"{fleet}:{name}"
     else:
         terminal_ref = launch.get("target") or f"{fleet}:{name}"
-    prompt_sent = False
     if plan.get("prompt") and hasattr(terminal, "send_text"):
         from commands import spawn
 
-        prompt_result = terminal.send_text(
+        terminal.send_text(
             new_pane_ref or terminal_ref,
             spawn._augment_runtime_prompt(plan["runtime"], plan["prompt"], fleet=fleet, seat=name, launch_id=launch_id),
             submit=True,
         )
-        prompt_sent = bool(prompt_result.get("ok"))
 
     process_meta = {}
     if hasattr(terminal, "pane_pid"):
@@ -1016,7 +1011,6 @@ def _restart(args, registry, terminal) -> dict:
         "pane_ref": new_pane_ref,
         "status": "starting",
         "registered": True,
-        "prompt_sent": prompt_sent or record.get("prompt_sent"),
     })
 
     cwd_choice = None
@@ -1309,18 +1303,11 @@ def _tag(args, registry, terminal=None) -> dict:
         return {"ok": False, "error": "registry-row-missing-fleet-or-name",
                 "detail": f"existing row for {target!r} lacks fleet/name fields"}
 
-    # Direct read/write rather than upsert_agent, because upsert merges previous
-    # keys back in via `{**previous, **record}` — that would defeat unset.
-    data = registry.read_registry()
-    key = registry._key(fleet, name)
     next_record["name"] = name
     next_record["seat"] = next_record.get("seat") or name
     next_record["fleet"] = fleet
-    next_record["seat_ref"] = key
     next_record["last_seen"] = registry.now_iso()
-    data[key] = next_record
-    registry.write_registry(data)
-    updated = next_record
+    updated = registry.replace_agent_record(next_record)
 
     warnings: list[str] = []
     try:
@@ -1583,7 +1570,6 @@ def _adopt_pane_as_seat(
     now = registry.now_iso()
     session_fields = _runtime_session_fields(runtime, pane, seat)
     bound = bool(session_fields.get("runtime_session_binding") == "bound" and session_fields.get("runtime_session_id"))
-    managed_state = f"adopted_{'bound' if bound else 'unbound'}"
     record = {
         "name": seat,
         "seat": seat,
@@ -1613,7 +1599,6 @@ def _adopt_pane_as_seat(
         "aura_launch_id": None,
         "adoption_id": f"adopt_{uuid.uuid4().hex[:12]}",
         "adoption_source": adoption_source,
-        "managed_state": managed_state,
         "seat_instance_id": registry.new_seat_instance_id(),
         **session_fields,
     }
@@ -1621,7 +1606,6 @@ def _adopt_pane_as_seat(
         record["runtime_session_id"] = None
         record["session_id"] = None
         record["runtime_session_binding"] = "unbound"
-        record["managed_state"] = "adopted_unbound"
     if identity_provider and identity_id:
         record.update({
             "identity_provider": identity_provider,
@@ -1665,9 +1649,7 @@ def _adopt_pane_as_seat(
             })
             if identity_provider == "desks":
                 stored["desks_identity_id"] = identity_id
-        data[key] = stored
-        registry.write_registry(data)
-        inserted = stored
+        inserted = registry.replace_agent_record(stored)
     except Exception:
         pass
 
@@ -1720,7 +1702,7 @@ def _adopt_pane_as_seat(
         response.update({
             "pane_ref": inserted.get("pane_ref"),
             "seat_instance_id": inserted.get("seat_instance_id"),
-            "managed_state": inserted.get("managed_state"),
+            "managed_state": f"adopted_{'bound' if inserted.get('runtime_session_binding') == 'bound' else 'unbound'}",
             "runtime": inserted.get("runtime"),
             "cwd": inserted.get("cwd"),
             "runtime_session_binding": inserted.get("runtime_session_binding"),
@@ -2068,7 +2050,14 @@ def run(args):
         metadata = {key: value for key, value in metadata.items() if value}
         if getattr(args, "index", None) is not None and not getattr(args, "move_terminal", False):
             return {"ok": False, "error": "--index requires --move-terminal"}
-        existing = registry.get_agent(args.source)
+        preflight = registry.rehome_preflight(
+            args.source,
+            new_name=getattr(args, "name", None),
+            new_fleet=getattr(args, "fleet", None),
+        )
+        if not preflight.get("ok"):
+            return preflight
+        existing = preflight.get("source_record")
         if getattr(args, "move_terminal", False):
             if not existing:
                 return {"ok": False, "error": f"agent not found: {args.source}"}

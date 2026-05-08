@@ -263,7 +263,7 @@ def run(args):
                         "ok": True,
                         "name": args.name,
                         "registered": True,
-                        "prompt_sent": True,
+                        "prompt_delivery": {"submitted": True, "transport": "mesh"},
                         "workdir": workdir,
                         "context_file": str(context_path) if context_path else None,
                         "work_file": str(work_path) if work_path else None,
@@ -282,7 +282,7 @@ def run(args):
             base = {
                 "ok": True,
                 "name": args.name,
-                "prompt_sent": True,
+                "prompt_delivery": {"submitted": True, "transport": terminal.BACKEND_NAME},
                 "fallback": terminal.BACKEND_NAME,
                 "workdir": workdir,
                 "context_file": str(context_path) if context_path else None,
@@ -537,13 +537,13 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             pass
     if session_clear_keys or identity_clear_keys:
         try:
-            data = registry.read_registry()
-            key = registry._key(fleet, args.name)
-            stored = dict(data.get(key, registered))
-            for clear_key in [*session_clear_keys, *identity_clear_keys]:
-                stored.pop(clear_key, None)
-            data[key] = stored
-            registry.write_registry(data)
+            def clear_fields(current):
+                stored = dict(current or registered)
+                for clear_key in [*session_clear_keys, *identity_clear_keys]:
+                    stored.pop(clear_key, None)
+                return stored
+
+            stored = registry.update_agent_record(args.name, fleet, clear_fields)
             registered = stored
         except Exception:
             pass
@@ -620,23 +620,53 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         **session_meta,
     }
 
-    agent_map_packet = None
-    if prompt_text:
-        try:
-            from lib import agent_map
+    prompt_target = pane_ref or launch.get("target") or args.name
+    observation_session = session_meta
+    if _should_send_codex_startup_handshake(runtime=runtime, resume_session=resume_session):
+        time.sleep(float(os.environ.get("AURA_CODEX_STARTUP_HANDSHAKE_DELAY", "1.0")))
+        handshake_result = _send_codex_startup_handshake(
+            terminal=terminal,
+            target=args.name,
+            prompt_target=prompt_target,
+            seat=args.name,
+            fleet=fleet,
+            launch_id=launch_id,
+        )
+        result["startup_handshake"] = handshake_result
+        if handshake_result.get("sent"):
+            readiness = _wait_for_hook_bound_session(
+                fleet=fleet,
+                seat=args.name,
+                timeout=float(os.environ.get("AURA_CODEX_STARTUP_READY_TIMEOUT", "10.0")),
+            )
+        else:
+            readiness = {
+                "ready": False,
+                "reason": handshake_result.get("reason") or handshake_result.get("error") or "startup-handshake-not-sent",
+                "runtime_session_binding": "unbound",
+            }
+        result["startup_readiness"] = readiness
+        result["ready"] = bool(readiness.get("ready"))
+        result["ready_reason"] = readiness.get("reason")
+        if readiness.get("runtime_session_id"):
+            observation_session = registry.get_agent(args.name, fleet=fleet) or observation_session
+            result.update({
+                key: readiness.get(key)
+                for key in (
+                    "session_id",
+                    "runtime_session_id",
+                    "runtime_session_source",
+                    "runtime_session_binding",
+                    "runtime_session_bind_method",
+                    "runtime_session_bind_source",
+                    "runtime_session_confidence",
+                    "runtime_session_evidence",
+                    "runtime_session_cwd",
+                )
+                if readiness.get(key) is not None
+            })
 
-            agent_map_result = agent_map.build_agent_map(f"{fleet}:{args.name}", terminal=terminal)
-            if agent_map_result.get("ok"):
-                agent_map_packet = agent_map_result.get("packet")
-                result["agent_map_ready"] = bool(agent_map_packet)
-            else:
-                result["agent_map_warning"] = agent_map_result.get("error") or "agent-map-unavailable"
-        except Exception as exc:
-            result["agent_map_warning"] = str(exc)
-
     if prompt_text:
-        time.sleep(1)
-        prompt_target = pane_ref or launch.get("target") or args.name
         flex_packet = _render_flex_project_launch_packet(flex_manifest, flex_root)
         prompt_result = terminal.send_text(
             args.name,
@@ -647,42 +677,29 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 seat=args.name,
                 launch_id=launch_id,
                 flex_packet=flex_packet,
-                agent_map_packet=agent_map_packet if runtime == "codex" else None,
             ),
             submit=True,
         )
-        result["prompt_sent"] = bool(prompt_result.get("ok"))
-        result["agent_map_injected"] = bool(prompt_result.get("ok") and runtime == "codex" and agent_map_packet)
+        prompt_delivery = {
+            "submitted": bool(prompt_result.get("ok")),
+            "transport": getattr(terminal, "BACKEND_NAME", "tmux"),
+        }
         if prompt_result.get("ok") and flex_packet and flex_manifest and flex_root:
             try:
-                from lib import delivery
-
-                packet_at = delivery.now_iso()
-                packet_fields = {
-                    "flex_project_packet_delivered": True,
-                    "flex_project_packet_delivered_at": packet_at,
-                    "flex_project_packet_source": "spawn.prompt",
-                    "flex_project_packet_manifest": str(flex_manifest),
-                    "flex_project_packet_session_key": resume_session or launch_id,
-                }
-                result.update(packet_fields)
-                registry.upsert_agent({
-                    **(registry.get_agent(args.name, fleet=fleet) or {}),
-                    "name": args.name,
-                    "fleet": fleet,
-                    **packet_fields,
-                })
+                prompt_delivery["flex_project_packet_included"] = True
+                prompt_delivery["flex_project_packet_manifest"] = str(flex_manifest)
             except Exception:
                 pass
         if not prompt_result.get("ok"):
             result["prompt_error"] = prompt_result.get("error")
         elif runtime == "codex" and hasattr(terminal, "send_keys"):
-            result["prompt_submit_retry"] = _retry_codex_prompt_submit(
+            prompt_delivery["submit_retry"] = _retry_codex_prompt_submit(
                 terminal=terminal,
                 target=prompt_target,
                 seat=args.name,
                 launch_id=launch_id,
             )
+        result["prompt_delivery"] = prompt_delivery
 
     cwd_choice = _resolve_codex_cwd_choice(
         runtime=runtime,
@@ -712,7 +729,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         terminal_ref=launch.get("target"),
         pane_ref=pane_ref,
         registered=registered,
-        existing_session=session_meta,
+        existing_session=observation_session,
         timeout=float(os.environ.get("AURA_SPAWN_SESSION_OBSERVE_TIMEOUT", "6.0" if prompt_text else "0.5")),
     )
     if session_observation:
@@ -760,17 +777,99 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 )
             except Exception:
                 pass
-            if result.get("flex_project_packet_delivered") and result.get("runtime_session_id"):
-                result["flex_project_packet_session_key"] = result["runtime_session_id"]
-                registry.upsert_agent({
-                    **(registry.get_agent(args.name, fleet=fleet) or {}),
-                    "name": args.name,
-                    "fleet": fleet,
-                    "flex_project_packet_session_key": result["runtime_session_id"],
-                })
-
     _record_workspace_spawn(workdir_path, result, runtime=runtime)
     return result_fn({k: v for k, v in result.items() if v is not None})
+
+
+def _should_send_codex_startup_handshake(*, runtime: str, resume_session: str | None) -> bool:
+    if runtime != "codex" or resume_session:
+        return False
+    value = os.environ.get("AURA_CODEX_STARTUP_HANDSHAKE", "0").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _startup_handshake_text(*, fleet: str, seat: str) -> str:
+    return (
+        "[AURA STARTUP]\n"
+        f"Target: {fleet}:{seat}\n"
+        "This is a startup handshake. Let Codex hooks bind your Aura runtime session and inject ambient context.\n"
+        "Do not begin task work from this message. Reply only with your Aura target from ambient context.\n"
+        "[/AURA STARTUP]"
+    )
+
+
+def _send_codex_startup_handshake(
+    *,
+    terminal,
+    target: str,
+    prompt_target: str | None,
+    seat: str,
+    fleet: str,
+    launch_id: str,
+) -> dict:
+    if not hasattr(terminal, "send_text"):
+        return {
+            "sent": False,
+            "submitted": False,
+            "target": target,
+            "reason": "terminal-send-text-unavailable",
+        }
+    text = _startup_handshake_text(fleet=fleet, seat=seat)
+    result = terminal.send_text(target, text, submit=True) or {}
+    packet = {
+        "sent": bool(result.get("ok")),
+        "submitted": bool(result.get("ok")),
+        "transport": getattr(terminal, "BACKEND_NAME", "tmux"),
+        "target": target,
+    }
+    if not result.get("ok"):
+        packet["error"] = result.get("error") or "startup-handshake-send-failed"
+        return packet
+    if prompt_target and hasattr(terminal, "send_keys"):
+        packet["submit_retry"] = _retry_codex_prompt_submit(
+            terminal=terminal,
+            target=prompt_target,
+            seat=seat,
+            launch_id=launch_id,
+        )
+    return packet
+
+
+def _wait_for_hook_bound_session(*, fleet: str, seat: str, timeout: float) -> dict:
+    from lib import registry, runtime_session
+
+    deadline = time.time() + max(timeout, 0)
+    attempts = 0
+    last = {}
+    while True:
+        attempts += 1
+        row = registry.get_agent(seat, fleet=fleet) or {}
+        last = row
+        if runtime_session.is_bound_session(row):
+            session_id = row.get("runtime_session_id") or row.get("session_id")
+            return {
+                "ready": True,
+                "reason": "hook-bound",
+                "attempts": attempts,
+                "session_id": session_id,
+                "runtime_session_id": session_id,
+                "runtime_session_source": row.get("runtime_session_source"),
+                "runtime_session_binding": row.get("runtime_session_binding"),
+                "runtime_session_bind_method": row.get("runtime_session_bind_method"),
+                "runtime_session_bind_source": row.get("runtime_session_bind_source"),
+                "runtime_session_confidence": row.get("runtime_session_confidence"),
+                "runtime_session_evidence": row.get("runtime_session_evidence"),
+                "runtime_session_cwd": row.get("runtime_session_cwd"),
+            }
+        if time.time() >= deadline:
+            break
+        time.sleep(0.25)
+    return {
+        "ready": False,
+        "reason": "started_unbound",
+        "attempts": attempts,
+        "runtime_session_binding": (last or {}).get("runtime_session_binding") or "unbound",
+    }
 
 
 def _runtime_home(runtime: str, profile: str | None) -> str | None:
@@ -1100,22 +1199,13 @@ def _augment_runtime_prompt(
     seat: str,
     launch_id: str,
     flex_packet: str | None = None,
-    agent_map_packet: str | None = None,
 ) -> str:
+    del fleet, seat, launch_id
     if runtime != "codex":
         return prompt_text
-    lines = [
-        "[AURA SEAT CONTEXT]",
-        f"fleet={fleet}",
-        f"seat={seat}",
-        f"launch_id={launch_id}",
-        "[/AURA SEAT CONTEXT]",
-        "",
-    ]
+    lines = []
     if flex_packet:
         lines.extend([flex_packet, ""])
-    if agent_map_packet:
-        lines.extend([agent_map_packet, ""])
     lines.append(prompt_text)
     return "\n".join(lines)
 
@@ -1474,14 +1564,8 @@ def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> Non
             "command": result.get("command"),
             "terminal_ref": result.get("terminal_ref"),
             "pane_ref": result.get("pane_ref"),
-            "prompt_sent": result.get("prompt_sent", False),
             "flex_project_manifest": result.get("flex_project_manifest"),
             "flex_project_root": result.get("flex_project_root"),
-            "flex_project_packet_delivered": result.get("flex_project_packet_delivered"),
-            "flex_project_packet_delivered_at": result.get("flex_project_packet_delivered_at"),
-            "flex_project_packet_source": result.get("flex_project_packet_source"),
-            "flex_project_packet_manifest": result.get("flex_project_packet_manifest"),
-            "flex_project_packet_session_key": result.get("flex_project_packet_session_key"),
             "desks_role_home": result.get("desks_role_home"),
             "desks_role_id": result.get("desks_role_id"),
             "desks_product": result.get("desks_product"),

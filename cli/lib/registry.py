@@ -10,9 +10,11 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 import uuid
+import fcntl
 
 from lib import state
 
@@ -27,6 +29,11 @@ def new_seat_instance_id() -> str:
 
 def registry_path():
     return state.registry_path()
+
+
+def registry_lock_path():
+    path = registry_path()
+    return path.with_name(f"{path.name}.lock")
 
 
 def aliases_path():
@@ -46,6 +53,30 @@ def trace_cell_for_runtime(runtime: str | None) -> str | None:
     if runtime in ("claude", "claude-code"):
         return "claude_code"
     return None
+
+
+TRANSIENT_AGENT_FIELDS = {
+    "agent_map_ready",
+    "agent_map_injected",
+    "alias_chain",
+    "flex_project_packet_delivered",
+    "flex_project_packet_delivered_at",
+    "flex_project_packet_source",
+    "flex_project_packet_manifest",
+    "flex_project_packet_session_key",
+    "liveness",
+    "managed_state",
+    "prompt_sent",
+    "prompt_submit_retry",
+    "restore_ready",
+    "restore_reason",
+    "resolved_from",
+    "risk_flags",
+}
+
+
+def _without_transient_fields(record: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in record.items() if key not in TRANSIENT_AGENT_FIELDS}
 
 
 def _key(fleet: str | None, name: str) -> str:
@@ -88,7 +119,20 @@ def read_registry() -> dict[str, dict[str, Any]]:
     return {}
 
 
-def write_registry(data: dict[str, dict[str, Any]]) -> None:
+@contextmanager
+def _registry_lock():
+    path = registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = registry_lock_path()
+    with open(lock_path, "a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _write_registry_unlocked(data: dict[str, dict[str, Any]]) -> None:
     path = registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix="agents-", suffix=".json", dir=str(path.parent))
@@ -102,6 +146,59 @@ def write_registry(data: dict[str, dict[str, Any]]) -> None:
             os.unlink(tmp)
         except FileNotFoundError:
             pass
+
+
+def write_registry(data: dict[str, dict[str, Any]]) -> None:
+    with _registry_lock():
+        _write_registry_unlocked(data)
+
+
+def replace_agent_record(record: dict[str, Any]) -> dict[str, Any]:
+    name = record["name"]
+    fleet = record.get("fleet") or current_fleet()
+    key = _key(fleet, name)
+    merged = {
+        **record,
+        "name": name,
+        "seat": record.get("seat") or name,
+        "fleet": fleet,
+        "seat_ref": key,
+        "last_seen": record.get("last_seen") or now_iso(),
+    }
+    merged = _without_transient_fields(merged)
+    with _registry_lock():
+        data = read_registry()
+        data[key] = merged
+        _write_registry_unlocked(data)
+    return merged
+
+
+def update_agent_record(
+    name: str,
+    fleet: str | None,
+    updater,
+) -> dict[str, Any] | None:
+    with _registry_lock():
+        data = read_registry()
+        key = _key(fleet, name)
+        current = dict(data.get(key, {}))
+        updated = updater(current)
+        if updated is None:
+            return None
+        updated = {
+            **updated,
+            "name": updated.get("name") or name,
+            "seat": updated.get("seat") or updated.get("name") or name,
+            "fleet": updated.get("fleet") or fleet or current_fleet(),
+            "last_seen": updated.get("last_seen") or now_iso(),
+        }
+        updated["seat_ref"] = _key(updated.get("fleet"), updated.get("name"))
+        updated = _without_transient_fields(updated)
+        data[updated["seat_ref"]] = updated
+        if updated["seat_ref"] != key:
+            data.pop(key, None)
+        _write_registry_unlocked(data)
+        return updated
 
 
 def read_aliases() -> dict[str, dict[str, Any]]:
@@ -174,29 +271,31 @@ def upsert_agent(record: dict[str, Any]) -> dict[str, Any]:
         fleet_record = fleets.ensure_fleet(fleet, tmux_session=record.get("physical_fleet") or fleet)
     except Exception:
         fleet_record = None
-    data = read_registry()
-    key = _key(fleet, name)
-    previous = data.get(key, {})
-    created_at = previous.get("created_at") or record.get("created_at") or now_iso()
-    merged = {
-        **previous,
-        **record,
-        "name": name,
-        "seat": record.get("seat") or previous.get("seat") or name,
-        "fleet": fleet,
-        "fleet_id": record.get("fleet_id") or previous.get("fleet_id") or (fleet_record or {}).get("fleet_id"),
-        "seat_ref": _key(fleet, name),
-        "transport": record.get("transport") or previous.get("transport") or "tmux",
-        "delivery_mode": record.get("delivery_mode") or previous.get("delivery_mode") or "immediate",
-        "status": record.get("status") or previous.get("status") or "starting",
-        "registered": bool(record.get("registered", previous.get("registered", True))),
-        "created_at": created_at,
-        "last_seen": record.get("last_seen") or now_iso(),
-    }
-    if "trace_cell" not in merged or merged.get("trace_cell") is None:
-        merged["trace_cell"] = trace_cell_for_runtime(runtime or previous.get("runtime"))
-    data[key] = merged
-    write_registry(data)
+    with _registry_lock():
+        data = read_registry()
+        key = _key(fleet, name)
+        previous = data.get(key, {})
+        created_at = previous.get("created_at") or record.get("created_at") or now_iso()
+        merged = {
+            **previous,
+            **record,
+            "name": name,
+            "seat": record.get("seat") or previous.get("seat") or name,
+            "fleet": fleet,
+            "fleet_id": record.get("fleet_id") or previous.get("fleet_id") or (fleet_record or {}).get("fleet_id"),
+            "seat_ref": _key(fleet, name),
+            "transport": record.get("transport") or previous.get("transport") or "tmux",
+            "delivery_mode": record.get("delivery_mode") or previous.get("delivery_mode") or "immediate",
+            "status": record.get("status") or previous.get("status") or "starting",
+            "registered": bool(record.get("registered", previous.get("registered", True))),
+            "created_at": created_at,
+            "last_seen": record.get("last_seen") or now_iso(),
+        }
+        merged = _without_transient_fields(merged)
+        if "trace_cell" not in merged or merged.get("trace_cell") is None:
+            merged["trace_cell"] = trace_cell_for_runtime(runtime or previous.get("runtime"))
+        data[key] = merged
+        _write_registry_unlocked(data)
     return merged
 
 
@@ -258,25 +357,35 @@ def mark_status(name: str, status: str, fleet: str | None = None) -> dict[str, A
 
 
 def remove_agent(name: str, fleet: str | None = None) -> bool:
-    data = read_registry()
-    keys = [_key(fleet, name)] if fleet else [k for k, v in data.items() if v.get("name") == name]
-    removed = False
-    for key in keys:
-        if key in data:
-            del data[key]
-            removed = True
-    if removed:
-        write_registry(data)
+    with _registry_lock():
+        data = read_registry()
+        keys = [_key(fleet, name)] if fleet else [k for k, v in data.items() if v.get("name") == name]
+        removed = False
+        for key in keys:
+            if key in data:
+                del data[key]
+                removed = True
+        if removed:
+            _write_registry_unlocked(data)
     return removed
 
 
-def rehome_agent(
+def _same_live_incarnation(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
+    if not left or not right:
+        return False
+    for key in ("seat_instance_id", "pane_ref"):
+        left_value = left.get(key)
+        right_value = right.get(key)
+        if left_value and right_value and str(left_value) == str(right_value):
+            return True
+    return False
+
+
+def rehome_preflight(
     source: str,
     *,
     new_name: str | None = None,
     new_fleet: str | None = None,
-    metadata: dict[str, Any] | None = None,
-    alias_old: bool = True,
 ) -> dict[str, Any]:
     source_fleet, source_name = split_ref(source)
     if not source_fleet:
@@ -297,29 +406,74 @@ def rehome_agent(
     target_name = new_name or existing.get("name")
     target_fleet = new_fleet or existing.get("fleet")
     target_ref = _key(target_fleet, target_name)
-    if target_ref != source_ref and target_ref in data:
-        return {"ok": False, "error": f"target already exists: {target_ref}"}
+    target_existing = data.get(target_ref)
+    repair_duplicate = False
+    if target_ref != source_ref and target_existing:
+        if not _same_live_incarnation(existing, target_existing):
+            return {"ok": False, "error": f"target already exists: {target_ref}", "reason": "target-registry-exists", "target": target_ref}
+        repair_duplicate = True
 
-    record = dict(existing)
-    record.update(metadata or {})
-    record["name"] = target_name
-    record["fleet"] = target_fleet
-    record["seat"] = target_name
-    record["seat_ref"] = target_ref
-    record["logical_fleet"] = target_fleet
-    record["logical_name"] = target_name
-    record["rehome_source"] = source_ref
-    record["rehome_at"] = now_iso()
-    record["last_seen"] = now_iso()
-    record.setdefault("physical_fleet", existing.get("backend_ref", "").split(":", 1)[0] if existing.get("backend_ref") else existing.get("fleet"))
+    return {
+        "ok": True,
+        "source": source_ref,
+        "target": target_ref,
+        "source_record": existing,
+        "target_record": target_existing,
+        "repair_duplicate": repair_duplicate,
+    }
 
-    if target_ref != source_ref:
-        del data[source_ref]
-    data[target_ref] = record
-    write_registry(data)
+
+def rehome_agent(
+    source: str,
+    *,
+    new_name: str | None = None,
+    new_fleet: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    alias_old: bool = True,
+) -> dict[str, Any]:
+    with _registry_lock():
+        preflight = rehome_preflight(source, new_name=new_name, new_fleet=new_fleet)
+        if not preflight.get("ok"):
+            return preflight
+
+        source_ref = preflight["source"]
+        target_ref = preflight["target"]
+        data = read_registry()
+        existing = data.get(source_ref) or preflight["source_record"]
+        target_existing = data.get(target_ref) if target_ref != source_ref else None
+        target_name = new_name or existing.get("name")
+        target_fleet = new_fleet or existing.get("fleet")
+
+        record = dict(existing)
+        if target_existing:
+            record.update(target_existing)
+        record.update(metadata or {})
+        record["name"] = target_name
+        record["fleet"] = target_fleet
+        record["seat"] = target_name
+        record["seat_ref"] = target_ref
+        record["logical_fleet"] = target_fleet
+        record["logical_name"] = target_name
+        record["rehome_source"] = source_ref
+        record["rehome_at"] = now_iso()
+        record["last_seen"] = now_iso()
+        record.setdefault("physical_fleet", existing.get("backend_ref", "").split(":", 1)[0] if existing.get("backend_ref") else existing.get("fleet"))
+        record = _without_transient_fields(record)
+
+        if target_ref != source_ref:
+            data.pop(source_ref, None)
+        data[target_ref] = record
+        _write_registry_unlocked(data)
 
     alias = add_alias(source_ref, target_ref, reason="rehome") if alias_old and target_ref != source_ref else None
-    return {"ok": True, "source": source_ref, "target": target_ref, "record": record, "alias": alias}
+    return {
+        "ok": True,
+        "source": source_ref,
+        "target": target_ref,
+        "record": record,
+        "alias": alias,
+        "repair_duplicate": bool(preflight.get("repair_duplicate")),
+    }
 
 
 def infer_status(name: str, terminal, current: str | None = None, lines: int = 20, target: str | None = None) -> str:

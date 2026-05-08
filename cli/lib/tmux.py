@@ -73,6 +73,20 @@ def _run_tmux(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(["tmux", *args], capture_output=True, text=True)
 
 
+def _apply_index_defaults(session_name: str | None = None) -> None:
+    """Keep Aura-created tmux fleets on human-friendly 1-based indexes."""
+    if os.environ.get("AURA_TMUX_INDEX_DEFAULTS", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return
+    target = session_name or TMUX_SESSION
+    for args in (
+        ["set-option", "-t", target, "base-index", "1"],
+        ["set-window-option", "-t", target, "pane-base-index", "1"],
+        ["set-option", "-t", target, "renumber-windows", "on"],
+        ["move-window", "-r", "-t", target],
+    ):
+        _run_tmux(args)
+
+
 def _split_ref(ref: str) -> tuple[str, str]:
     """Return (fleet, tmux-subject) for window refs and pane refs."""
     value = str(ref or "")
@@ -160,9 +174,12 @@ def create_window(
         if result.returncode != 0:
             stderr = result.stderr.strip()
             if "duplicate session" in stderr.lower():
+                _apply_index_defaults()
                 result = _new_window(command_text)
             if result.returncode != 0:
                 return {"ok": False, "error": result.stderr.strip() or "tmux new-session failed", "name": name}
+        else:
+            _apply_index_defaults()
         pane = pane_id(name)
         return {
             "ok": True,
@@ -172,6 +189,7 @@ def create_window(
             "pane_ref": f"{TMUX_SESSION}:{pane}" if pane else None,
         }
 
+    _apply_index_defaults()
     if command:
         result = _new_window(command_text)
         if result.returncode != 0:

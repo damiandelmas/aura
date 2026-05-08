@@ -493,7 +493,7 @@ def main():
     p_sessions.add_argument(
         "sessions_action",
         nargs="?",
-        choices=["restore-plan", "self", "bind-current", "bind-nonce", "seat-history", "fleets", "fleet-history"],
+        choices=["restore-plan", "self", "bind-current", "bind-hook", "bind-nonce", "seat-history", "fleets", "fleet-history"],
                             help="Optional sessions action")
     p_sessions.add_argument("nonce", nargs="?",
                             help="For bind-nonce, unique marker written into the target Codex session; for seat-history, target seat ref")
@@ -519,6 +519,14 @@ def main():
                             help="For seat-history, do not follow rehome/alias chains")
     p_sessions.add_argument("--runtime", choices=["codex", "claude-code", "claude", "hermes", "omx", "opencode", "openclaw", "shell", "command"],
                             help="For sessions self, override runtime inference")
+    p_sessions.add_argument("--session-id",
+                            help="For bind-hook, exact runtime session id from the native hook payload")
+    p_sessions.add_argument("--transcript-path",
+                            help="For bind-hook, native transcript/rollout path from the hook payload")
+    p_sessions.add_argument("--hook-event",
+                            help="For bind-hook, native hook event name such as SessionStart")
+    p_sessions.add_argument("--seat-instance-id",
+                            help="For bind-hook, expected Aura seat instance id when known")
 
     # fleets
     p_fleets = subparsers.add_parser("fleets", help="Resolve and inspect stable fleet identities")

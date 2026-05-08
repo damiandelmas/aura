@@ -122,7 +122,7 @@ def _position_for(row: dict[str, Any]) -> str | None:
     return None
 
 
-def build_agent_map(target: str, *, terminal=None) -> dict[str, Any]:
+def build_agent_map(target: str, *, terminal=None, require_routable: bool = False) -> dict[str, Any]:
     self_status = seat_status.build_seat_status(target, terminal=terminal)
     if not self_status.get("ok"):
         return {
@@ -131,12 +131,13 @@ def build_agent_map(target: str, *, terminal=None) -> dict[str, Any]:
             "target": target,
             "error": self_status.get("error") or "seat-not-found",
         }
-    if self_status.get("managed_state") == "stopped":
+    blocked_states = {"stopped", "missing_pane"} if require_routable else {"stopped"}
+    if self_status.get("managed_state") in blocked_states:
         return {
             "ok": False,
             "schema": "aura.agent_map.v1",
             "target": target,
-            "error": "seat-stopped",
+            "error": "seat-not-routable",
             "managed_state": self_status.get("managed_state"),
         }
 

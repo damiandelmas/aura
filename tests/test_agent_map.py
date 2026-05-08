@@ -161,15 +161,20 @@ def test_agent_map_includes_self_and_same_fleet_colleagues(aura_state):
     assert "session-self" not in result["packet"]
 
 
-def test_agent_map_command_returns_packet(aura_state):
+def test_agent_map_command_returns_packet(aura_state, monkeypatch):
     from commands import agent_map as agent_map_cmd
+    from lib import terminal
     from lib import registry
+
+    monkeypatch.setattr(terminal, "configure_session", FakeTerminal.configure_session)
+    monkeypatch.setattr(terminal, "target_exists", FakeTerminal.target_exists)
 
     registry.upsert_agent({
         "name": "lead",
         "fleet": "flex-systems-archeology",
         "runtime": "codex",
         "registered": True,
+        "pane_ref": "tmux:flex-systems-archeology:%1",
     })
 
     result = agent_map_cmd.run(argparse.Namespace(target="flex-systems-archeology:lead"))
@@ -203,3 +208,21 @@ def test_agent_map_excludes_missing_pane_colleagues(aura_state):
     assert result["ok"] is True
     assert result["fleet"] == []
     assert "gone" not in result["packet"]
+
+
+def test_agent_map_rejects_missing_target(aura_state):
+    from lib import agent_map, registry
+
+    registry.upsert_agent({
+        "name": "gone",
+        "fleet": "flex-systems-archeology",
+        "runtime": "codex",
+        "registered": True,
+        "pane_ref": "tmux:flex-systems-archeology:%404",
+    })
+
+    result = agent_map.build_agent_map("flex-systems-archeology:gone", terminal=FakeTerminal, require_routable=True)
+
+    assert result["ok"] is False
+    assert result["error"] == "seat-not-routable"
+    assert result["managed_state"] == "missing_pane"

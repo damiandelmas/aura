@@ -282,7 +282,7 @@ def test_seat_adopt_preserves_exact_runtime_binding(monkeypatch, aura_state):
     assert result["runtime_session_binding"] == "bound"
     assert result["runtime_session_id"] == "019dd797-1169-7931-b2f7-17824b3b7134"
     record = registry.get_agent("runway-engineering:research-bound")
-    assert record["managed_state"] == "adopted_bound"
+    assert "managed_state" not in record
     assert record["runtime_session_binding"] == "bound"
     assert record["runtime_session_id"] == "019dd797-1169-7931-b2f7-17824b3b7134"
 

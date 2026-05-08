@@ -21,6 +21,8 @@ def run(args):
         return _seat_history(args)
     if getattr(args, "sessions_action", None) == "bind-current":
         return _bind_current(args)
+    if getattr(args, "sessions_action", None) == "bind-hook":
+        return _bind_hook(args)
     if getattr(args, "sessions_action", None) == "bind-nonce":
         return _bind_nonce(args)
     if getattr(args, "sessions_action", None) == "restore-plan":
@@ -444,7 +446,8 @@ def _bind_current(args) -> dict:
 
     from lib import registry
 
-    previous = registry.get_agent(seat, fleet=fleet) or {
+    fleet, seat, previous, alias_chain = _canonical_bind_target(registry, fleet=fleet, seat=seat)
+    previous = previous or {
         "name": seat,
         "fleet": fleet,
         "runtime": current.get("runtime") or "codex",
@@ -476,8 +479,108 @@ def _bind_current(args) -> dict:
             "current_cwd": current.get("cwd"),
             "cross_check": current.get("cross_check"),
             "warning": current.get("warning"),
+            "alias_chain": alias_chain,
         },
     )
+
+
+def _normalize_hook_event(event: str | None) -> str:
+    if not event:
+        return "session-start"
+    normalized = str(event).strip().replace("_", "-")
+    out = []
+    for index, char in enumerate(normalized):
+        if char.isupper() and index and normalized[index - 1] not in "-":
+            out.append("-")
+        out.append(char.lower())
+    return "".join(out).strip("-") or "session-start"
+
+
+def _bind_hook(args) -> dict:
+    session_id = getattr(args, "session_id", None) or getattr(args, "nonce", None)
+    if not session_id:
+        return {"ok": False, "error": "bind-hook requires --session-id"}
+
+    runtime = getattr(args, "runtime", None) or os.environ.get("AURA_RUNTIME") or "codex"
+    if runtime != "codex":
+        return {
+            "ok": False,
+            "error": "bind-hook currently supports codex runtime only",
+            "runtime": runtime,
+        }
+
+    fleet, seat = _target_fleet_seat(getattr(args, "target", None))
+    if not fleet or not seat:
+        return {"ok": False, "error": "could not infer target fleet/seat; pass --target fleet:seat"}
+
+    from lib import registry
+
+    fleet, seat, previous, alias_chain = _canonical_bind_target(registry, fleet=fleet, seat=seat)
+    if not previous:
+        return {
+            "ok": False,
+            "error": "target seat is not registered; adopt or spawn it before hook binding",
+            "target": f"{fleet}:{seat}",
+        }
+
+    expected_instance = getattr(args, "seat_instance_id", None)
+    actual_instance = previous.get("seat_instance_id")
+    if expected_instance and actual_instance and expected_instance != actual_instance:
+        return {
+            "ok": False,
+            "error": "seat-instance-mismatch",
+            "target": f"{fleet}:{seat}",
+            "expected_seat_instance_id": expected_instance,
+            "actual_seat_instance_id": actual_instance,
+        }
+
+    hook_event = _normalize_hook_event(getattr(args, "hook_event", None))
+    source = f"codex-hook:{hook_event}"
+    transcript_path = getattr(args, "transcript_path", None)
+    cwd = previous.get("runtime_session_cwd") or previous.get("cwd") or previous.get("workdir")
+    evidence = {
+        "reason": "codex-native-hook",
+        "hook_event": getattr(args, "hook_event", None) or hook_event,
+        "transcript_path": transcript_path,
+        "seat_instance_id": actual_instance,
+        "aura_launch_id": previous.get("aura_launch_id"),
+    }
+    event_name = "session_bound_hook"
+    return _bind_registry_session(
+        fleet=fleet,
+        seat=seat,
+        previous=previous,
+        session_id=session_id,
+        source=source,
+        confidence="exact",
+        evidence={key: value for key, value in evidence.items() if value is not None},
+        cwd=cwd,
+        event=event_name,
+        extra={
+            "target": f"{fleet}:{seat}",
+            "transcript_path": transcript_path,
+            "alias_chain": alias_chain,
+        },
+    )
+
+
+def _canonical_bind_target(registry, *, fleet: str, seat: str) -> tuple[str, str, dict | None, list[str]]:
+    requested_ref = registry.seat_ref(fleet, seat)
+    resolved, chain = registry.resolve_alias(requested_ref)
+    if chain:
+        target_fleet, target_seat = registry.split_ref(resolved)
+        if target_fleet and target_seat:
+            previous = registry.get_agent(resolved)
+            if previous:
+                return target_fleet, target_seat, previous, chain
+
+    previous = registry.get_agent(seat, fleet=fleet)
+    if previous and previous.get("resolved_from"):
+        current_ref = previous.get("seat_ref") or registry.seat_ref(previous.get("fleet"), previous.get("name") or previous.get("seat") or seat)
+        target_fleet, target_seat = registry.split_ref(current_ref)
+        if target_fleet and target_seat:
+            return target_fleet, target_seat, previous, list(previous.get("alias_chain") or [])
+    return fleet, seat, previous, []
 
 
 def _bind_registry_session(

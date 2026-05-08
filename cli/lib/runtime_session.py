@@ -23,6 +23,8 @@ BOUND_SESSION_SOURCES = {
     "spawn:resume-session": "spawn-resume-session",
     "argv:codex-resume": "argv-resume",
     "codex-jsonl:nonce": "nonce-jsonl",
+    "codex-hook:session-start": "codex-hook",
+    "codex-hook:user-prompt-submit": "codex-hook",
 }
 
 

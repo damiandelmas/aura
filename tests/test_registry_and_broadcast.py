@@ -2,10 +2,23 @@ import argparse
 import os
 import subprocess
 import sys
+from multiprocessing import Process
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "cli"))
+
+
+def _registry_upsert_worker(state_dir: str, name: str):
+    os.environ["AURA_STATE_DIR"] = state_dir
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": name,
+        "fleet": "race-fleet",
+        "runtime": "codex",
+        "pane_ref": f"tmux:race-fleet:%{name.removeprefix('worker')}",
+    })
 
 
 def test_registry_round_trip_and_fleet_filter(tmp_path, monkeypatch):
@@ -26,6 +39,57 @@ def test_registry_round_trip_and_fleet_filter(tmp_path, monkeypatch):
 
     assert [a["name"] for a in registry.list_agents("testfleet")] == ["c1"]
     assert registry.list_agents("other") == []
+
+
+def test_registry_strips_transient_projection_and_prompt_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "c1",
+        "fleet": "testfleet",
+        "runtime": "codex",
+        "terminal_ref": "testfleet:c1",
+        "prompt_sent": True,
+        "agent_map_ready": True,
+        "agent_map_injected": True,
+        "alias_chain": ["testfleet:old"],
+        "prompt_submit_retry": {"ok": True},
+        "resolved_from": "testfleet:old",
+        "flex_project_packet_delivered": True,
+        "flex_project_packet_delivered_at": "2026-05-07T00:00:00+00:00",
+        "flex_project_packet_source": "spawn.prompt",
+        "flex_project_packet_manifest": "/tmp/project.yaml",
+        "flex_project_packet_session_key": "session-1",
+        "managed_state": "spawned_bound",
+        "restore_ready": True,
+        "restore_reason": "bound",
+        "risk_flags": ["example"],
+        "liveness": "alive",
+    })
+
+    agent = registry.get_agent("c1", fleet="testfleet")
+    for key in registry.TRANSIENT_AGENT_FIELDS:
+        assert key not in agent
+
+
+def test_registry_upserts_are_safe_across_parallel_processes(tmp_path, monkeypatch):
+    state_dir = str(tmp_path / ".aura")
+    workers = [
+        Process(target=_registry_upsert_worker, args=(state_dir, f"worker{index}"))
+        for index in range(8)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(10)
+        assert worker.exitcode == 0
+
+    from lib import registry
+
+    monkeypatch.setenv("AURA_STATE_DIR", state_dir)
+    names = {row["name"] for row in registry.list_agents("race-fleet")}
+    assert names == {f"worker{index}" for index in range(8)}
 
 
 def test_hidden_registry_agents_are_excluded_by_default(tmp_path, monkeypatch):
@@ -100,6 +164,68 @@ def test_rehome_preserves_physical_refs_and_adds_alias(tmp_path, monkeypatch):
     assert moved["desks_role_id"] == "leader-engine"
     assert moved["desks_product"] == "flex"
     assert registry.read_aliases()["old-fleet:old-seat"]["target"] == "flex-leaders:leader-engine"
+
+
+def test_rehome_repairs_same_incarnation_duplicate_target(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "operator",
+        "fleet": "aura-refresh-test",
+        "runtime": "codex",
+        "seat_instance_id": "si_same",
+        "pane_ref": "tmux:aura-refresh-test:%341",
+        "runtime_session_id": "session-same",
+        "terminal_ref": "aura-refresh-test:operator",
+        "backend_ref": "aura-refresh-test:operator",
+    })
+    registry.upsert_agent({
+        "name": "pilot",
+        "fleet": "aura-refresh-test",
+        "runtime": "codex",
+        "seat_instance_id": "si_same",
+        "pane_ref": "tmux:aura-refresh-test:%341",
+        "runtime_session_id": "session-same",
+        "terminal_ref": "aura-refresh-test:pilot",
+        "backend_ref": "aura-refresh-test:pilot",
+        "rehome_source": "aura-refresh-test:operator",
+    })
+
+    result = registry.rehome_agent("aura-refresh-test:operator", new_name="pilot")
+
+    assert result["ok"] is True
+    assert result["repair_duplicate"] is True
+    assert registry.read_registry().keys() == {"aura-refresh-test:pilot"}
+    assert registry.get_agent("aura-refresh-test:pilot")["seat_instance_id"] == "si_same"
+    assert registry.get_agent("aura-refresh-test:operator")["resolved_from"] == "aura-refresh-test:operator"
+    assert registry.read_aliases()["aura-refresh-test:operator"]["target"] == "aura-refresh-test:pilot"
+
+
+def test_rehome_rejects_different_incarnation_target(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "operator",
+        "fleet": "aura-refresh-test",
+        "runtime": "codex",
+        "seat_instance_id": "si_source",
+        "pane_ref": "tmux:aura-refresh-test:%341",
+    })
+    registry.upsert_agent({
+        "name": "pilot",
+        "fleet": "aura-refresh-test",
+        "runtime": "codex",
+        "seat_instance_id": "si_dest",
+        "pane_ref": "tmux:aura-refresh-test:%342",
+    })
+
+    result = registry.rehome_agent("aura-refresh-test:operator", new_name="pilot")
+
+    assert result["ok"] is False
+    assert result["reason"] == "target-registry-exists"
+    assert set(registry.read_registry().keys()) == {"aura-refresh-test:operator", "aura-refresh-test:pilot"}
 
 
 def test_seat_rehome_command_loads_role_metadata(tmp_path, monkeypatch):
@@ -341,6 +467,48 @@ def test_seat_rehome_move_terminal_refuses_destination_collision(tmp_path, monke
     assert result["existing"]["pane_id"] == "%770"
     assert registry.get_agent("flex-desk:developer")["pane_ref"] == "tmux:flex-desk:%789"
     assert registry.get_agent("flex-desks:developer") is None
+
+
+def test_seat_rehome_move_terminal_refuses_registry_collision_before_tmux(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import seat
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "operator",
+        "fleet": "aura-refresh-test",
+        "runtime": "codex",
+        "seat_instance_id": "si_source",
+        "pane_ref": "tmux:aura-refresh-test:%341",
+    })
+    registry.upsert_agent({
+        "name": "pilot",
+        "fleet": "aura-refresh-test",
+        "runtime": "codex",
+        "seat_instance_id": "si_dest",
+        "pane_ref": "tmux:aura-refresh-test:%342",
+    })
+
+    def fail_move_terminal(record, *, fleet, name, index):
+        raise AssertionError("registry collision should be rejected before tmux mutation")
+
+    monkeypatch.setattr(seat, "_move_terminal", fail_move_terminal)
+
+    result = seat.run(argparse.Namespace(
+        seat_action="rehome",
+        source="aura-refresh-test:operator",
+        name="pilot",
+        fleet=None,
+        role_home=None,
+        manifest=None,
+        move_terminal=True,
+        index=None,
+        no_alias_old=False,
+    ))
+
+    assert result["ok"] is False
+    assert result["reason"] == "target-registry-exists"
+    assert set(registry.read_registry().keys()) == {"aura-refresh-test:operator", "aura-refresh-test:pilot"}
 
 
 def test_seat_rehome_index_requires_move_terminal(tmp_path, monkeypatch):
@@ -655,6 +823,12 @@ def test_seat_archive_refuses_live_row_without_force(tmp_path, monkeypatch):
 
 def test_send_blocks_hidden_targets_without_operator_override(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.delenv("AURA_SEAT", raising=False)
+    monkeypatch.delenv("AURA_AGENT_NAME", raising=False)
+    monkeypatch.delenv("AURA_RUNTIME_SESSION_ID", raising=False)
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
     from commands import send
     from lib import registry
 
