@@ -2050,6 +2050,12 @@ def run(args):
         metadata = {key: value for key, value in metadata.items() if value}
         if getattr(args, "index", None) is not None and not getattr(args, "move_terminal", False):
             return {"ok": False, "error": "--index requires --move-terminal"}
+        if getattr(args, "move_terminal", False) and os.environ.get("AURA_ENABLE_UNSAFE_MOVE_TERMINAL") != "1":
+            return {
+                "ok": False,
+                "error": "rehome --move-terminal is parked pending pane-invariant hardening",
+                "safe_workflow": "cut/spawn for new names, or holding discover + seat adopt --pane for preserving a live pane",
+            }
         preflight = registry.rehome_preflight(
             args.source,
             new_name=getattr(args, "name", None),

@@ -168,9 +168,9 @@ def main():
     p_seat_rehome.add_argument("--role-home", help="Desks role home containing role.json")
     p_seat_rehome.add_argument("--manifest", help="Desks role manifest path")
     p_seat_rehome.add_argument("--move-terminal", action="store_true",
-                               help="Move/rename the tmux window to match the new fleet/name")
+                               help=argparse.SUPPRESS)
     p_seat_rehome.add_argument("--index",
-                               help="Target tmux window index when used with --move-terminal")
+                               help=argparse.SUPPRESS)
     p_seat_rehome.add_argument("--no-alias-old", action="store_true", help="Do not keep old handle as alias")
     p_seat_resolve = seat_sub.add_parser("resolve", help="Resolve a seat, following aliases")
     p_seat_resolve.add_argument("target")

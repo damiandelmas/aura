@@ -283,6 +283,7 @@ def test_seat_rehome_command_loads_role_metadata(tmp_path, monkeypatch):
 
 def test_seat_rehome_move_terminal_updates_physical_refs(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_ENABLE_UNSAFE_MOVE_TERMINAL", "1")
     from commands import seat
     from lib import registry
 
@@ -331,6 +332,7 @@ def test_seat_rehome_move_terminal_updates_physical_refs(tmp_path, monkeypatch):
 
 def test_seat_rehome_move_terminal_refreshes_stale_pane_ref(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_ENABLE_UNSAFE_MOVE_TERMINAL", "1")
     from commands import seat
     from lib import registry
 
@@ -408,6 +410,7 @@ def test_seat_rehome_move_terminal_refreshes_stale_pane_ref(tmp_path, monkeypatc
 
 def test_seat_rehome_move_terminal_refuses_destination_collision(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_ENABLE_UNSAFE_MOVE_TERMINAL", "1")
     from commands import seat
     from lib import registry
 
@@ -471,6 +474,7 @@ def test_seat_rehome_move_terminal_refuses_destination_collision(tmp_path, monke
 
 def test_seat_rehome_move_terminal_refuses_registry_collision_before_tmux(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_ENABLE_UNSAFE_MOVE_TERMINAL", "1")
     from commands import seat
     from lib import registry
 
@@ -509,6 +513,39 @@ def test_seat_rehome_move_terminal_refuses_registry_collision_before_tmux(tmp_pa
     assert result["ok"] is False
     assert result["reason"] == "target-registry-exists"
     assert set(registry.read_registry().keys()) == {"aura-refresh-test:operator", "aura-refresh-test:pilot"}
+
+
+def test_seat_rehome_move_terminal_is_parked_by_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.delenv("AURA_ENABLE_UNSAFE_MOVE_TERMINAL", raising=False)
+    from commands import seat
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "operator",
+        "fleet": "aura-refresh-test",
+        "runtime": "codex",
+        "seat_instance_id": "si_source",
+        "pane_ref": "tmux:aura-refresh-test:%341",
+    })
+
+    result = seat.run(argparse.Namespace(
+        seat_action="rehome",
+        source="aura-refresh-test:operator",
+        name="pilot",
+        fleet=None,
+        role_home=None,
+        manifest=None,
+        move_terminal=True,
+        index=None,
+        no_alias_old=False,
+    ))
+
+    assert result["ok"] is False
+    assert "parked" in result["error"]
+    assert "holding discover" in result["safe_workflow"]
+    assert registry.get_agent("aura-refresh-test:operator") is not None
+    assert registry.get_agent("aura-refresh-test:pilot") is None
 
 
 def test_seat_rehome_index_requires_move_terminal(tmp_path, monkeypatch):
