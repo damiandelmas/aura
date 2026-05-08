@@ -8,6 +8,32 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "cli"))
 
 
+def _register_sender(name: str = "lead", fleet: str = "unitfleet") -> None:
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": name,
+        "fleet": fleet,
+        "runtime": "codex",
+        "registered": True,
+        "seat_instance_id": f"si_{name}",
+        "pane_ref": f"tmux:{fleet}:%sender",
+    })
+
+
+def _register_target(name: str = "worker", fleet: str = "unitfleet", pane: str = "%target") -> None:
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": name,
+        "fleet": fleet,
+        "runtime": "codex",
+        "registered": True,
+        "seat_instance_id": f"si_{name}",
+        "pane_ref": f"tmux:{fleet}:{pane}",
+    })
+
+
 def test_delivery_v2_helpers_tolerate_mixed_records(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
 
@@ -44,9 +70,11 @@ def test_delivery_v2_helpers_tolerate_mixed_records(monkeypatch, tmp_path):
 
 def test_standard_send_tmux_does_not_preflight_block_busy_target(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
 
     from commands import send
     from lib import delivery
+    _register_sender()
 
     class FakeTerminal:
         @staticmethod
@@ -60,7 +88,7 @@ def test_standard_send_tmux_does_not_preflight_block_busy_target(monkeypatch, tm
     args = argparse.Namespace(
         target="worker",
         message="do not append",
-        sender="tester",
+        sender="unitfleet:lead",
         dedupe_key="unit-block",
         force=False,
     )
@@ -94,7 +122,7 @@ def test_send_refuses_current_seat_without_force(monkeypatch, tmp_path):
     args = argparse.Namespace(
         target="unitfleet:worker",
         message="do not paste into self",
-        sender="tester",
+        sender=None,
         transport="tmux",
         mode="auto",
         force=False,
@@ -117,6 +145,14 @@ def test_send_retargets_stale_pane_ref_to_live_logical_window(monkeypatch, tmp_p
     from commands import send
     from lib import registry, terminal
 
+    registry.upsert_agent({
+        "name": "lead",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "registered": True,
+        "seat_instance_id": "si_lead",
+        "pane_ref": "tmux:unitfleet:%1",
+    })
     registry.upsert_agent({
         "name": "worker",
         "fleet": "unitfleet",
@@ -141,7 +177,7 @@ def test_send_retargets_stale_pane_ref_to_live_logical_window(monkeypatch, tmp_p
     args = argparse.Namespace(
         target="unitfleet:worker",
         message="hello stale pane",
-        sender="tester",
+        sender="unitfleet:lead",
         transport="auto",
         mode="auto",
         force=False,
@@ -166,13 +202,174 @@ def test_send_retargets_stale_pane_ref_to_live_logical_window(monkeypatch, tmp_p
     assert result["record"]["target_diagnostic"] == result["target_diagnostic"]
 
 
+def test_send_refuses_unmanaged_explicit_fleet_target(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / ".aura" / "registry" / "deliveries.jsonl"))
+
+    from commands import send
+    from lib import terminal
+
+    _register_sender()
+
+    monkeypatch.setattr(terminal, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal, "target_exists", lambda target: True)
+
+    args = argparse.Namespace(
+        target="unitfleet:bash",
+        message="do not send to raw window name",
+        sender="unitfleet:lead",
+        transport="auto",
+        mode="auto",
+        force=False,
+        nudge=False,
+        allow_hidden=False,
+        dedupe_key="unit-unmanaged-target",
+        defer_if_busy=False,
+    )
+
+    result = send.run(args)
+
+    assert result["ok"] is False
+    assert result["blocked"] is True
+    assert result["reason"] == "target-not-managed"
+
+
+def test_send_refuses_raw_tmux_target(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from commands import send
+
+    _register_sender()
+
+    args = argparse.Namespace(
+        target="tmux:unitfleet:%1",
+        message="do not send raw",
+        sender="unitfleet:lead",
+        transport="auto",
+        mode="auto",
+        force=False,
+        nudge=False,
+        allow_hidden=False,
+        dedupe_key="unit-raw-target",
+        defer_if_busy=False,
+    )
+
+    result = send.run(args)
+
+    assert result["ok"] is False
+    assert result["blocked"] is True
+    assert result["reason"] == "raw-terminal-target"
+
+
+def test_send_accepts_explicit_service_sender_for_managed_target(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / ".aura" / "registry" / "deliveries.jsonl"))
+
+    from commands import send
+    from lib import terminal
+
+    _register_target()
+    sent = {}
+
+    monkeypatch.setattr(terminal, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal, "target_exists", lambda target: target == "tmux:unitfleet:%target")
+
+    def fake_send_text(target, text, submit=True):
+        sent["target"] = target
+        sent["text"] = text
+        return {"ok": True, "target": target, "bytes": len(text), "submitted": submit}
+
+    monkeypatch.setattr(terminal, "send_text", fake_send_text)
+
+    args = argparse.Namespace(
+        target="unitfleet:worker",
+        message="service ping",
+        sender=None,
+        service_sender="chatbot-pipeline",
+        transport="auto",
+        mode="auto",
+        force=False,
+        nudge=False,
+        allow_hidden=False,
+        dedupe_key="unit-service-sender",
+        defer_if_busy=False,
+    )
+
+    result = send.run(args)
+
+    assert result["ok"] is True
+    assert result["sender"] == "service:chatbot-pipeline"
+    assert result["sender_kind"] == "service"
+    assert "from=service:chatbot-pipeline" in sent["text"]
+    assert result["record"]["sender"] == "service:chatbot-pipeline"
+    assert result["record"]["sender_kind"] == "service"
+
+
+def test_service_sender_does_not_bypass_managed_target_guard(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from commands import send
+    from lib import terminal
+
+    monkeypatch.setattr(terminal, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal, "target_exists", lambda target: True)
+
+    args = argparse.Namespace(
+        target="unitfleet:bash",
+        message="service cannot target raw window",
+        sender=None,
+        service_sender="chatbot-pipeline",
+        transport="auto",
+        mode="auto",
+        force=False,
+        nudge=False,
+        allow_hidden=False,
+        dedupe_key="unit-service-target-guard",
+        defer_if_busy=False,
+    )
+
+    result = send.run(args)
+
+    assert result["ok"] is False
+    assert result["blocked"] is True
+    assert result["reason"] == "target-not-managed"
+
+
+def test_send_rejects_sender_and_service_sender_together(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from commands import send
+
+    args = argparse.Namespace(
+        target="unitfleet:worker",
+        message="conflicting senders",
+        sender="unitfleet:lead",
+        service_sender="chatbot-pipeline",
+        transport="auto",
+        mode="auto",
+        force=False,
+        nudge=False,
+        allow_hidden=False,
+        dedupe_key="unit-sender-conflict",
+        defer_if_busy=False,
+    )
+
+    result = send.run(args)
+
+    assert result["ok"] is False
+    assert result["blocked"] is True
+    assert result["reason"] == "sender-conflict"
+
+
 def test_send_infers_current_seat_sender(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
     monkeypatch.setenv("AURA_SEAT", "lead")
 
     from commands import send
     from lib import delivery
+    _register_sender()
 
     sent = {}
 
@@ -201,11 +398,100 @@ def test_send_infers_current_seat_sender(monkeypatch, tmp_path):
     assert result["record"]["sender"] == "unitfleet:lead"
 
 
-def test_send_tmux_attempted_record_has_attempt_evidence(monkeypatch, tmp_path):
+def test_send_infers_sender_from_process_context_without_seat_env(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.delenv("AURA_SEAT", raising=False)
+    monkeypatch.delenv("AURA_AGENT_NAME", raising=False)
+
+    from commands import send
+    from lib import delivery, reports
+    _register_sender(name="lead-engineer", fleet="runway-engineering")
+
+    monkeypatch.setattr(reports, "infer_context", lambda: {
+        "fleet": "runway-engineering",
+        "seat": "lead-engineer",
+    })
+    sent = {}
+
+    class FakeTerminal:
+        @staticmethod
+        def send_text(name, text, submit=True):
+            sent["text"] = text
+            return {"ok": True, "target": "tmux:runway-engineering:%1", "bytes": len(text), "submitted": submit}
+
+        @staticmethod
+        def capture_output(name, lines=80):
+            return [sent["text"]]
+
+    args = argparse.Namespace(
+        target="worker",
+        message="hello from inferred lead",
+        sender=None,
+        dedupe_key="unit-inferred-sender",
+        force=False,
+    )
+
+    result = send._send_tmux(args, FakeTerminal, delivery, terminal_target="tmux:runway-engineering:%1")
+
+    assert result["ok"] is True
+    assert "from=runway-engineering:lead-engineer" in sent["text"]
+    assert result["record"]["sender"] == "runway-engineering:lead-engineer"
+
+
+def test_send_refuses_unidentified_sender(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
+    monkeypatch.delenv("AURA_FLEET", raising=False)
+    monkeypatch.delenv("AURA_SEAT", raising=False)
+    monkeypatch.delenv("AURA_AGENT_NAME", raising=False)
+
+    from commands import send
+    from lib import delivery, reports
+
+    monkeypatch.setattr(reports, "infer_context", lambda: {})
+
+    args = argparse.Namespace(
+        target="worker",
+        message="hello from nowhere",
+        sender=None,
+        dedupe_key="unit-no-sender",
+        force=False,
+    )
+
+    result = send._send_tmux(args, object(), delivery, terminal_target="tmux:fleet:%1")
+
+    assert result["ok"] is False
+    assert result["reason"] == "sender-not-inferred"
+
+
+def test_send_refuses_unmanaged_explicit_sender(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
 
     from commands import send
     from lib import delivery
+
+    args = argparse.Namespace(
+        target="worker",
+        message="hello from raw bash",
+        sender="runway-engineering:bash",
+        dedupe_key="unit-unmanaged-sender",
+        force=False,
+    )
+
+    result = send._send_tmux(args, object(), delivery, terminal_target="tmux:fleet:%1")
+
+    assert result["ok"] is False
+    assert result["reason"] == "sender-not-inferred"
+
+
+def test_send_tmux_attempted_record_has_attempt_evidence(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from commands import send
+    from lib import delivery
+    _register_sender()
 
     class FakeTerminal:
         captures = [
@@ -223,7 +509,7 @@ def test_send_tmux_attempted_record_has_attempt_evidence(monkeypatch, tmp_path):
     args = argparse.Namespace(
         target="worker",
         message="hello",
-        sender="tester",
+        sender="unitfleet:lead",
         dedupe_key="unit-deliver",
         force=False,
     )

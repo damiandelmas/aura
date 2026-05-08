@@ -1062,6 +1062,40 @@ def test_runtime_session_merge_allows_exact_live_source_to_replace_exact_registr
     assert merged["runtime_session_source"] == "argv:codex-resume"
 
 
+def test_runtime_session_merge_preserves_hook_binding_over_stale_resume_argv():
+    from lib import runtime_session
+
+    record = {
+        "name": "lead-engineer",
+        "session_id": "new-chat-thread",
+        "runtime_session_id": "new-chat-thread",
+        "runtime_session_source": "codex-hook:manual-chat-clear",
+        "runtime_session_binding": "bound",
+        "runtime_session_bind_method": "codex-hook",
+        "runtime_session_bind_source": "codex-hook:manual-chat-clear",
+        "runtime_session_confidence": "exact",
+        "runtime_session_evidence": {"reason": "codex-native-hook"},
+    }
+    session = {
+        "runtime_session_id": "old-resume-thread",
+        "runtime_session_source": "argv:codex-resume",
+        "runtime_session_binding": "bound",
+        "runtime_session_bind_method": "argv-resume",
+        "runtime_session_bind_source": "argv:codex-resume",
+        "runtime_session_confidence": "exact",
+        "runtime_session_evidence": {"reason": "codex-resume-argv"},
+        "runtime_session_pid": 1234,
+    }
+
+    merged = runtime_session.merge(record, session)
+
+    assert merged["session_id"] == "new-chat-thread"
+    assert merged["runtime_session_id"] == "new-chat-thread"
+    assert merged["runtime_session_source"] == "codex-hook:manual-chat-clear"
+    assert merged["runtime_session_bind_method"] == "codex-hook"
+    assert merged["runtime_session_stale_process_evidence"]["runtime_session_id"] == "old-resume-thread"
+
+
 def test_sessions_restore_plan_marks_high_confidence_codex_restore_ready(monkeypatch):
     from commands import sessions
 

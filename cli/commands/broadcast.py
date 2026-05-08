@@ -126,8 +126,6 @@ def _message_for_scope(args) -> str:
 
 
 def _broadcast_to_targets(args, target_rows: list[dict], message: str) -> dict:
-    from lib import identity
-
     results = []
     send = _send_mod()
     for row in target_rows:
@@ -138,7 +136,8 @@ def _broadcast_to_targets(args, target_rows: list[dict], message: str) -> dict:
         send_args = argparse.Namespace(
             target=target,
             message=message,
-            sender=identity.sender(getattr(args, "sender", None)),
+            sender=getattr(args, "sender", None),
+            service_sender=getattr(args, "service_sender", None),
             mode=None,
             nudge=False,
             transport=getattr(args, "transport", "auto") or "auto",
@@ -160,8 +159,6 @@ def _broadcast_to_targets(args, target_rows: list[dict], message: str) -> dict:
 
 
 def run(args):
-    from lib import identity
-
     scope = getattr(args, "scope", None) or "fleet"
     if scope in {"live", "all-live"}:
         message = _message_for_scope(args)
@@ -202,7 +199,8 @@ def run(args):
         send_args = argparse.Namespace(
             target=target,
             message=message,
-            sender=identity.sender(getattr(args, "sender", None)),
+            sender=getattr(args, "sender", None),
+            service_sender=getattr(args, "service_sender", None),
             mode=None,
             nudge=False,
             transport=getattr(args, "transport", "auto") or "auto",

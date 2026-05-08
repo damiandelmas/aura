@@ -13,6 +13,15 @@ from lib import seat_schema
 
 
 def run(args):
+    if getattr(args, "sessions_action", None) == "latest":
+        args = argparse.Namespace(
+            **{
+                **vars(args),
+                "sessions_action": None,
+            }
+        )
+    if getattr(args, "sessions_action", None) == "all":
+        return _all_history(args)
     if getattr(args, "sessions_action", None) == "self":
         from lib import runtime_session
 
@@ -107,6 +116,40 @@ def run(args):
         "missing_session_id": len(missing),
         "by_binding": by_binding,
         "rows": mapped,
+    }
+
+
+def _all_history(args) -> dict:
+    """Return Aura session/seat lifecycle history without restore-plan flags."""
+    from lib import session_ledger
+
+    fleet_filter = getattr(args, "fleet", None)
+    limit = getattr(args, "limit", None)
+    rows = []
+    for record in session_ledger.iter_records():
+        fleet = (
+            record.get("fleet")
+            or (record.get("after") or {}).get("fleet")
+            or (record.get("before") or {}).get("fleet")
+        )
+        if not fleet:
+            ref = record.get("seat_ref") or record.get("target") or ""
+            if ":" in ref:
+                fleet = ref.split(":", 1)[0]
+        if fleet_filter and fleet != fleet_filter:
+            continue
+        rows.append(record)
+
+    rows = list(reversed(rows))
+    if limit:
+        rows = rows[:limit]
+    return {
+        "ok": True,
+        "schema": "aura.sessions_all.v1",
+        "source": "session-ledger",
+        "fleet": fleet_filter,
+        "total": len(rows),
+        "rows": rows,
     }
 
 

@@ -40,6 +40,7 @@ def create(
     target: str,
     message: str,
     sender: str,
+    sender_kind: str | None = None,
     after: str = "next-report",
 ) -> dict[str, Any]:
     record = {
@@ -54,6 +55,8 @@ def create(
         "updated_at": now_iso(),
         "attempts": [],
     }
+    if sender_kind is not None:
+        record["sender_kind"] = sender_kind
     _atomic_write(queue_path(record["queue_id"]), record)
     return record
 
@@ -150,7 +153,8 @@ def release_for_report(report: dict[str, Any]) -> list[dict[str, Any]]:
         args = argparse.Namespace(
             target=record.get("target"),
             message=record.get("message") or "",
-            sender=record.get("sender") or "queue",
+            sender=None if record.get("sender_kind") == "service" else (record.get("sender") or "queue"),
+            service_sender=record.get("sender") if record.get("sender_kind") == "service" else None,
             mode=None,
             nudge=False,
             transport="auto",

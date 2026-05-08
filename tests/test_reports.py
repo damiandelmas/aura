@@ -34,6 +34,21 @@ def run_aura_raw(args, env, cwd=None):
     )
 
 
+def write_registry(env, rows):
+    path = Path(env["AURA_STATE_DIR"]) / "registry" / "seats.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        f"{row['fleet']}:{row['name']}": {
+            "seat": row["name"],
+            "seat_ref": f"{row['fleet']}:{row['name']}",
+            "registered": True,
+            **row,
+        }
+        for row in rows
+    }
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def test_report_appends_semantic_delta_with_inferred_context(tmp_path):
     env = {
         **os.environ,
@@ -389,8 +404,15 @@ def test_queue_command_records_pending_message(tmp_path):
         "AURA_STATE_DIR": str(tmp_path / ".aura"),
         "PYTHONDONTWRITEBYTECODE": "1",
     }
+    write_registry(env, [{
+        "name": "lead",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "seat_instance_id": "si_lead",
+        "pane_ref": "tmux:unitfleet:%1",
+    }])
 
-    result = run_aura(["queue", "unitfleet:worker", "after your next report", "--as", "tester"], env)
+    result = run_aura(["queue", "unitfleet:worker", "after your next report", "--as", "unitfleet:lead"], env)
 
     assert result["ok"] is True
     assert result["schema"] == "aura.queue_ack.v1"
@@ -400,7 +422,7 @@ def test_queue_command_records_pending_message(tmp_path):
     listed = run_aura(["queue", "--list", "--status", "pending"], env)
     assert listed["ok"] is True
     assert listed["records"][0]["message"] == "after your next report"
-    assert listed["records"][0]["sender"] == "tester"
+    assert listed["records"][0]["sender"] == "unitfleet:lead"
 
 
 def test_queue_command_infers_current_seat_sender(tmp_path):
@@ -411,12 +433,34 @@ def test_queue_command_infers_current_seat_sender(tmp_path):
         "AURA_SEAT": "lead",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
+    write_registry(env, [{
+        "name": "lead",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "seat_instance_id": "si_lead",
+        "pane_ref": "tmux:unitfleet:%1",
+    }])
 
     result = run_aura(["queue", "unitfleet:worker", "after your next report"], env)
 
     assert result["ok"] is True
     listed = run_aura(["queue", "--list", "--status", "pending"], env)
     assert listed["records"][0]["sender"] == "unitfleet:lead"
+
+
+def test_queue_command_accepts_service_sender(tmp_path):
+    env = {
+        **os.environ,
+        "AURA_STATE_DIR": str(tmp_path / ".aura"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+    result = run_aura(["queue", "unitfleet:worker", "after your next report", "--as-service", "chatbot-pipeline"], env)
+
+    assert result["ok"] is True
+    listed = run_aura(["queue", "--list", "--status", "pending"], env)
+    assert listed["records"][0]["sender"] == "service:chatbot-pipeline"
+    assert listed["records"][0]["sender_kind"] == "service"
 
 
 def test_event_subscribe_reports_creates_named_subscription(tmp_path):

@@ -870,6 +870,14 @@ def test_send_blocks_hidden_targets_without_operator_override(tmp_path, monkeypa
     from lib import registry
 
     registry.upsert_agent({
+        "name": "lead",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "registered": True,
+        "seat_instance_id": "si_lead",
+        "pane_ref": "tmux:unitfleet:%1",
+    })
+    registry.upsert_agent({
         "name": "ether-coordinator",
         "fleet": "_aura-ether",
         "runtime": "codex",
@@ -881,7 +889,7 @@ def test_send_blocks_hidden_targets_without_operator_override(tmp_path, monkeypa
     args = argparse.Namespace(
         target="ether-coordinator",
         message="hello",
-        sender="tester",
+        sender="unitfleet:lead",
         mode=None,
         nudge=False,
         transport="tmux",
@@ -926,7 +934,7 @@ def test_broadcast_targets_registered_fleet_agents_and_excludes_shell(monkeypatc
     class FakeSend:
         @staticmethod
         def run(args):
-            sent.append((args.target, args.message, args.transport))
+            sent.append((args.target, args.message, args.transport, args.service_sender))
             return {"ok": True, "target": args.target}
 
     monkeypatch.setattr(broadcast, "_registry", FakeRegistry)
@@ -937,7 +945,8 @@ def test_broadcast_targets_registered_fleet_agents_and_excludes_shell(monkeypatc
         fleet="triad",
         fleet_arg=None,
         message="ping",
-        sender="cli",
+        sender=None,
+        service_sender="chatbot-pipeline",
         transport="tmux",
         dedupe_key=None,
         force=False,
@@ -950,6 +959,7 @@ def test_broadcast_targets_registered_fleet_agents_and_excludes_shell(monkeypatc
     assert result["count"] == 3
     assert [x[0] for x in sent] == ["claude1", "hermes1", "codex1"]
     assert all(x[1] == "ping" for x in sent)
+    assert all(x[3] == "chatbot-pipeline" for x in sent)
 
 
 def test_broadcast_parses_message_when_fleet_flag_is_set(monkeypatch):

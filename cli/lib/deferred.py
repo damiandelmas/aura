@@ -78,6 +78,7 @@ def create(
     ttl_seconds: float = 900,
     blocked_reason: str | None = None,
     blocked_message_id: str | None = None,
+    sender_kind: str | None = None,
 ) -> dict[str, Any]:
     created = now_epoch()
     record = {
@@ -100,6 +101,8 @@ def create(
         "next_run_epoch": created,
         "updated_at": now_iso(),
     }
+    if sender_kind is not None:
+        record["sender_kind"] = sender_kind
     _atomic_write(deferred_path(record["deferred_id"]), record)
     return record
 

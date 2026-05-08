@@ -68,8 +68,38 @@ def run(args):
     from lib import delivery, identity, mesh, registry, terminal
 
     nudge = getattr(args, 'nudge', False)
-    sender = identity.sender(getattr(args, "sender", None))
+    sender_info = identity.resolve_semantic_sender(
+        getattr(args, "sender", None),
+        service=getattr(args, "service_sender", None),
+        default=None,
+    )
+    if not sender_info.get("ok"):
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": sender_info.get("reason") or "sender-not-inferred",
+            "error": sender_info.get("error") or "could not resolve a managed Aura sender",
+            "target": args.target,
+        }
+    sender = sender_info["sender"]
+    sender_kind = sender_info["sender_kind"]
+    if args.target.startswith("tmux:"):
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "raw-terminal-target",
+            "error": "aura send requires a managed Aura target; use aura write for raw tmux targets",
+            "target": args.target,
+        }
     reg_agent = registry.get_agent(args.target)
+    if ":" in args.target and not reg_agent:
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "target-not-managed",
+            "error": "aura send requires an explicit fleet:seat target to resolve to a managed Aura seat; adopt/register the terminal first or use aura write for raw terminal input",
+            "target": args.target,
+        }
     if _is_current_seat(args.target, reg_agent) and not getattr(args, "force", False):
         return {
             "ok": False,
@@ -123,7 +153,7 @@ def run(args):
         transport = 'tmux' if target_exists else 'mesh'
 
     if transport == 'tmux':
-        result = _send_tmux(args, terminal, delivery, terminal_target=terminal_target, sender=sender)
+        result = _send_tmux(args, terminal, delivery, terminal_target=terminal_target, sender=sender, sender_kind=sender_kind)
         if target_diagnostic:
             result["target_diagnostic"] = target_diagnostic
             if isinstance(result.get("record"), dict):
@@ -155,10 +185,34 @@ def run(args):
     return result
 
 
-def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None):
+def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None, sender_kind=None):
     from lib import identity
 
-    sender = identity.sender(sender if sender is not None else getattr(args, "sender", None))
+    if sender_kind == "service":
+        canonical = identity.service_sender(sender)
+        sender_info = (
+            {"ok": True, "sender": canonical, "sender_kind": "service"}
+            if canonical
+            else {"ok": False, "reason": "invalid-service-sender", "error": "invalid service sender"}
+        )
+    elif sender_kind == "seat":
+        sender_info = {"ok": True, "sender": sender, "sender_kind": "seat"} if sender else {"ok": False}
+    else:
+        sender_info = identity.resolve_semantic_sender(
+            sender if sender is not None else getattr(args, "sender", None),
+            service=getattr(args, "service_sender", None) if sender is None else None,
+            default=None,
+        )
+    if not sender_info.get("ok"):
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": sender_info.get("reason") or "sender-not-inferred",
+            "error": sender_info.get("error") or "could not resolve a managed Aura sender",
+            "target": args.target,
+        }
+    sender = sender_info["sender"]
+    sender_kind = sender_info["sender_kind"]
     body = args.message or ""
     terminal_target = terminal_target or args.target
     dedupe_key = getattr(args, 'dedupe_key', None) or delivery.default_dedupe_key(args.target, sender, body)
@@ -173,6 +227,7 @@ def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None):
                 backend="tmux",
                 dedupe_key=dedupe_key,
                 state="skipped_duplicate",
+                sender_kind=sender_kind,
                 previous_message_id=previous,
                 transport="tmux",
             )
@@ -195,6 +250,7 @@ def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None):
             backend_ref=terminal_target,
             dedupe_key=dedupe_key,
             state="blocked",
+            sender_kind=sender_kind,
             transport="tmux",
             error=blocker,
             capture_before_lines=len(preflight_capture),
@@ -210,6 +266,7 @@ def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None):
                 args,
                 body=body,
                 sender=sender,
+                sender_kind=sender_kind,
                 dedupe_key=dedupe_key,
                 blocked_reason=blocker,
                 blocked_message_id=record.get("message_id"),
@@ -237,6 +294,7 @@ def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None):
         backend_ref=terminal_target,
         dedupe_key=dedupe_key,
         message_id=message_id,
+        sender_kind=sender_kind,
         transport="tmux",
         state="pending",
     )
@@ -281,6 +339,8 @@ def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None):
         "transport": "tmux",
         "message_id": message_id,
         "target": args.target,
+        "sender": sender,
+        "sender_kind": sender_kind,
         "terminal_ref": result.get("target"),
         "state": state,
         "submitted": result.get("submitted", False),
@@ -292,7 +352,7 @@ def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None):
     return response
 
 
-def _create_deferred_delivery(args, *, body, sender, dedupe_key, blocked_reason, blocked_message_id=None):
+def _create_deferred_delivery(args, *, body, sender, sender_kind=None, dedupe_key, blocked_reason, blocked_message_id=None):
     from lib import deferred
 
     ttl_seconds = deferred.parse_duration(getattr(args, "defer_ttl", None), default=900)
@@ -301,6 +361,7 @@ def _create_deferred_delivery(args, *, body, sender, dedupe_key, blocked_reason,
         target=args.target,
         message=body,
         sender=sender,
+        sender_kind=sender_kind,
         dedupe_key=dedupe_key,
         transport="tmux",
         retry_every_seconds=retry_seconds,

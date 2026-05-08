@@ -33,6 +33,8 @@ def binding_method_for_source(source: str | None) -> str | None:
         return None
     if source in BOUND_SESSION_SOURCES:
         return BOUND_SESSION_SOURCES[source]
+    if source.startswith("codex-hook:"):
+        return "codex-hook"
     if source.startswith("env:"):
         return "runtime-env"
     if source == "current-process":
@@ -552,6 +554,46 @@ def merge(record: dict, session: dict) -> dict:
             if session.get(key) is not None
         }
         return {**record, **diagnostics}
+    if (
+        is_bound_session(record)
+        and is_bound_session(session)
+        and record.get("runtime_session_id") != session.get("runtime_session_id")
+        and str(record.get("runtime_session_bind_source") or record.get("runtime_session_source") or "").startswith("codex-hook:")
+        and (session.get("runtime_session_bind_source") or session.get("runtime_session_source")) == "argv:codex-resume"
+    ):
+        protected = {
+            key: record.get(key)
+            for key in (
+                "session_id",
+                "runtime_session_id",
+                "runtime_session_source",
+                "runtime_session_binding",
+                "runtime_session_bind_method",
+                "runtime_session_bind_source",
+                "runtime_session_bound_at",
+                "runtime_session_confidence",
+                "runtime_session_evidence",
+                "runtime_session_env",
+                "runtime_session_cwd",
+                "runtime_session_created_at_ms",
+                "runtime_session_updated_at_ms",
+            )
+            if record.get(key) is not None
+        }
+        diagnostics = {
+            "runtime_session_stale_process_evidence": {
+                key: session.get(key)
+                for key in (
+                    "runtime_session_id",
+                    "runtime_session_source",
+                    "runtime_session_bind_source",
+                    "runtime_session_evidence",
+                    "runtime_session_pid",
+                )
+                if session.get(key) is not None
+            }
+        }
+        return {**record, **{k: v for k, v in session.items() if k not in protected}, **diagnostics, **protected}
     merged = {**record, **session}
     if is_bound_session(session):
         merged["session_id"] = session["runtime_session_id"]

@@ -39,10 +39,26 @@ def run(args):
     if getattr(args, "message", None) is None:
         return {"ok": False, "error": "queue requires MESSAGE unless --list is used"}
 
+    sender_info = identity.resolve_semantic_sender(
+        getattr(args, "sender", None),
+        service=getattr(args, "service_sender", None),
+        default=None,
+    )
+    if not sender_info.get("ok"):
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": sender_info.get("reason") or "sender-not-inferred",
+            "error": sender_info.get("error") or "could not resolve a managed Aura sender",
+            "target": args.target,
+        }
+    sender = sender_info["sender"]
+
     record = queued_messages.create(
         target=args.target,
         message=args.message,
-        sender=identity.sender(getattr(args, "sender", None)),
+        sender=sender,
+        sender_kind=sender_info["sender_kind"],
         after=getattr(args, "after", None) or "next-report",
     )
     return {

@@ -121,7 +121,9 @@ def main():
     p_send.add_argument("target", help="Target agent name")
     p_send.add_argument("message", nargs="?", default="", help="Message content")
     p_send.add_argument("--as", dest="sender",
-                        help="Send as (default: current Aura seat, else cli)")
+                        help="Send as (default: current Aura seat; required if Aura cannot infer one)")
+    p_send.add_argument("--as-service", dest="service_sender",
+                        help="Send as an explicit service actor, e.g. chatbot-pipeline")
     p_send.add_argument("--mode", choices=["immediate", "queue", "notify", "auto"],
                         help=argparse.SUPPRESS)
     p_send.add_argument("--nudge", action="store_true",
@@ -148,7 +150,9 @@ def main():
     p_queue.add_argument("target", nargs="?", help="Target agent name")
     p_queue.add_argument("message", nargs="?", help="Message content")
     p_queue.add_argument("--as", dest="sender",
-                         help="Sender label (default: current Aura seat, else cli)")
+                         help="Sender label (default: current Aura seat; required if Aura cannot infer one)")
+    p_queue.add_argument("--as-service", dest="service_sender",
+                         help="Queue as an explicit service actor, e.g. chatbot-pipeline")
     p_queue.add_argument("--after", default="next-report",
                          help="Release condition: next-report or a report id (default: next-report)")
     p_queue.add_argument("--list", action="store_true",
@@ -318,7 +322,9 @@ def main():
     p_broadcast.add_argument("--runtime",
                              help="For --scope live, include only seats with this runtime (for example codex)")
     p_broadcast.add_argument("--as", dest="sender",
-                             help="Send as (default: current Aura seat, else cli)")
+                             help="Send as (default: current Aura seat; required if Aura cannot infer one)")
+    p_broadcast.add_argument("--as-service", dest="service_sender",
+                             help="Broadcast as an explicit service actor, e.g. chatbot-pipeline")
     p_broadcast.add_argument("--transport", choices=["auto", "tmux", "mesh"], default="auto",
                              help="Delivery transport for each target")
     p_broadcast.add_argument("--dedupe-key", metavar="KEY",
@@ -493,7 +499,7 @@ def main():
     p_sessions.add_argument(
         "sessions_action",
         nargs="?",
-        choices=["restore-plan", "self", "bind-current", "bind-hook", "bind-nonce", "seat-history", "fleets", "fleet-history"],
+        choices=["latest", "all", "restore-plan", "self", "bind-current", "bind-hook", "bind-nonce", "seat-history", "fleets", "fleet-history"],
                             help="Optional sessions action")
     p_sessions.add_argument("nonce", nargs="?",
                             help="For bind-nonce, unique marker written into the target Codex session; for seat-history, target seat ref")
@@ -514,7 +520,7 @@ def main():
     p_sessions.add_argument("--latest-per-seat", action="store_true",
                             help="For --from-ledger restore-plan, collapse to the latest known row per seat")
     p_sessions.add_argument("--limit", type=int,
-                            help="For seat-history, limit rows")
+                            help="For all/seat-history, limit rows")
     p_sessions.add_argument("--no-follow-aliases", action="store_true",
                             help="For seat-history, do not follow rehome/alias chains")
     p_sessions.add_argument("--runtime", choices=["codex", "claude-code", "claude", "hermes", "omx", "opencode", "openclaw", "shell", "command"],
