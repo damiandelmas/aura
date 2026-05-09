@@ -195,12 +195,14 @@ def test_view_fleet_returns_same_fleet_rows(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_FLEET", "runway-engineering")
     monkeypatch.setenv("AURA_SEAT", "lead-engineer")
 
-    from lib import registry
     from commands import view
 
-    registry.upsert_agent({"name": "lead-engineer", "fleet": "runway-engineering", "runtime": "codex"})
-    registry.upsert_agent({"name": "worker", "fleet": "runway-engineering", "runtime": "codex"})
-    registry.upsert_agent({"name": "other", "fleet": "runway-marketing", "runtime": "codex"})
+    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
+        {"target": "runway-engineering:lead-engineer", "seat": "lead-engineer", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
+        {"target": "runway-engineering:worker", "seat": "worker", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
+        {"target": "runway-engineering:stale", "seat": "stale", "fleet": "runway-engineering", "liveness": "missing", "managed_state": "missing_pane"},
+        {"target": "runway-marketing:other", "seat": "other", "fleet": "runway-marketing", "liveness": "alive", "managed_state": "spawned_unbound"},
+    ])
 
     result = view.run(argparse.Namespace(view_action="fleet", scope=None, limit=10, include_hidden=False))
 
@@ -213,18 +215,46 @@ def test_view_fleet_returns_same_fleet_rows(monkeypatch, tmp_path):
     }
 
 
-def test_view_roster_returns_all_managed_rows(monkeypatch, tmp_path):
+def test_view_roster_returns_live_rows_by_default(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
 
-    from lib import registry
     from commands import view
 
-    registry.upsert_agent({"name": "lead-engineer", "fleet": "runway-engineering", "runtime": "codex"})
-    registry.upsert_agent({"name": "research-lead", "fleet": "runway-research", "runtime": "codex"})
+    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
+        {"target": "runway-engineering:lead-engineer", "seat": "lead-engineer", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
+        {"target": "runway-research:research-lead", "seat": "research-lead", "fleet": "runway-research", "liveness": "alive", "managed_state": "spawned_unbound"},
+        {"target": "runway-research:stale", "seat": "stale", "fleet": "runway-research", "liveness": "missing", "managed_state": "missing_pane"},
+    ])
 
     result = view.run(argparse.Namespace(view_action="roster", scope=None, limit=10, include_hidden=False))
 
     assert result["ok"] is True
     assert result["schema"] == "aura.view.roster.v1"
-    assert result["counts"] == {"fleets": 2, "seats": 2}
+    assert result["scope"] == "live"
+    assert result["counts"] == {"fleets": 2, "seats": 2, "historical_seats": 3}
     assert result["fleets"] == ["runway-engineering", "runway-research"]
+    assert {row["target"] for row in result["seats"]} == {
+        "runway-engineering:lead-engineer",
+        "runway-research:research-lead",
+    }
+
+
+def test_view_historical_returns_all_managed_rows(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from commands import view
+
+    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
+        {"target": "runway-engineering:lead-engineer", "seat": "lead-engineer", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
+        {"target": "runway-research:stale", "seat": "stale", "fleet": "runway-research", "liveness": "missing", "managed_state": "missing_pane"},
+    ])
+
+    result = view.run(argparse.Namespace(view_action="historical", scope=None, limit=10, include_hidden=False))
+
+    assert result["ok"] is True
+    assert result["schema"] == "aura.view.historical.v1"
+    assert result["counts"] == {"fleets": 2, "seats": 2}
+    assert {row["target"] for row in result["seats"]} == {
+        "runway-engineering:lead-engineer",
+        "runway-research:stale",
+    }

@@ -72,6 +72,10 @@ def _is_routable(row: dict) -> bool:
     return row.get("managed_state") not in {"missing_pane", "stopped"}
 
 
+def _is_live(row: dict) -> bool:
+    return row.get("liveness") == "alive" and _is_routable(row)
+
+
 def _one_self_match(rows: list[dict], matches: list[dict], source: str) -> dict:
     routable = [row for row in matches if _is_routable(row)]
     selected = routable or matches
@@ -165,7 +169,7 @@ def _run_fleet(*, include_hidden: bool) -> dict:
         self_row = resolved["row"]
         fleet = self_row.get("fleet")
     fleet = fleet or context.get("fleet")
-    fleet_rows = [row for row in rows if row.get("fleet") == fleet] if fleet else []
+    fleet_rows = [row for row in rows if row.get("fleet") == fleet and _is_live(row)] if fleet else []
     return {
         "ok": bool(fleet),
         "schema": "aura.view.fleet.v1",
@@ -179,10 +183,24 @@ def _run_fleet(*, include_hidden: bool) -> dict:
 
 def _run_roster(*, include_hidden: bool) -> dict:
     rows = _status_rows(include_hidden=include_hidden)
-    fleets = sorted({row.get("fleet") for row in rows if row.get("fleet")})
+    live_rows = [row for row in rows if _is_live(row)]
+    fleets = sorted({row.get("fleet") for row in live_rows if row.get("fleet")})
     return {
         "ok": True,
         "schema": "aura.view.roster.v1",
+        "scope": "live",
+        "counts": {"fleets": len(fleets), "seats": len(live_rows), "historical_seats": len(rows)},
+        "fleets": fleets,
+        "seats": [_compact_status(row) for row in live_rows],
+    }
+
+
+def _run_historical(*, include_hidden: bool) -> dict:
+    rows = _status_rows(include_hidden=include_hidden)
+    fleets = sorted({row.get("fleet") for row in rows if row.get("fleet")})
+    return {
+        "ok": True,
+        "schema": "aura.view.historical.v1",
         "counts": {"fleets": len(fleets), "seats": len(rows)},
         "fleets": fleets,
         "seats": [_compact_status(row) for row in rows],
@@ -299,6 +317,8 @@ def run(args):
         return _run_fleet(include_hidden=include_hidden)
     if action == "roster":
         return _run_roster(include_hidden=include_hidden)
+    if action == "historical":
+        return _run_historical(include_hidden=include_hidden)
 
     limit = int(getattr(args, "limit", None) or 10)
     context = reports.infer_context()
