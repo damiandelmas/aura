@@ -899,6 +899,7 @@ def _restart(args, registry, terminal) -> dict:
         "AURA_RUNTIME_SESSION_ID",
         "AURA_SESSION_ID",
         "CODEX_THREAD_ID",
+        "CODEX_CI",
         "CLAUDE_SESSION_ID",
     ]
     try:

@@ -419,6 +419,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 "AURA_RUNTIME_SESSION_ID",
                 "AURA_SESSION_ID",
                 "CODEX_THREAD_ID",
+                "CODEX_CI",
                 "CLAUDE_SESSION_ID",
             ],
         )

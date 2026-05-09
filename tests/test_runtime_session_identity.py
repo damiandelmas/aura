@@ -382,7 +382,14 @@ def test_spawn_exports_aura_runtime_env_and_records_pane_ref(monkeypatch, tmp_pa
                 "FORCE_COLOR": "1",
                 "CLICOLOR_FORCE": "1",
             },
-            ["NO_COLOR", "AURA_RUNTIME_SESSION_ID", "AURA_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID"],
+            [
+                "NO_COLOR",
+                "AURA_RUNTIME_SESSION_ID",
+                "AURA_SESSION_ID",
+                "CODEX_THREAD_ID",
+                "CODEX_CI",
+                "CLAUDE_SESSION_ID",
+            ],
         )
     ]
 

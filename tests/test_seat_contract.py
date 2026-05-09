@@ -378,7 +378,14 @@ def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, 
 
         @staticmethod
         def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
-            assert unset_env == ["NO_COLOR", "AURA_RUNTIME_SESSION_ID", "AURA_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID"]
+            assert unset_env == [
+                "NO_COLOR",
+                "AURA_RUNTIME_SESSION_ID",
+                "AURA_SESSION_ID",
+                "CODEX_THREAD_ID",
+                "CODEX_CI",
+                "CLAUDE_SESSION_ID",
+            ]
             return {"ok": True}
 
         @staticmethod
@@ -466,7 +473,14 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
     assert env["COLORTERM"] == "truecolor"
     assert env["FORCE_COLOR"] == "1"
     assert env["CLICOLOR_FORCE"] == "1"
-    assert unset_env == ["NO_COLOR", "AURA_RUNTIME_SESSION_ID", "AURA_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID"]
+    assert unset_env == [
+        "NO_COLOR",
+        "AURA_RUNTIME_SESSION_ID",
+        "AURA_SESSION_ID",
+        "CODEX_THREAD_ID",
+        "CODEX_CI",
+        "CLAUDE_SESSION_ID",
+    ]
     assert sent[0][1] == "Do the unit work.\n"
     assert result["prompt_delivery"]["submitted"] is True
     assert "agent_map_included" not in result["prompt_delivery"]

@@ -167,6 +167,14 @@ def test_restart_preserves_seat_and_records_seat_history(monkeypatch, tmp_path):
     assert env["AURA_IDENTITY_PROVIDER"] == "desks"
     assert env["AURA_IDENTITY_ID"] == "r_restart"
     assert env["AURA_IDENTITY_LABEL"] == "flex:engine:lead"
+    assert RestartTerminal.respawned[0][4] == [
+        "NO_COLOR",
+        "AURA_RUNTIME_SESSION_ID",
+        "AURA_SESSION_ID",
+        "CODEX_THREAD_ID",
+        "CODEX_CI",
+        "CLAUDE_SESSION_ID",
+    ]
     assert RestartTerminal.sent[0][0] == "tmux:unitfleet:%1"
     assert "fresh start" in RestartTerminal.sent[0][1]
 
