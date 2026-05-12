@@ -88,6 +88,8 @@ def test_send_tmux_attempts_without_submit_verification(monkeypatch, tmp_path):
         FakeTerminal,
         __import__("lib.delivery", fromlist=["delivery"]),
         terminal_target="unitfleet:worker",
+        sender="tester",
+        sender_kind="service",
     )
     assert result["ok"] is True
     assert result["submitted"] is True
@@ -142,6 +144,8 @@ def test_send_tmux_does_not_inspect_queued_input_by_default(monkeypatch, tmp_pat
         FakeTerminal,
         __import__("lib.delivery", fromlist=["delivery"]),
         terminal_target="unitfleet:worker",
+        sender="tester",
+        sender_kind="service",
     )
 
     assert result["ok"] is True
@@ -1852,7 +1856,7 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
             "send",
             "fake1",
             "hello from e2e",
-            "--as",
+            "--as-service",
             "tester",
             "--transport",
             "tmux",

@@ -148,7 +148,8 @@ def _execute_action(action: dict) -> dict:
     send_args = argparse.Namespace(
         target=target,
         message=action.get("message", ""),
-        sender="aura-route",
+        sender=None,
+        service_sender="aura-route",
         mode=None,
         nudge=False,
         transport="tmux",

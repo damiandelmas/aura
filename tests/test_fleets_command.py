@@ -30,7 +30,7 @@ def test_sessions_fleets_includes_fleet_ids(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
     from commands import sessions
-    from lib import registry, session_ledger
+    from lib import registry, seat_status, session_ledger
 
     registry.upsert_agent({
         "name": "worker",
@@ -48,13 +48,16 @@ def test_sessions_fleets_includes_fleet_ids(monkeypatch, tmp_path):
         source_command="test",
     )
     monkeypatch.setattr(
-        sessions.list_cmd,
-        "run",
-        lambda _args: [
+        seat_status,
+        "list_seat_statuses",
+        lambda include_hidden=False, terminal=None: [
             {
                 "name": "worker",
+                "seat": "worker",
                 "fleet": "unitfleet",
                 "terminal": "alive",
+                "liveness": "alive",
+                "managed_state": "spawned_bound",
                 "runtime": "codex",
                 "runtime_session_id": "session-1",
                 "runtime_session_binding": "bound",

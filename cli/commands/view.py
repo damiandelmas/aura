@@ -54,6 +54,33 @@ def _compact_status(row: dict) -> dict:
     }
 
 
+def _report_text(row: dict) -> str | None:
+    report = row.get("latest_report")
+    if not isinstance(report, dict):
+        return None
+    for key in ("summary", "work", "next"):
+        value = report.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    state = report.get("state")
+    return str(state).strip() if state else None
+
+
+def _agent_status(row: dict | None) -> dict | None:
+    if not row:
+        return None
+    identity = _compact_identity(row) or {}
+    return {
+        "target": row.get("target") or _target_for(row),
+        "status": row.get("status"),
+        "runtime": row.get("runtime"),
+        "session_id": row.get("runtime_session_id") or row.get("session_id"),
+        "identity": identity.get("id"),
+        "name": identity.get("name") or row.get("identity_label"),
+        "report": _report_text(row),
+    }
+
+
 def _row_matches_pane(row: dict, pane: str | None) -> bool:
     if not pane:
         return False
@@ -159,7 +186,23 @@ def _run_self(*, include_hidden: bool) -> dict:
     }
 
 
-def _run_fleet(*, include_hidden: bool) -> dict:
+def _run_fleets(*, include_hidden: bool) -> dict:
+    rows = _status_rows(include_hidden=include_hidden)
+    live_rows = [row for row in rows if _is_live(row)]
+    counts: dict[str, int] = {}
+    for row in live_rows:
+        fleet = row.get("fleet")
+        if fleet:
+            counts[fleet] = counts.get(fleet, 0) + 1
+    return {
+        "fleets": [
+            {"fleet": fleet, "seats": counts[fleet]}
+            for fleet in sorted(counts)
+        ],
+    }
+
+
+def _run_fleet(*, include_hidden: bool, fleet_name: str | None = None) -> dict:
     context = reports.infer_context()
     rows = _status_rows(include_hidden=include_hidden)
     resolved = _resolve_self(rows, context)
@@ -168,8 +211,13 @@ def _run_fleet(*, include_hidden: bool) -> dict:
     if resolved.get("ok"):
         self_row = resolved["row"]
         fleet = self_row.get("fleet")
-    fleet = fleet or context.get("fleet")
+    fleet = fleet_name or fleet or context.get("fleet")
     fleet_rows = [row for row in rows if row.get("fleet") == fleet and _is_live(row)] if fleet else []
+    if fleet_name:
+        return {
+            "fleet": fleet,
+            "seats": [_agent_status(row) for row in sorted(fleet_rows, key=lambda row: row.get("seat") or row.get("name") or "")],
+        }
     return {
         "ok": bool(fleet),
         "schema": "aura.view.fleet.v1",
@@ -310,11 +358,14 @@ def _report_summary(row: dict | None) -> dict | None:
 
 def run(args):
     action = getattr(args, "view_action", None)
+    target = getattr(args, "view_target", None)
     include_hidden = bool(getattr(args, "include_hidden", False))
     if action == "self":
         return _run_self(include_hidden=include_hidden)
+    if action == "fleets":
+        return _run_fleets(include_hidden=include_hidden)
     if action == "fleet":
-        return _run_fleet(include_hidden=include_hidden)
+        return _run_fleet(include_hidden=include_hidden, fleet_name=target)
     if action == "roster":
         return _run_roster(include_hidden=include_hidden)
     if action == "historical":

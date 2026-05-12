@@ -1,9 +1,8 @@
-"""Tmux backend for aura — libtmux adapter.
+"""Tmux backend for aura.
 
-Wraps libtmux as a thin primitive layer. Preserves the public function surface
-used by spawn / send / check / cut / resolve / list commands.
-
-Vendor: libtmux (MIT, pinned in requirements). Picasso steal — we adapt, not copy.
+Preserves the public primitive surface used by spawn / send / check / cut /
+resolve / list commands. Keep this module dependency-light because every Aura
+command imports it through lib.terminal, including read-only commands like view.
 """
 
 import os
@@ -13,18 +12,12 @@ import tempfile
 import time
 from pathlib import Path
 
-import libtmux
-
 # Fleet name: the tmux session that groups agents working one initiative.
 # Set via --fleet flag, AURA_FLEET env, or falls back to AURA_PROJECT/knowledge.
 TMUX_SESSION = (os.environ.get("AURA_FLEET")
                 or os.environ.get("AURA_TMUX_SESSION")
                 or os.environ.get("AURA_PROJECT")
                 or "aura")
-
-
-# Module-level server handle, lazy-initialized
-_server: libtmux.Server | None = None
 
 
 def configure_session(session_name: str | None) -> str:
@@ -42,19 +35,10 @@ def configure_session(session_name: str | None) -> str:
     return TMUX_SESSION
 
 
-def _srv() -> libtmux.Server:
-    global _server
-    if _server is None:
-        _server = libtmux.Server()
-    return _server
-
-
 def _session():
     """Return current libtmux Session, or None if it doesn't exist."""
-    try:
-        return _srv().sessions.get(session_name=TMUX_SESSION)
-    except Exception:
-        return None
+    result = _run_tmux(["has-session", "-t", TMUX_SESSION])
+    return True if result.returncode == 0 else None
 
 
 def ensure_session() -> bool:
@@ -65,8 +49,14 @@ def ensure_session() -> bool:
     """
     if _session() is not None:
         return False
-    _srv().new_session(session_name=TMUX_SESSION, detach=True)
-    return True
+    result = _run_tmux(["new-session", "-d", "-s", TMUX_SESSION])
+    if result.returncode == 0:
+        _apply_index_defaults()
+        return True
+    if "duplicate session" in (result.stderr or "").lower():
+        _apply_index_defaults()
+        return False
+    return False
 
 
 def _run_tmux(args: list[str]) -> subprocess.CompletedProcess:
@@ -190,31 +180,16 @@ def create_window(
         }
 
     _apply_index_defaults()
-    if command:
-        result = _new_window(command_text)
-        if result.returncode != 0:
-            return {"ok": False, "error": result.stderr.strip() or "tmux new-window failed", "name": name}
-        pane = pane_id(name)
-        return {
-            "ok": True,
-            "name": name,
-            "target": _backend_ref(name),
-            "pane_id": pane,
-            "pane_ref": f"{TMUX_SESSION}:{pane}" if pane else None,
-        }
-
-    kwargs = {"window_name": name, "attach": not detached}
-    if workdir:
-        kwargs["start_directory"] = workdir
-    win = sess.new_window(**kwargs)
-    pane = getattr(win.active_pane, "pane_id", None)
+    result = _new_window(command_text)
+    if result.returncode != 0:
+        return {"ok": False, "error": result.stderr.strip() or "tmux new-window failed", "name": name}
+    pane = pane_id(name)
     return {
         "ok": True,
         "name": name,
         "target": _backend_ref(name),
         "pane_id": pane,
         "pane_ref": f"{TMUX_SESSION}:{pane}" if pane else None,
-        "window": win,
     }
 
 
@@ -257,10 +232,10 @@ def respawn_pane(
 
 def _window(name: str):
     """Return a named window in the current fleet session, or None."""
-    sess = _session()
-    if sess is None:
+    result = _run_tmux(["list-windows", "-t", TMUX_SESSION, "-F", "#{window_name}"])
+    if result.returncode != 0:
         return None
-    return sess.windows.get(window_name=name, default=None)
+    return name if name in result.stdout.splitlines() else None
 
 
 def _target(name: str) -> str:
@@ -448,7 +423,7 @@ def window_exists(name: str) -> bool:
 
 def list_windows() -> list[str]:
     """List all window names in fleet session."""
-    sess = _session()
-    if sess is None:
+    result = _run_tmux(["list-windows", "-t", TMUX_SESSION, "-F", "#{window_name}"])
+    if result.returncode != 0:
         return []
-    return [w.window_name for w in sess.windows if w.window_name]
+    return [line for line in result.stdout.splitlines() if line]

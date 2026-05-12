@@ -190,6 +190,28 @@ def test_view_self_returns_current_managed_seat(monkeypatch, tmp_path):
     assert result["self"]["identity"]["id"] == "r_self"
 
 
+def test_view_fleets_returns_live_fleet_index(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from commands import view
+
+    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
+        {"target": "runway-engineering:lead-engineer", "seat": "lead-engineer", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
+        {"target": "runway-engineering:worker", "seat": "worker", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
+        {"target": "runway-research:research-lead", "seat": "research-lead", "fleet": "runway-research", "liveness": "alive", "managed_state": "spawned_unbound"},
+        {"target": "runway-research:stale", "seat": "stale", "fleet": "runway-research", "liveness": "missing", "managed_state": "missing_pane"},
+    ])
+
+    result = view.run(argparse.Namespace(view_action="fleets", view_target=None, scope=None, limit=10, include_hidden=False))
+
+    assert result == {
+        "fleets": [
+            {"fleet": "runway-engineering", "seats": 2},
+            {"fleet": "runway-research", "seats": 1},
+        ],
+    }
+
+
 def test_view_fleet_returns_same_fleet_rows(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.setenv("AURA_FLEET", "runway-engineering")
@@ -204,7 +226,7 @@ def test_view_fleet_returns_same_fleet_rows(monkeypatch, tmp_path):
         {"target": "runway-marketing:other", "seat": "other", "fleet": "runway-marketing", "liveness": "alive", "managed_state": "spawned_unbound"},
     ])
 
-    result = view.run(argparse.Namespace(view_action="fleet", scope=None, limit=10, include_hidden=False))
+    result = view.run(argparse.Namespace(view_action="fleet", view_target=None, scope=None, limit=10, include_hidden=False))
 
     assert result["ok"] is True
     assert result["schema"] == "aura.view.fleet.v1"
@@ -212,6 +234,51 @@ def test_view_fleet_returns_same_fleet_rows(monkeypatch, tmp_path):
     assert {row["target"] for row in result["seats"]} == {
         "runway-engineering:lead-engineer",
         "runway-engineering:worker",
+    }
+
+
+def test_view_fleet_accepts_explicit_fleet_and_flattens_latest_report(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from commands import view
+
+    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
+        {
+            "target": "flexgraph-chatbot:engineering-lead",
+            "seat": "engineering-lead",
+            "fleet": "flexgraph-chatbot",
+            "status": "waiting",
+            "runtime": "codex",
+            "runtime_session_id": "session-engineering",
+            "liveness": "alive",
+            "managed_state": "spawned_bound",
+            "identity": {"provider": "desks", "id": "r_5c425f44", "name": "flexgraph:chatbot:engineering:lead"},
+            "latest_report": {"state": "parked", "work": "Loaded identity and waiting for assignment"},
+        },
+        {
+            "target": "other-fleet:lead",
+            "seat": "lead",
+            "fleet": "other-fleet",
+            "liveness": "alive",
+            "managed_state": "spawned_unbound",
+        },
+    ])
+
+    result = view.run(argparse.Namespace(view_action="fleet", view_target="flexgraph-chatbot", scope=None, limit=10, include_hidden=False))
+
+    assert result == {
+        "fleet": "flexgraph-chatbot",
+        "seats": [
+            {
+                "target": "flexgraph-chatbot:engineering-lead",
+                "status": "waiting",
+                "runtime": "codex",
+                "session_id": "session-engineering",
+                "identity": "r_5c425f44",
+                "name": "flexgraph:chatbot:engineering:lead",
+                "report": "Loaded identity and waiting for assignment",
+            },
+        ],
     }
 
 

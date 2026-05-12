@@ -36,7 +36,14 @@ def test_send_defer_if_busy_creates_outbox_without_daemon(monkeypatch, tmp_path)
         no_deferred_daemon=True,
     )
 
-    result = send._send_tmux(args, FakeTerminal, delivery, terminal_target="tmux:fleet:%1")
+    result = send._send_tmux(
+        args,
+        FakeTerminal,
+        delivery,
+        terminal_target="tmux:fleet:%1",
+        sender="tester",
+        sender_kind="service",
+    )
 
     assert result["ok"] is True
     assert result["blocked"] is True
@@ -89,7 +96,14 @@ def test_send_does_not_defer_on_prompt_text(monkeypatch, tmp_path):
         no_deferred_daemon=True,
     )
 
-    result = send._send_tmux(args, FakeTerminal, delivery, terminal_target="tmux:fleet:%1")
+    result = send._send_tmux(
+        args,
+        FakeTerminal,
+        delivery,
+        terminal_target="tmux:fleet:%1",
+        sender="tester",
+        sender_kind="service",
+    )
 
     assert result["ok"] is True
     assert result.get("blocked") is not True
@@ -143,7 +157,14 @@ def test_send_defer_if_submit_unverified_records_metadata_without_outbox(monkeyp
         no_deferred_daemon=True,
     )
 
-    result = send._send_tmux(args, FakeTerminal, delivery, terminal_target="tmux:fleet:%1")
+    result = send._send_tmux(
+        args,
+        FakeTerminal,
+        delivery,
+        terminal_target="tmux:fleet:%1",
+        sender="tester",
+        sender_kind="service",
+    )
 
     assert result["ok"] is True
     assert result.get("blocked") is not True

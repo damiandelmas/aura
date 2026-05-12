@@ -176,7 +176,7 @@ def test_receipt_relay_telemetry_spine(monkeypatch, tmp_path):
     fake_aura = _write_executable(
         tmp_path / "aura",
         "#!/usr/bin/env bash\n"
-        "echo '{\"ok\":true,\"message_id\":\"aura-msg-recovered\",\"submitted_verified\":true}'\n",
+        "echo '{\"ok\":true,\"state\":\"delivered\",\"message_id\":\"aura-msg-recovered\",\"submitted_verified\":true}'\n",
     )
     monkeypatch.setenv("AURA_BIN", str(fake_aura))
     recovered = deferred.run_once(deferred_record["deferred_id"])
