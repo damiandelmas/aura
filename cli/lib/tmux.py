@@ -139,8 +139,20 @@ def create_window(
         env_prefix = " ".join(env_parts) + " " if env_parts else ""
         return env_prefix + command_text
 
+    def _tmux_env_args() -> list[str]:
+        # The shell prefix below affects only the launched command.  tmux panes
+        # that the runtime creates later (for example OMX HUD splits) inherit
+        # the tmux session/window environment instead, so mirror explicit Aura
+        # launch env through tmux -e as well.
+        if not env:
+            return []
+        tmux_env: list[str] = []
+        for key, value in env.items():
+            tmux_env.extend(["-e", f"{key}={value}"])
+        return tmux_env
+
     def _create_initial_session(command_text: str | None = None):
-        args = ["new-session", "-d", "-s", TMUX_SESSION, "-n", name]
+        args = ["new-session", "-d", "-s", TMUX_SESSION, "-n", name, *_tmux_env_args()]
         if workdir:
             args.extend(["-c", workdir])
         if command_text:
@@ -148,7 +160,7 @@ def create_window(
         return _run_tmux(args)
 
     def _new_window(command_text: str | None = None):
-        args = ["new-window", "-t", TMUX_SESSION, "-n", name]
+        args = ["new-window", "-t", TMUX_SESSION, "-n", name, *_tmux_env_args()]
         if detached:
             args.append("-d")
         if workdir:

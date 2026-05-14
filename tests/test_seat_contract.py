@@ -247,6 +247,8 @@ def test_tmux_create_window_uses_requested_window_for_new_session(monkeypatch, t
             "freshfleet",
             "-n",
             "worker",
+            "-e",
+            "AURA_SEAT=worker",
             "-c",
             str(tmp_path),
             "env -u NO_COLOR AURA_SEAT=worker printf ready",
@@ -615,6 +617,8 @@ def test_spawn_omx_uses_aura_seat_box_without_project_mutation(monkeypatch, tmp_
     assert command == "omx --direct --madmax"
     assert env["OMX_LAUNCH_POLICY"] == "direct"
     assert env["OMXBOX_ACTIVE"] == "1"
+    assert env["OMX_AUTO_UPDATE"] == "0"
+    assert env["OMX_NOTIFY_FALLBACK"] == "0"
     assert env["OMX_SOURCE_CWD"] == str(unit)
     assert "AURA_OMX_PROFILE" not in env
     assert env["OMX_TEAM_STATE_ROOT"] == str(
@@ -623,6 +627,14 @@ def test_spawn_omx_uses_aura_seat_box_without_project_mutation(monkeypatch, tmp_
     assert env["HOME"].startswith(str(tmp_path / "state" / "omx-homes" / "unitfleet" / "omx-seat"))
     assert env["CODEX_HOME"] == str(tmp_path / "state" / "omx-homes" / "unitfleet" / "omx-seat" / "codex-home")
     assert env["OMX_ROOT"] == str(tmp_path / "state" / "omx-homes" / "unitfleet" / "omx-seat" / "omx-root")
+    assert result["omx_box_star_prompt_preseeded"] is True
+    assert result["omx_box_source_cwd_trusted"] is True
+
+    box = tmp_path / "state" / "omx-homes" / "unitfleet" / "omx-seat"
+    assert (box / "home" / ".omx" / "state" / "star-prompt.json").is_file()
+    config = (box / "codex-home" / "config.toml").read_text(encoding="utf-8")
+    assert f'[projects."{unit}"]' in config
+    assert 'trust_level = "trusted"' in config
 
 
 def test_spawn_omx_applies_explicit_profile_template_to_seat_box(monkeypatch, tmp_path):

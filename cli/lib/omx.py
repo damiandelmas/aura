@@ -43,6 +43,8 @@ class OmxBox:
     profile_templates_applied: tuple[str, ...] = ()
     setup_skipped: bool = False
     setup_error: str | None = None
+    star_prompt_preseeded: bool = False
+    source_cwd_trusted: bool = False
 
     def launch_env(self, source_cwd: str) -> dict[str, str]:
         env = {
@@ -53,6 +55,14 @@ class OmxBox:
             "OMX_TEAM_STATE_ROOT": str(self.omx_team_state_root),
             "OMX_LAUNCH_POLICY": "direct",
             "OMXBOX_ACTIVE": "1",
+            # Aura owns update cadence/readiness for managed seats; interactive
+            # update prompts make `aura spawn --wait` report a live but unusable
+            # pane and also write update-check state into the source cwd.
+            "OMX_AUTO_UPDATE": "0",
+            # Native Codex hooks still run from hooks.json.  The polling fallback
+            # is a best-effort compatibility watcher and currently writes some
+            # authority state under the source cwd; keep Aura-managed boxes clean.
+            "OMX_NOTIFY_FALLBACK": "0",
             "OMX_SOURCE_CWD": source_cwd,
             "AURA_OMX_BOX": str(self.root),
         }
@@ -74,6 +84,8 @@ class OmxBox:
             "omx_box_setup_skipped": self.setup_skipped,
             "omx_box_auth_seeded": self.auth_seeded,
             "omx_box_config_seeded": self.config_seeded,
+            "omx_box_star_prompt_preseeded": self.star_prompt_preseeded,
+            "omx_box_source_cwd_trusted": self.source_cwd_trusted,
             **({"omx_profile": self.profile} if self.profile else {}),
             **({"omx_profile_root": str(self.profile_root)} if self.profile_root else {}),
             "omx_profile_applied": self.profile_applied,
@@ -147,6 +159,43 @@ def _seed_codex_home(codex_home: Path) -> tuple[bool, bool]:
     return auth_seeded, config_seeded
 
 
+def _toml_quoted_key(value: str) -> str:
+    # TOML quoted keys use the same string escaping needed for JSON strings for
+    # ordinary filesystem paths.  json.dumps also keeps spaces and punctuation
+    # safe inside [projects."..."] table headers.
+    return json.dumps(value)
+
+
+def _preseed_star_prompt(home: Path) -> bool:
+    """Mark OMX's one-time GitHub star prompt as already seen for this box."""
+
+    path = home / ".omx" / "state" / "star-prompt.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(json.dumps({"prompted_at": _now_iso()}, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
+def _trust_source_cwd(codex_home: Path, source_cwd: str) -> bool:
+    """Pre-trust the operator-selected cwd in the boxed Codex config."""
+
+    config_path = codex_home / "config.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    cwd = str(Path(source_cwd).expanduser().resolve())
+    header = f"[projects.{_toml_quoted_key(cwd)}]"
+    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    if header in existing:
+        start = existing.index(header)
+        next_table = existing.find("\n[", start + 1)
+        block_end = next_table if next_table != -1 else len(existing)
+        if 'trust_level = "trusted"' in existing[start:block_end]:
+            return True
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    addition = f'{separator}\n{header}\ntrust_level = "trusted"\n'
+    config_path.write_text(existing + addition, encoding="utf-8")
+    return True
+
+
 def _has_setup(codex_home: Path) -> bool:
     return all(
         path.exists()
@@ -173,6 +222,8 @@ def _run_setup(root: Path, home: Path, codex_home: Path, omx_root: Path, runtime
         "OMX_ROOT": str(omx_root),
         "OMX_LAUNCH_POLICY": "direct",
         "OMXBOX_ACTIVE": "1",
+        "OMX_AUTO_UPDATE": "0",
+        "OMX_NOTIFY_FALLBACK": "0",
     }
     result = subprocess.run(
         [
@@ -235,15 +286,21 @@ def prepare_box(*, fleet: str, seat: str, source_cwd: str, profile: str | None =
     setup_ran = False
     setup_skipped = False
     setup_error = None
+    star_prompt_preseeded = _preseed_star_prompt(home)
     if _setup_disabled():
         setup_skipped = True
     elif force_setup or not already_ready:
         try:
             _run_setup(root, home, codex_home, omx_root, runtime)
             setup_ran = True
+            # setup may refresh config.toml; re-apply box-local prompt/trust
+            # preseed after it writes managed config.
+            star_prompt_preseeded = _preseed_star_prompt(home)
         except Exception as exc:  # pragma: no cover - exercised through caller error path.
             setup_error = str(exc)
             raise
+
+    source_cwd_trusted = _trust_source_cwd(codex_home, source_cwd)
 
     return OmxBox(
         root=root,
@@ -262,4 +319,6 @@ def prepare_box(*, fleet: str, seat: str, source_cwd: str, profile: str | None =
         profile_templates_applied=profile_templates_applied,
         setup_skipped=setup_skipped,
         setup_error=setup_error,
+        star_prompt_preseeded=star_prompt_preseeded,
+        source_cwd_trusted=source_cwd_trusted,
     )
