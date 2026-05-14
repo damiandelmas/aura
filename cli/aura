@@ -673,8 +673,8 @@ def main():
                           help="For list/latest, include only reports whose cwd starts with this path")
 
     # view — simple managed-seat views
-    p_view = subparsers.add_parser("view", help="Show current Aura seat views")
-    p_view.add_argument("view_action", nargs="?", choices=["self", "fleets", "fleet", "roster", "historical"],
+    p_view = subparsers.add_parser("view", help="Show current Aura seat views, including physical tmux mirror")
+    p_view.add_argument("view_action", nargs="?", choices=["self", "fleets", "fleet", "roster", "historical", "physical"],
                         help="View self, live fleets, one live fleet, live roster, or historical registry")
     p_view.add_argument("view_target", nargs="?",
                         help="Target for the view action, e.g. a fleet name for 'fleet'")

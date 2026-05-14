@@ -79,6 +79,34 @@ def _without_transient_fields(record: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in record.items() if key not in TRANSIENT_AGENT_FIELDS}
 
 
+def _physical_fleet_from_ref(value: str | None) -> str | None:
+    if not value:
+        return None
+    subject = str(value)
+    if subject.startswith("tmux:"):
+        subject = subject[len("tmux:"):]
+    if ":" in subject:
+        fleet, _ = subject.split(":", 1)
+        return fleet or None
+    return None
+
+
+def _with_logical_physical_fields(record: dict[str, Any], *, fleet: str, name: str) -> dict[str, Any]:
+    enriched = dict(record)
+    enriched.setdefault("logical_fleet", fleet)
+    enriched.setdefault("logical_name", name)
+    enriched.setdefault("logical_ref", _key(fleet, name))
+    physical_fleet = (
+        enriched.get("physical_fleet")
+        or _physical_fleet_from_ref(enriched.get("pane_ref"))
+        or _physical_fleet_from_ref(enriched.get("terminal_ref"))
+        or _physical_fleet_from_ref(enriched.get("backend_ref"))
+        or fleet
+    )
+    enriched.setdefault("physical_fleet", physical_fleet)
+    return enriched
+
+
 def _key(fleet: str | None, name: str) -> str:
     return f"{fleet or current_fleet()}:{name}"
 
@@ -157,6 +185,7 @@ def replace_agent_record(record: dict[str, Any]) -> dict[str, Any]:
     name = record["name"]
     fleet = record.get("fleet") or current_fleet()
     key = _key(fleet, name)
+    record = _with_logical_physical_fields(record, fleet=fleet, name=name)
     merged = {
         **record,
         "name": name,
@@ -276,6 +305,7 @@ def upsert_agent(record: dict[str, Any]) -> dict[str, Any]:
         key = _key(fleet, name)
         previous = data.get(key, {})
         created_at = previous.get("created_at") or record.get("created_at") or now_iso()
+        record = _with_logical_physical_fields(record, fleet=fleet, name=name)
         merged = {
             **previous,
             **record,

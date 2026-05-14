@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lib import deferred, queued_messages, reports, seat_status
+from lib import deferred, queued_messages, reports, seat_status, tmux_mirror
 
 
 def _compact_identity(row: dict) -> dict | None:
@@ -243,6 +243,10 @@ def _run_roster(*, include_hidden: bool) -> dict:
     }
 
 
+def _run_physical(*, include_hidden: bool) -> dict:
+    return tmux_mirror.view_physical(include_hidden=include_hidden)
+
+
 def _run_historical(*, include_hidden: bool) -> dict:
     rows = _status_rows(include_hidden=include_hidden)
     fleets = sorted({row.get("fleet") for row in rows if row.get("fleet")})
@@ -370,6 +374,8 @@ def run(args):
         return _run_roster(include_hidden=include_hidden)
     if action == "historical":
         return _run_historical(include_hidden=include_hidden)
+    if action == "physical":
+        return _run_physical(include_hidden=include_hidden)
 
     limit = int(getattr(args, "limit", None) or 10)
     context = reports.infer_context()
