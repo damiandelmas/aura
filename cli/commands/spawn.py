@@ -329,7 +329,156 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             launch_command = runtimes.build_resume_command(runtime, resume_session, cwd=workdir)
         except ValueError as exc:
             return result_fn({"ok": False, "error": str(exc), "name": args.name})
-    profile = getattr(args, 'profile', None) or args.name
+    role_meta = dict(getattr(args, "_role_manifest_meta", None) or {})
+    identity_provider_arg = getattr(args, "identity_provider", None)
+    identity_id_arg = getattr(args, "identity_id", None)
+    identity_label_arg = getattr(args, "identity_label", None)
+    if identity_provider_arg or identity_id_arg or identity_label_arg:
+        if not identity_provider_arg or not identity_id_arg:
+            return result_fn({
+                "ok": False,
+                "error": "identity-provider-and-id-required",
+                "detail": "--identity-provider and --identity-id are required when passing spawn identity metadata",
+                "name": args.name,
+            })
+        role_meta.update({
+            "identity_provider": identity_provider_arg,
+            "identity_id": identity_id_arg,
+            "identity_bind_source": "aura-spawn",
+            "identity_bind_confidence": "explicit",
+        })
+        if identity_label_arg:
+            role_meta["identity_label"] = identity_label_arg
+        if identity_provider_arg == "desks":
+            role_meta["desks_identity_id"] = identity_id_arg
+    try:
+        desks_runtime_profiles = _validated_desks_runtime_profiles(role_meta.get("desks_runtime_profiles"))
+    except ValueError as exc:
+        return result_fn({
+            "ok": False,
+            "error": "invalid-desks-runtime-profile",
+            "detail": str(exc),
+            "name": args.name,
+            "runtime": runtime,
+        })
+    if desks_runtime_profiles:
+        role_meta["desks_runtime_profiles"] = desks_runtime_profiles
+    raw_profile = getattr(args, 'profile', None)
+    explicit_omx_profile = getattr(args, 'omx_profile', None)
+    runtime_profile_ref_arg = getattr(args, 'runtime_profile', None)
+    boxed_requested = bool(getattr(args, 'boxed', False))
+    runtime_profile = None
+    runtime_profile_ref = None
+    runtime_profile_source = None
+    if runtime_profile_ref_arg:
+        try:
+            ref_runtime, ref_profile, canonical_ref = _normalize_runtime_profile_ref(
+                runtime_profile_ref_arg,
+                expected_runtime=runtime,
+            )
+        except ValueError as exc:
+            return result_fn({
+                "ok": False,
+                "error": "invalid-runtime-profile",
+                "detail": str(exc),
+                "name": args.name,
+                "runtime": runtime,
+            })
+        runtime_profile = ref_profile
+        runtime_profile_ref = canonical_ref
+        runtime_profile_source = "cli-runtime-profile"
+    profile_source = getattr(args, "_profile_source", None) or ("cli" if raw_profile else None)
+    explicit_cli_profile = bool(raw_profile and profile_source == "cli")
+    desks_runtime_profile_ref = None
+    if (
+        not runtime_profile
+        and not explicit_cli_profile
+        and not explicit_omx_profile
+        and runtime in desks_runtime_profiles
+    ):
+        desks_runtime_profile_ref = desks_runtime_profiles[runtime]
+        _, runtime_profile, runtime_profile_ref = _normalize_runtime_profile_ref(
+            desks_runtime_profile_ref,
+            expected_runtime=runtime,
+        )
+        runtime_profile_source = "desks"
+    if runtime == "omx" and raw_profile and explicit_omx_profile and raw_profile != explicit_omx_profile:
+        return result_fn({
+            "ok": False,
+            "error": "conflicting-omx-profile",
+            "detail": "use either --omx-profile or --profile for OMX, not both with different values",
+            "name": args.name,
+            "runtime": runtime,
+        })
+    if runtime == "omx" and runtime_profile and explicit_omx_profile and runtime_profile != explicit_omx_profile:
+        return result_fn({
+            "ok": False,
+            "error": "conflicting-omx-profile",
+            "detail": "use either --runtime-profile omx/NAME or --omx-profile for OMX, not both with different values",
+            "name": args.name,
+            "runtime": runtime,
+        })
+    if runtime == "omx" and runtime_profile and raw_profile and raw_profile != runtime_profile:
+        return result_fn({
+            "ok": False,
+            "error": "conflicting-omx-profile",
+            "detail": "use either --runtime-profile omx/NAME or --profile for OMX, not both with different values",
+            "name": args.name,
+            "runtime": runtime,
+        })
+    if boxed_requested and runtime not in {"codex", "omx"}:
+        return result_fn({
+            "ok": False,
+            "error": "boxed-runtime-not-supported",
+            "detail": f"--boxed is not supported for runtime {runtime}",
+            "name": args.name,
+            "runtime": runtime,
+        })
+    profile = raw_profile or args.name
+    omx_profile = None
+    codex_profile = None
+    if runtime == "omx":
+        if explicit_omx_profile:
+            omx_profile = explicit_omx_profile
+            runtime_profile_source = "cli-omx-profile"
+        elif runtime_profile:
+            omx_profile = runtime_profile
+        elif raw_profile and profile_source != "manifest-default":
+            omx_profile = raw_profile
+            runtime_profile_source = "cli-profile"
+        if omx_profile:
+            runtime_profile = omx_profile
+            runtime_profile_ref = f"omx/{omx_profile}"
+    elif runtime == "codex":
+        if runtime_profile:
+            codex_profile = runtime_profile
+        elif runtime_profile_ref_arg:
+            codex_profile = runtime_profile
+    elif runtime == "hermes":
+        if runtime_profile:
+            profile = runtime_profile
+            profile_source = "cli-runtime-profile"
+    elif runtime_profile_ref_arg:
+        return result_fn({
+            "ok": False,
+            "error": "runtime-profile-not-supported",
+            "detail": f"--runtime-profile is not supported for runtime {runtime}",
+            "name": args.name,
+            "runtime": runtime,
+        })
+    if codex_profile:
+        runtime_profile = codex_profile
+        runtime_profile_ref = f"codex/{codex_profile}"
+    runtime_profile_meta = {}
+    if runtime_profile and runtime_profile_ref:
+        runtime_profile_meta = {
+            "runtime_profile": runtime_profile,
+            "runtime_profile_ref": runtime_profile_ref,
+            "runtime_profile_runtime": runtime,
+            "runtime_profile_source": runtime_profile_source or "cli-runtime-profile",
+            **({"desks_runtime_profile_ref": desks_runtime_profile_ref} if desks_runtime_profile_ref else {}),
+        }
+    recorded_profile = profile if runtime == "hermes" else omx_profile if runtime == "omx" else codex_profile if runtime == "codex" else None
     command = runtimes.build_command(
         runtime,
         spec,
@@ -365,28 +514,6 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "FORCE_COLOR": "1",
         "CLICOLOR_FORCE": "1",
     }
-    role_meta = dict(getattr(args, "_role_manifest_meta", None) or {})
-    identity_provider_arg = getattr(args, "identity_provider", None)
-    identity_id_arg = getattr(args, "identity_id", None)
-    identity_label_arg = getattr(args, "identity_label", None)
-    if identity_provider_arg or identity_id_arg or identity_label_arg:
-        if not identity_provider_arg or not identity_id_arg:
-            return result_fn({
-                "ok": False,
-                "error": "identity-provider-and-id-required",
-                "detail": "--identity-provider and --identity-id are required when passing spawn identity metadata",
-                "name": args.name,
-            })
-        role_meta.update({
-            "identity_provider": identity_provider_arg,
-            "identity_id": identity_id_arg,
-            "identity_bind_source": "aura-spawn",
-            "identity_bind_confidence": "explicit",
-        })
-        if identity_label_arg:
-            role_meta["identity_label"] = identity_label_arg
-        if identity_provider_arg == "desks":
-            role_meta["desks_identity_id"] = identity_id_arg
     flex_manifest, flex_root = _resolve_launch_flex_project(workdir_path, role_meta)
     flex_meta = {}
     if flex_manifest and flex_root:
@@ -407,6 +534,57 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         launch_env["FLEX_PROJECT_MANIFEST"] = flex_meta["flex_project_manifest"]
     if flex_meta.get("flex_project_root"):
         launch_env["FLEX_PROJECT_ROOT"] = flex_meta["flex_project_root"]
+    omx_box_meta = {}
+    codex_box_meta = {}
+    runtime_home = _runtime_home(runtime, profile)
+    if runtime == "omx":
+        try:
+            from lib import omx as omx_lib
+
+            omx_box = omx_lib.prepare_box(
+                fleet=fleet,
+                seat=args.name,
+                source_cwd=workdir,
+                profile=omx_profile,
+            )
+            launch_env.update(omx_box.launch_env(workdir))
+            omx_box_meta = omx_box.metadata()
+            runtime_home = str(omx_box.root)
+            native_state_ref = str(omx_box.omx_state)
+        except Exception as exc:
+            return result_fn({
+                "ok": False,
+                "error": "omx-box-setup-failed",
+                "detail": str(exc),
+                "name": args.name,
+                "runtime": runtime,
+                "cwd": workdir,
+                "fleet": fleet,
+            })
+    if runtime == "codex" and (boxed_requested or codex_profile):
+        try:
+            from lib import codex as codex_lib
+
+            codex_box = codex_lib.prepare_box(
+                fleet=fleet,
+                seat=args.name,
+                source_cwd=workdir,
+                profile=codex_profile,
+            )
+            launch_env.update(codex_box.launch_env(workdir))
+            codex_box_meta = codex_box.metadata()
+            runtime_home = str(codex_box.root)
+            native_state_ref = str(codex_box.codex_home)
+        except Exception as exc:
+            return result_fn({
+                "ok": False,
+                "error": "codex-box-setup-failed",
+                "detail": str(exc),
+                "name": args.name,
+                "runtime": runtime,
+                "cwd": workdir,
+                "fleet": fleet,
+            })
     try:
         launch = terminal.create_window(
             args.name,
@@ -499,13 +677,13 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "name": args.name,
         "fleet": fleet,
         "runtime": runtime,
-        "profile": profile if runtime == "hermes" else None,
+        "profile": recorded_profile,
         "command": command,
         "workdir": workdir,
         "cwd": workdir,
         "context_file": str(context_path) if context_path else None,
         "work_file": str(work_path) if work_path else None,
-        "runtime_home": _runtime_home(runtime, profile),
+        "runtime_home": runtime_home,
         "native_state_ref": native_state_ref,
         "aura_launch_id": launch_id,
         "seat_instance_id": seat_instance_id,
@@ -520,6 +698,9 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "status": "starting",
         "registered": True,
         **flex_meta,
+        **runtime_profile_meta,
+        **omx_box_meta,
+        **codex_box_meta,
         **role_meta,
         **process_meta,
         **session_meta,
@@ -557,7 +738,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "name": args.name,
             "fleet": fleet,
             "runtime": runtime,
-            "profile": profile if runtime == "hermes" else None,
+            "profile": recorded_profile,
             "command": command,
             "aura_launch_id": launch_id,
             "seat_instance_id": seat_instance_id,
@@ -568,10 +749,15 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "workdir": workdir,
             "context_file": str(context_path) if context_path else None,
             "work_file": str(work_path) if work_path else None,
+            "runtime_home": runtime_home,
+            "native_state_ref": native_state_ref,
             "terminal_ref": launch.get("target"),
             "pane_ref": pane_ref,
             "status": "starting",
             **flex_meta,
+            **runtime_profile_meta,
+            **omx_box_meta,
+            **codex_box_meta,
             **role_meta,
             **process_meta,
             **session_meta,
@@ -595,13 +781,13 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "name": args.name,
         "spawned": True,
         "runtime": runtime,
-        "profile": profile if runtime == "hermes" else None,
+        "profile": recorded_profile,
         "command": command,
         "workdir": workdir,
         "cwd": workdir,
         "context_file": str(context_path) if context_path else None,
         "work_file": str(work_path) if work_path else None,
-        "runtime_home": _runtime_home(runtime, profile),
+        "runtime_home": runtime_home,
         "native_state_ref": native_state_ref,
         "aura_launch_id": launch_id,
         "seat_instance_id": seat_instance_id,
@@ -616,6 +802,9 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "fleet": fleet,
         "trace_cell": registered.get("trace_cell"),
         **flex_meta,
+        **runtime_profile_meta,
+        **omx_box_meta,
+        **codex_box_meta,
         **role_meta,
         **process_meta,
         **session_meta,
@@ -879,6 +1068,50 @@ def _runtime_home(runtime: str, profile: str | None) -> str | None:
     return None
 
 
+def _normalize_runtime_profile_ref(ref: str, *, expected_runtime: str | None = None) -> tuple[str, str, str]:
+    """Normalize an Aura runtime-profile ref like ``codex/dev``.
+
+    This is deliberately separate from filesystem path construction so refs do
+    not accidentally become nested path fragments such as codex/codex/dev.
+    """
+
+    raw = str(ref or "").strip()
+    if not raw:
+        raise ValueError("runtime profile ref is required")
+    parts = [part.strip() for part in raw.split("/") if part.strip()]
+    if len(parts) != 2:
+        raise ValueError("runtime profile ref must use <runtime>/<profile>, e.g. codex/dev")
+    runtime, profile = parts
+    if "/" in profile or not profile:
+        raise ValueError("runtime profile name must be a single path segment")
+    if expected_runtime and runtime != expected_runtime:
+        raise ValueError(f"runtime profile {raw!r} is for {runtime}, not selected runtime {expected_runtime}")
+    return runtime, profile, f"{runtime}/{profile}"
+
+
+def _validated_desks_runtime_profiles(value) -> dict[str, str]:
+    """Return canonical runtime profile refs from Desks metadata."""
+
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("desks runtime_profiles must be an object")
+    normalized: dict[str, str] = {}
+    for runtime, ref in value.items():
+        runtime_key = str(runtime or "").strip()
+        if not runtime_key:
+            raise ValueError("desks runtime_profiles contains an empty runtime key")
+        raw_ref = str(ref or "").strip()
+        if not raw_ref:
+            raise ValueError(f"desks runtime_profiles.{runtime_key} is empty")
+        if "/" in raw_ref:
+            _, _, canonical = _normalize_runtime_profile_ref(raw_ref, expected_runtime=runtime_key)
+        else:
+            _, _, canonical = _normalize_runtime_profile_ref(f"{runtime_key}/{raw_ref}", expected_runtime=runtime_key)
+        normalized[runtime_key] = canonical
+    return normalized
+
+
 def _desks_profile_metadata(manifest: dict) -> dict:
     role_home = manifest["role_home"]
     identity_path = role_home / "identity.json"
@@ -889,7 +1122,7 @@ def _desks_profile_metadata(manifest: dict) -> dict:
             identity = {}
         if isinstance(identity, dict):
             identity_id = identity.get("identity_id") or role_home.name
-            return {
+            meta = {
                 "identity_provider": "desks",
                 "identity_id": identity_id,
                 "identity_label": identity.get("current_name"),
@@ -900,6 +1133,9 @@ def _desks_profile_metadata(manifest: dict) -> dict:
                 "desks_memory_home": str(role_home / "memory"),
                 "desks_current_name": identity.get("current_name"),
             }
+            if isinstance(identity.get("runtime_profiles"), dict):
+                meta["desks_runtime_profiles"] = dict(identity["runtime_profiles"])
+            return meta
         return {}
 
     profile_dir = role_home
@@ -924,6 +1160,8 @@ def _desks_profile_metadata(manifest: dict) -> dict:
         "desks_profile_home": str(profile_dir),
         "desks_identity_id": identity_id,
     }
+    if isinstance(profile.get("runtime_profiles"), dict):
+        meta["desks_runtime_profiles"] = dict(profile["runtime_profiles"])
     if identity_id and profile_dir.parent.name == "profiles":
         desks_root = profile_dir.parent.parent
         identity_home = desks_root / "identities" / str(identity_id)
@@ -940,6 +1178,8 @@ def _desks_profile_metadata(manifest: dict) -> dict:
             if isinstance(identity, dict):
                 meta["desks_current_name"] = identity.get("current_name")
                 meta["identity_label"] = identity.get("current_name")
+                if isinstance(identity.get("runtime_profiles"), dict) and "desks_runtime_profiles" not in meta:
+                    meta["desks_runtime_profiles"] = dict(identity["runtime_profiles"])
     return {key: value for key, value in meta.items() if value}
 
 
@@ -960,7 +1200,15 @@ def _role_metadata_from_manifest(manifest: dict) -> dict:
         "flex_project_manifest": str(manifest["flex_project_manifest"]) if manifest.get("flex_project_manifest") else None,
         "flex_project_root": str(manifest["flex_project_root"]) if manifest.get("flex_project_root") else None,
     }
-    meta.update(_desks_profile_metadata(manifest))
+    profile_meta = _desks_profile_metadata(manifest)
+    runtime_profiles = {}
+    if isinstance(profile_meta.get("desks_runtime_profiles"), dict):
+        runtime_profiles.update(profile_meta["desks_runtime_profiles"])
+    if isinstance(manifest.get("runtime_profiles"), dict):
+        runtime_profiles.update(manifest["runtime_profiles"])
+    meta.update(profile_meta)
+    if runtime_profiles:
+        meta["desks_runtime_profiles"] = runtime_profiles
     return {key: value for key, value in meta.items() if value}
 
 
@@ -989,6 +1237,10 @@ def _desks_launch_env(role_meta: dict) -> dict:
         value = role_meta.get(meta_key, "")
         env[f"DESKS_{env_suffix}"] = value
         env[f"AURA_DESKS_{env_suffix}"] = value
+    if role_meta.get("desks_runtime_profiles"):
+        value = json.dumps(role_meta["desks_runtime_profiles"], sort_keys=True)
+        env["DESKS_RUNTIME_PROFILES"] = value
+        env["AURA_DESKS_RUNTIME_PROFILES"] = value
     return env
 
 
@@ -1040,7 +1292,11 @@ def _apply_spawn_manifest(args) -> dict | None:
     if not getattr(args, "context", None) and manifest["files"].get("agents"):
         args.context = str(manifest["files"]["agents"])
     if not getattr(args, "profile", None):
-        args.profile = manifest.get("profile") or seat
+        manifest_profile = manifest.get("profile")
+        args.profile = manifest_profile or seat
+        args._profile_source = "manifest" if manifest_profile else "manifest-default"
+    else:
+        args._profile_source = getattr(args, "_profile_source", None) or "cli"
     args._role_manifest_meta = _role_metadata_from_manifest(manifest)
     args._role_manifest = manifest
     return {"ok": True, "manifest": str(manifest["manifest_path"])}
@@ -1546,6 +1802,10 @@ def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> Non
             "profile": result.get("profile"),
             "runtime_home": result.get("runtime_home"),
             "native_state_ref": result.get("native_state_ref"),
+            "runtime_profile": result.get("runtime_profile"),
+            "runtime_profile_ref": result.get("runtime_profile_ref"),
+            "runtime_profile_runtime": result.get("runtime_profile_runtime"),
+            "runtime_profile_source": result.get("runtime_profile_source"),
             "aura_launch_id": result.get("aura_launch_id"),
             "source_session_id": result.get("source_session_id"),
             "runtime_session_mode": result.get("runtime_session_mode"),
@@ -1567,6 +1827,33 @@ def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> Non
             "pane_ref": result.get("pane_ref"),
             "flex_project_manifest": result.get("flex_project_manifest"),
             "flex_project_root": result.get("flex_project_root"),
+            "omx_isolation": result.get("omx_isolation"),
+            "omx_box_root": result.get("omx_box_root"),
+            "omx_box_home": result.get("omx_box_home"),
+            "omx_box_codex_home": result.get("omx_box_codex_home"),
+            "omx_box_omx_root": result.get("omx_box_omx_root"),
+            "omx_box_omx_state": result.get("omx_box_omx_state"),
+            "omx_box_team_state_root": result.get("omx_box_team_state_root"),
+            "omx_box_runtime": result.get("omx_box_runtime"),
+            "omx_box_setup_ran": result.get("omx_box_setup_ran"),
+            "omx_box_setup_skipped": result.get("omx_box_setup_skipped"),
+            "omx_box_auth_seeded": result.get("omx_box_auth_seeded"),
+            "omx_box_config_seeded": result.get("omx_box_config_seeded"),
+            "omx_profile": result.get("omx_profile"),
+            "omx_profile_root": result.get("omx_profile_root"),
+            "omx_profile_applied": result.get("omx_profile_applied"),
+            "omx_profile_templates_applied": result.get("omx_profile_templates_applied"),
+            "codex_isolation": result.get("codex_isolation"),
+            "codex_box_root": result.get("codex_box_root"),
+            "codex_box_home": result.get("codex_box_home"),
+            "codex_box_codex_home": result.get("codex_box_codex_home"),
+            "codex_box_runtime": result.get("codex_box_runtime"),
+            "codex_box_auth_seeded": result.get("codex_box_auth_seeded"),
+            "codex_box_config_seeded": result.get("codex_box_config_seeded"),
+            "codex_profile": result.get("codex_profile"),
+            "codex_profile_root": result.get("codex_profile_root"),
+            "codex_profile_applied": result.get("codex_profile_applied"),
+            "codex_profile_templates_applied": result.get("codex_profile_templates_applied"),
             "desks_role_home": result.get("desks_role_home"),
             "desks_role_id": result.get("desks_role_id"),
             "desks_product": result.get("desks_product"),
@@ -1575,6 +1862,8 @@ def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> Non
             "desks_bootstrap": result.get("desks_bootstrap"),
             "desks_compression": result.get("desks_compression"),
             "desks_memory": result.get("desks_memory"),
+            "desks_runtime_profiles": result.get("desks_runtime_profiles"),
+            "desks_runtime_profile_ref": result.get("desks_runtime_profile_ref"),
         })
         workspace_state.write_latest_session(workdir, record)
         try:

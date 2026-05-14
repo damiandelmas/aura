@@ -42,6 +42,50 @@ def test_aura_state_dir_overrides_default_paths(monkeypatch, tmp_path):
     assert delivery.delivery_log_path() == root / "registry" / "deliveries.jsonl"
 
 
+def test_workspace_state_uses_global_state_root_with_stable_workspace_key(monkeypatch, tmp_path):
+    root = tmp_path / "state"
+    workdir = tmp_path / "projects" / "runway"
+    workdir.mkdir(parents=True)
+    monkeypatch.setenv("AURA_STATE_DIR", str(root))
+
+    workspace_state = _reload_modules("lib.workspace_state")[0]
+
+    key = workspace_state.workspace_key(workdir)
+    assert key.startswith("runway-")
+    assert workspace_state.workspace_state_dir(workdir) == root / "workspaces" / key
+    assert workspace_state.workspace_session_log(workdir) == root / "workspaces" / key / "sessions.jsonl"
+    assert workspace_state.latest_session_path(workdir) == root / "workspaces" / key / "latest-session.json"
+
+    record = workspace_state.append_session_record(workdir, {"event": "spawn", "seat": "lead"})
+    workspace_state.write_latest_session(workdir, record)
+
+    rows = [
+        json.loads(line)
+        for line in workspace_state.workspace_session_log(workdir).read_text(encoding="utf-8").splitlines()
+    ]
+    assert rows[-1]["workspace_root"] == str(workdir)
+    assert rows[-1]["workspace_key"] == key
+    assert json.loads(workspace_state.latest_session_path(workdir).read_text(encoding="utf-8"))["seat"] == "lead"
+    assert json.loads(workspace_state.workspace_metadata_path(workdir).read_text(encoding="utf-8"))["workspace_root"] == str(workdir)
+
+
+def test_workspace_state_mirrors_legacy_local_state(monkeypatch, tmp_path):
+    root = tmp_path / "state"
+    workdir = tmp_path / "projects" / "runway"
+    workdir.mkdir(parents=True)
+    monkeypatch.setenv("AURA_STATE_DIR", str(root))
+
+    workspace_state = _reload_modules("lib.workspace_state")[0]
+
+    record = workspace_state.append_session_record(workdir, {"event": "spawn", "seat": "lead"})
+    workspace_state.write_latest_session(workdir, record)
+
+    legacy_log = workdir / ".aura" / "state" / "sessions.jsonl"
+    legacy_latest = workdir / ".aura" / "state" / "latest-session.json"
+    assert json.loads(legacy_log.read_text(encoding="utf-8").splitlines()[-1])["seat"] == "lead"
+    assert json.loads(legacy_latest.read_text(encoding="utf-8"))["seat"] == "lead"
+
+
 def test_explicit_registry_and_delivery_overrides_still_win(monkeypatch, tmp_path):
     registry_path = tmp_path / "x" / "agents.json"
     delivery_path = tmp_path / "y" / "deliveries.jsonl"

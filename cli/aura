@@ -95,7 +95,13 @@ def main():
     p_spawn.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "omx", "opencode", "openclaw", "shell", "command"],
                          help="Run a generic terminal-backed runtime instead of the Claude wrapper path")
     p_spawn.add_argument("--profile", metavar="NAME",
-                         help="Runtime profile name (defaults to agent name; used by Hermes)")
+                         help="Runtime profile name. Hermes defaults to the seat name; for OMX prefer --omx-profile.")
+    p_spawn.add_argument("--runtime-profile", metavar="REF",
+                         help="Explicit Aura runtime profile ref such as codex/dev")
+    p_spawn.add_argument("--boxed", action="store_true",
+                         help="Request an Aura-managed boxed runtime home when supported by the selected runtime")
+    p_spawn.add_argument("--omx-profile", metavar="NAME",
+                         help="Explicit OMX boxed-profile template under ~/.aura/omx-profiles/NAME")
     p_spawn.add_argument("--command", dest="launch_command", metavar="CMD",
                          help="Override runtime launch command for terminal-backed spawn")
 

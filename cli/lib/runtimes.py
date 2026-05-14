@@ -68,7 +68,10 @@ RUNTIMES: dict[str, dict] = {
         },
     },
     "omx": {
-        "command": "omx",
+        # Aura owns the tmux fleet/pane. OMX must run direct inside that pane and
+        # its Codex/OMX homes are boxed by cli.lib.omx so project cwd is not
+        # mutated into an OMX workspace for later non-OMX Codex seats.
+        "command": "omx --direct --madmax",
         "graceful_exit": "/exit",
         "submit_key": "Enter",
         "native_state": ".omx",
