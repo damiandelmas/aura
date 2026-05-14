@@ -63,6 +63,9 @@ def build_dashboard_identity(target: str, *, terminal=None) -> dict[str, Any]:
         if identity_position:
             identity_display = f"{identity_display} / {identity_position}"
         lines.append(f"Identity: {identity_display}")
+    placement_rows = status.get("placements") or []
+    if placement_rows:
+        lines.append("Placements: " + ", ".join(row.get("name") or row.get("placement_id") for row in placement_rows))
 
     return {
         "ok": True,
@@ -78,6 +81,7 @@ def build_dashboard_identity(target: str, *, terminal=None) -> dict[str, Any]:
         "liveness": status.get("liveness"),
         "identity": status.get("identity"),
         "org": status.get("org"),
+        "placements": placement_rows,
         "risk_flags": status.get("risk_flags") or [],
         "compact": compact,
         "lines": lines,

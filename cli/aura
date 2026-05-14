@@ -20,7 +20,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, start as start_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd
+from commands import spawn, start as start_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
 from lib.output import output
 
 
@@ -757,6 +757,22 @@ def main():
     p_ether_rec_mark.add_argument("recommendation_id")
     p_ether_rec_mark.add_argument("--status", required=True, choices=["accepted", "rejected", "superseded", "expired"])
 
+    # placement
+    p_placement = subparsers.add_parser("placement", help="Manage grouping/link placements without moving tmux panes")
+    placement_sub = p_placement.add_subparsers(dest="placement_action", required=True)
+    placement_sub.add_parser("list", help="List placement groups")
+    p_placement_show = placement_sub.add_parser("show", help="Show one placement group")
+    p_placement_show.add_argument("placement")
+    p_placement_add = placement_sub.add_parser("add", help="Link a logical Aura seat into a placement group")
+    p_placement_add.add_argument("placement")
+    p_placement_add.add_argument("seat_ref", help="Logical seat ref, usually FLEET:SEAT")
+    p_placement_add.add_argument("--role", help="Optional role label inside the placement")
+    p_placement_add.add_argument("--kind", default="group", help="Placement kind, e.g. group, workstream, statusline")
+    p_placement_add.add_argument("--label", help="Display label for newly created placement")
+    p_placement_remove = placement_sub.add_parser("remove", help="Unlink a logical Aura seat from a placement group")
+    p_placement_remove.add_argument("placement")
+    p_placement_remove.add_argument("seat_ref", help="Logical seat ref, usually FLEET:SEAT")
+
     # ledger
     p_ledger = subparsers.add_parser("ledger", help="Query agent spawn history")
     p_ledger.add_argument("name", nargs="?", default=None,
@@ -824,6 +840,8 @@ def main():
             result = report_cmd.run(args)
         elif args.command == "view":
             result = view_cmd.run(args)
+        elif args.command == "placement":
+            result = placement_cmd.run(args)
         elif args.command == "clawhip":
             result = clawhip_cmd.run(args)
         elif args.command == "discord":

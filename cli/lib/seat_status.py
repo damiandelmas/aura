@@ -16,6 +16,7 @@ from lib import (
     runtimes,
     runtime_session,
     seat_schema,
+    placements,
     session_ledger,
 )
 
@@ -319,6 +320,7 @@ def build_from_record(
         "identity": identity,
         "org": org,
         "latest_report": _report_summary(latest_report),
+        "placements": placements.placements_for_seat(target),
         "risk_flags": risk_flags,
         "latest_event": record.get("latest_event"),
         "latest_event_id": record.get("latest_event_id"),

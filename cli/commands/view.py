@@ -49,6 +49,7 @@ def _compact_status(row: dict) -> dict:
             "current_position": _current_position(row),
             "risk_flags": row.get("risk_flags") or [],
             "last_report": row.get("latest_report"),
+            "placements": row.get("placements") or [],
         }.items()
         if value not in (None, {}, [])
     }
@@ -410,6 +411,7 @@ def run(args):
             "identity": agent.get("identity"),
             "org": agent.get("org"),
             "risk_flags": agent.get("risk_flags") or [],
+            "placements": agent.get("placements") or [],
             "role": {
                 key: agent.get(key)
                 for key in ("desks_role_id", "desks_product", "desks_unit", "desks_role_home")

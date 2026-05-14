@@ -2097,6 +2097,7 @@ def run(args):
             alias_old=not getattr(args, "no_alias_old", False),
         )
         if result.get("ok"):
+            result.setdefault("compatibility_warning", "seat rehome preserves legacy logical rename/readdress behavior; use aura placement add/remove for grouping without terminal movement")
             try:
                 from lib import session_ledger
 
