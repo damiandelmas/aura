@@ -20,7 +20,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, start as start_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
+from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
 from lib.output import output
 
 
@@ -117,6 +117,43 @@ def main():
                          help="Working directory for the seat (default: current dir)")
     p_start.add_argument("--model", metavar="MODEL",
                          help="Codex model option passed through to the runtime")
+
+    # quick
+    p_quick = subparsers.add_parser("quick", help="Launch a quick Aura-managed runtime seat from the current directory")
+    p_quick.add_argument("runtime", choices=["codex", "omx", "hermes"], help="Runtime to launch")
+    profile_group = p_quick.add_mutually_exclusive_group()
+    profile_group.add_argument("--default", action="store_true", help="Use or create the runtime default Aura profile")
+    profile_group.add_argument("--new", nargs="?", const="", metavar="NAME", help="Create and use a new runtime profile")
+    profile_group.add_argument("--profile", metavar="NAME", help="Use an existing runtime profile")
+    p_quick.add_argument("--preset", choices=["minimal", "worker", "operator", "debug"], help="Seed the selected profile with a curated skill preset")
+    p_quick.add_argument("--fleet", "-f", metavar="NAME", help="Fleet name (default: quick-YYYY-MM-DD-HHMM)")
+    p_quick.add_argument("--seat", metavar="NAME", help="Seat name (default: <runtime>-<shortid>)")
+    p_quick.add_argument("--cwd", metavar="PATH", help="Working directory for the seat (default: current dir)")
+    p_quick.add_argument("--prompt", "-p", metavar="TEXT", help="Initial prompt")
+    p_quick.add_argument("--work", metavar="PATH", help="Read initial prompt from a work file relative to --cwd")
+    p_quick.add_argument("--model", metavar="MODEL", help="Model option passed through to the runtime")
+    p_quick.add_argument("--wait", "-w", action="store_true", help="Wait for runtime observation/readiness")
+    p_quick.add_argument("--timeout", type=int, default=30, help="Timeout for --wait (default: 30)")
+    p_quick.add_argument("--as-pane", dest="as_pane", action="store_true", default=bool(os.environ.get("TMUX")), help="Spawn without stealing focus (default when run inside tmux)")
+    p_quick.add_argument("--no-as-pane", dest="as_pane", action="store_false", help="Use the normal focused spawn behavior")
+    p_quick.add_argument("--attach", action="store_true", help="Attach or switch to the quick launch tmux fleet after spawn")
+
+
+    # profile — runtime profile inventory and Aura-owned boxed templates
+    p_profile = subparsers.add_parser("profile", help="Manage runtime profile inventory and Aura-owned boxed templates")
+    profile_sub = p_profile.add_subparsers(dest="profile_action", required=True)
+    p_profile_list = profile_sub.add_parser("list", help="List runtime profiles and adapter classifications")
+    p_profile_list.add_argument("--runtime", choices=["codex", "omx", "hermes", "opencode", "claude-code", "goose", "aider"], help="Limit to one runtime")
+    p_profile_list.add_argument("--include-future", action="store_true", help="Include deferred adapter classifications")
+    p_profile_inspect = profile_sub.add_parser("inspect", help="Inspect one profile without reading secret contents")
+    p_profile_inspect.add_argument("profile_ref", help="Profile ref such as codex/dev, or bare name with --runtime")
+    p_profile_inspect.add_argument("--runtime", choices=["codex", "omx", "hermes", "opencode", "claude-code", "goose", "aider"], help="Runtime for a bare profile name")
+    p_profile_create = profile_sub.add_parser("create", help="Create an Aura-owned boxed profile template")
+    p_profile_create.add_argument("profile_ref", help="Profile ref such as codex/dev or omx/dev, or bare name with --runtime")
+    p_profile_create.add_argument("--runtime", choices=["codex", "omx"], help="Runtime for a bare profile name")
+    p_profile_create.add_argument("--from", dest="source_profile", help="Clone from an existing Aura-owned profile ref of the same runtime")
+    p_profile_create.add_argument("--preset", choices=["aura-operator"], help="Seed a deterministic skill preset into the profile")
+    p_profile_create.add_argument("--description", help="Optional README description for the template")
 
     # agent-map
     p_agent_map = subparsers.add_parser("agent-map", help="Render status-derived map for one managed seat")
@@ -790,6 +827,10 @@ def main():
             result = spawn.run(args)
         elif args.command == "start":
             result = start_cmd.run(args)
+        elif args.command == "quick":
+            result = quick_cmd.run(args)
+        elif args.command == "profile":
+            result = profile_cmd.run(args)
         elif args.command == "send":
             result = send.run(args)
         elif args.command == "queue":
@@ -858,6 +899,17 @@ def main():
     # Output result
     if result is not None:
         output(result)
+        if (
+            getattr(args, "command", None) == "quick"
+            and getattr(args, "attach", False)
+            and isinstance(result, dict)
+            and result.get("ok")
+        ):
+            sys.stdout.flush()
+            attach_error = quick_cmd.attach_to_result(result)
+            if attach_error:
+                print(attach_error, file=sys.stderr)
+                sys.exit(1)
 
     # Exit with error code if not ok
     if isinstance(result, dict) and result.get("error"):

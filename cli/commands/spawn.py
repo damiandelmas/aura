@@ -418,7 +418,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "name": args.name,
             "runtime": runtime,
         })
-    if runtime == "omx" and runtime_profile and raw_profile and raw_profile != runtime_profile:
+    if runtime == "omx" and runtime_profile and raw_profile and profile_source != "manifest-default" and raw_profile != runtime_profile:
         return result_fn({
             "ok": False,
             "error": "conflicting-omx-profile",
@@ -1075,41 +1075,21 @@ def _normalize_runtime_profile_ref(ref: str, *, expected_runtime: str | None = N
     not accidentally become nested path fragments such as codex/codex/dev.
     """
 
-    raw = str(ref or "").strip()
-    if not raw:
-        raise ValueError("runtime profile ref is required")
-    parts = [part.strip() for part in raw.split("/") if part.strip()]
-    if len(parts) != 2:
-        raise ValueError("runtime profile ref must use <runtime>/<profile>, e.g. codex/dev")
-    runtime, profile = parts
-    if "/" in profile or not profile:
-        raise ValueError("runtime profile name must be a single path segment")
-    if expected_runtime and runtime != expected_runtime:
-        raise ValueError(f"runtime profile {raw!r} is for {runtime}, not selected runtime {expected_runtime}")
-    return runtime, profile, f"{runtime}/{profile}"
+    from lib import runtime_profiles
+
+    normalized = runtime_profiles.normalize_runtime_profile_ref(
+        ref,
+        expected_runtime=expected_runtime,
+    )
+    return normalized.runtime, normalized.profile, normalized.canonical
 
 
 def _validated_desks_runtime_profiles(value) -> dict[str, str]:
     """Return canonical runtime profile refs from Desks metadata."""
 
-    if not value:
-        return {}
-    if not isinstance(value, dict):
-        raise ValueError("desks runtime_profiles must be an object")
-    normalized: dict[str, str] = {}
-    for runtime, ref in value.items():
-        runtime_key = str(runtime or "").strip()
-        if not runtime_key:
-            raise ValueError("desks runtime_profiles contains an empty runtime key")
-        raw_ref = str(ref or "").strip()
-        if not raw_ref:
-            raise ValueError(f"desks runtime_profiles.{runtime_key} is empty")
-        if "/" in raw_ref:
-            _, _, canonical = _normalize_runtime_profile_ref(raw_ref, expected_runtime=runtime_key)
-        else:
-            _, _, canonical = _normalize_runtime_profile_ref(f"{runtime_key}/{raw_ref}", expected_runtime=runtime_key)
-        normalized[runtime_key] = canonical
-    return normalized
+    from lib import runtime_profiles
+
+    return runtime_profiles.normalize_runtime_profile_map(value)
 
 
 def _desks_profile_metadata(manifest: dict) -> dict:
@@ -1319,6 +1299,18 @@ def _load_role_manifest(manifest_arg: str | None, role_home_arg: str | None) -> 
     if schema != "desks.role.v1":
         raise ValueError(f"unsupported manifest schema: {schema!r}")
 
+    role_home = manifest_path.parent
+    identity_role = role_home.parent.name == "identities" and (role_home / "identity.json").is_file()
+    if identity_role:
+        raw.setdefault("product", "desks")
+        raw.setdefault("unit", "identity")
+        files = dict(raw.get("files") or {})
+        files.setdefault("bootstrap", "BOOTSTRAP.md")
+        files.setdefault("compression", "COMPACTION.md")
+        if files.get("compaction") and not files.get("compression"):
+            files["compression"] = files["compaction"]
+        raw["files"] = files
+
     required = ("product", "unit", "role_id", "seat", "fleet", "workspace_root", "files")
     missing = [field for field in required if not raw.get(field)]
     if missing:
@@ -1331,7 +1323,6 @@ def _load_role_manifest(manifest_arg: str | None, role_home_arg: str | None) -> 
         files["compression"] = files["compaction"]
     raw["files"] = files
 
-    role_home = manifest_path.parent
     manifest_role_home = raw.get("role_home")
     if manifest_role_home:
         declared = Path(str(manifest_role_home)).expanduser()
@@ -1350,7 +1341,7 @@ def _load_role_manifest(manifest_arg: str | None, role_home_arg: str | None) -> 
     if not workspace_root.is_dir():
         raise ValueError(f"manifest workspace_root is not a directory: {workspace_root}")
 
-    required_files = ("soul", "agents", "memory", "bootstrap", "compression")
+    required_files = ("bootstrap", "compression") if identity_role else ("soul", "agents", "memory", "bootstrap", "compression")
     missing_files = [field for field in required_files if not files.get(field)]
     if missing_files:
         raise ValueError(f"manifest files missing required key(s): {', '.join(missing_files)}")
