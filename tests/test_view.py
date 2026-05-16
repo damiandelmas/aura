@@ -194,24 +194,29 @@ def test_view_self_returns_current_managed_seat(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_SEAT", "lead-engineer")
     monkeypatch.setenv("AURA_RUNTIME", "codex")
 
-    from lib import registry
     from commands import view
 
-    registry.upsert_agent({
-        "name": "lead-engineer",
-        "fleet": "runway-engineering",
-        "runtime": "codex",
-        "runtime_session_id": "session-self",
-        "runtime_session_binding": "bound",
-        "seat_instance_id": "si_self",
-        "identity_provider": "desks",
-        "identity_id": "r_self",
-        "identity_label": "runway:engineering:lead:engineer",
-        "runtime_profile": "aura-worker",
-        "runtime_profile_ref": "codex/aura-worker",
-        "runtime_profile_runtime": "codex",
-        "runtime_profile_source": "desks",
-    })
+    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
+        {
+            "target": "runway-engineering:lead-engineer",
+            "seat": "lead-engineer",
+            "fleet": "runway-engineering",
+            "runtime": "codex",
+            "runtime_session_id": "session-self",
+            "runtime_session_binding": "bound",
+            "seat_instance_id": "si_self",
+            "identity_provider": "desks",
+            "identity_id": "r_self",
+            "identity_label": "runway:engineering:lead:engineer",
+            "runtime_profile": "aura-worker",
+            "runtime_profile_ref": "codex/aura-worker",
+            "runtime_profile_runtime": "codex",
+            "runtime_profile_source": "desks",
+            "placements": [{"placement_id": "pl_factory", "name": "factory"}],
+            "liveness": "alive",
+            "managed_state": "spawned_bound",
+        },
+    ])
 
     result = view.run(argparse.Namespace(view_action="self", scope=None, limit=10, include_hidden=False))
 
@@ -222,6 +227,7 @@ def test_view_self_returns_current_managed_seat(monkeypatch, tmp_path):
     assert result["self"]["identity"]["id"] == "r_self"
     assert result["self"]["runtime_profile_ref"] == "codex/aura-worker"
     assert result["self"]["runtime_profile_source"] == "desks"
+    assert result["self"]["placements"][0]["name"] == "factory"
 
 
 def test_view_fleets_returns_live_fleet_index(monkeypatch, tmp_path):
@@ -367,3 +373,125 @@ def test_view_historical_returns_all_managed_rows(monkeypatch, tmp_path):
         "runway-engineering:lead-engineer",
         "runway-research:stale",
     }
+
+
+def test_view_self_rejects_stale_env_match(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "runway-engineering")
+    monkeypatch.setenv("AURA_SEAT", "stale")
+
+    from commands import view
+
+    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
+        {
+            "target": "runway-engineering:stale",
+            "seat": "stale",
+            "fleet": "runway-engineering",
+            "liveness": "missing",
+            "managed_state": "missing_pane",
+        },
+    ])
+
+    result = view.run(argparse.Namespace(view_action="self", scope=None, limit=10, include_hidden=False))
+
+    assert result["ok"] is False
+    assert result["schema"] == "aura.view.self.v1"
+    assert result["error"] == "self-not-live"
+    assert result["matches"] == ["runway-engineering:stale"]
+
+
+def test_view_live_alias_preserves_live_roster(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from commands import view
+
+    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
+        {"target": "runway-engineering:lead", "seat": "lead", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_bound"},
+        {"target": "runway-engineering:stale", "seat": "stale", "fleet": "runway-engineering", "liveness": "missing", "managed_state": "missing_pane"},
+    ])
+
+    result = view.run(argparse.Namespace(view_action="live", view_target=None, scope=None, limit=10, include_hidden=False))
+
+    assert result["ok"] is True
+    assert result["schema"] == "aura.view.live.v1"
+    assert result["alias_of"] == "roster"
+    assert [row["target"] for row in result["seats"]] == ["runway-engineering:lead"]
+
+
+def test_view_placement_returns_live_members_and_hides_stale(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from commands import view
+
+    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
+        {"target": "flexgraph-chatbot:pipeline", "seat_ref": "flexgraph-chatbot:pipeline", "seat": "pipeline", "fleet": "flexgraph-chatbot", "runtime": "omx", "liveness": "alive", "managed_state": "spawned_bound"},
+        {"target": "flexgraph-chatbot:stale", "seat_ref": "flexgraph-chatbot:stale", "seat": "stale", "fleet": "flexgraph-chatbot", "runtime": "omx", "liveness": "missing", "managed_state": "missing_pane"},
+    ])
+    monkeypatch.setattr(view.placements, "get_placement", lambda name: {
+        "placement_id": "pl_factory",
+        "kind": "workstream",
+        "name": "factory-quality",
+        "label": "Factory Quality",
+        "members": [
+            {"seat_ref": "flexgraph-chatbot:pipeline"},
+            {"seat_ref": "flexgraph-chatbot:stale"},
+            {"seat_ref": "flexgraph-chatbot:missing"},
+        ],
+    } if name in {"factory-quality", "pl_factory"} else None)
+
+    result = view.run(argparse.Namespace(view_action="placement", view_target="factory-quality", scope=None, limit=10, include_hidden=False))
+
+    assert result["ok"] is True
+    assert result["schema"] == "aura.view.placement.v1"
+    assert result["placement"]["name"] == "factory-quality"
+    assert result["counts"] == {"members": 3, "seats": 1, "hidden_non_live_members": 2, "missing_members": 1}
+    assert [row["target"] for row in result["seats"]] == ["flexgraph-chatbot:pipeline"]
+
+
+def test_view_placement_infers_single_self_placement(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "flexgraph-chatbot")
+    monkeypatch.setenv("AURA_SEAT", "pipeline")
+
+    from commands import view
+
+    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
+        {
+            "target": "flexgraph-chatbot:pipeline",
+            "seat_ref": "flexgraph-chatbot:pipeline",
+            "seat": "pipeline",
+            "fleet": "flexgraph-chatbot",
+            "liveness": "alive",
+            "managed_state": "spawned_bound",
+            "placements": [{"placement_id": "pl_factory", "name": "factory-quality"}],
+        },
+    ])
+    monkeypatch.setattr(view.placements, "get_placement", lambda name: {
+        "placement_id": "pl_factory",
+        "kind": "workstream",
+        "name": "factory-quality",
+        "members": [{"seat_ref": "flexgraph-chatbot:pipeline"}],
+    })
+
+    result = view.run(argparse.Namespace(view_action="placement", view_target=None, scope=None, limit=10, include_hidden=False))
+
+    assert result["ok"] is True
+    assert result["source"] == "self"
+    assert result["placement"]["name"] == "factory-quality"
+
+
+def test_view_placement_requires_target_when_not_resolved(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "flexgraph-chatbot")
+    monkeypatch.setenv("AURA_SEAT", "pipeline")
+
+    from commands import view
+
+    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
+        {"target": "flexgraph-chatbot:pipeline", "seat": "pipeline", "fleet": "flexgraph-chatbot", "liveness": "alive", "managed_state": "spawned_bound"},
+    ])
+
+    result = view.run(argparse.Namespace(view_action="placement", view_target=None, scope=None, limit=10, include_hidden=False))
+
+    assert result["ok"] is False
+    assert result["error"] == "placement-not-resolved"

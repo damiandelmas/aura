@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-from lib import deferred, queued_messages, reports, seat_status, tmux_mirror
+from lib import deferred, placements, queued_messages, reports, seat_status, tmux_mirror
 
 
 def _compact_identity(row: dict) -> dict | None:
-    identity = row.get("identity")
-    if not isinstance(identity, dict):
-        return None
+    identity = row.get("identity") if isinstance(row.get("identity"), dict) else {}
     current = identity.get("current") if isinstance(identity.get("current"), dict) else {}
     result = {
         "provider": identity.get("provider") or row.get("identity_provider"),
         "id": identity.get("id") or row.get("identity_id"),
         "name": identity.get("name") or row.get("identity_label"),
-        "current_position": current.get("position"),
+        "current_position": current.get("position") or row.get("current_position"),
     }
-    return {key: value for key, value in result.items() if value}
+    compact = {key: value for key, value in result.items() if value}
+    return compact or None
 
 
 def _current_position(row: dict) -> str | None:
@@ -119,8 +118,9 @@ def _is_live(row: dict) -> bool:
 
 
 def _one_self_match(rows: list[dict], matches: list[dict], source: str) -> dict:
+    live = [row for row in matches if _is_live(row)]
     routable = [row for row in matches if _is_routable(row)]
-    selected = routable or matches
+    selected = live or routable
     if len(selected) == 1:
         return {"ok": True, "source": source, "row": selected[0]}
     if len(selected) > 1:
@@ -130,6 +130,14 @@ def _one_self_match(rows: list[dict], matches: list[dict], source: str) -> dict:
             "error": "self-resolved-to-multiple-seats",
             "match_count": len(selected),
             "matches": [_row_target(row) for row in selected],
+        }
+    if matches:
+        return {
+            "ok": False,
+            "source": source,
+            "error": "self-not-live",
+            "match_count": len(matches),
+            "matches": [_row_target(row) for row in matches],
         }
     return {"ok": False, "source": source, "error": "self-not-resolved", "match_count": 0}
 
@@ -254,6 +262,129 @@ def _run_roster(*, include_hidden: bool) -> dict:
         "scope": "live",
         "counts": {"fleets": len(fleets), "seats": len(live_rows), "historical_seats": len(rows)},
         "fleets": fleets,
+        "seats": [_compact_status(row) for row in live_rows],
+    }
+
+
+def _run_live(*, include_hidden: bool) -> dict:
+    result = _run_roster(include_hidden=include_hidden)
+    result["schema"] = "aura.view.live.v1"
+    result["alias_of"] = "roster"
+    return result
+
+
+def _member_ref(member: dict) -> str | None:
+    return member.get("seat_ref") or member.get("target")
+
+
+def _placement_member_refs(record: dict) -> list[str]:
+    refs = []
+    for member in record.get("members") or []:
+        if not isinstance(member, dict):
+            continue
+        ref = _member_ref(member)
+        if ref:
+            refs.append(ref)
+    return refs
+
+
+def _placement_ref_matches(row: dict, ref: str) -> bool:
+    target = _row_target(row)
+    return ref in {target, row.get("seat_ref")}
+
+
+def _placement_summary(record: dict) -> dict:
+    return {
+        key: value
+        for key, value in {
+            "placement_id": record.get("placement_id"),
+            "kind": record.get("kind"),
+            "name": record.get("name"),
+            "label": record.get("label"),
+        }.items()
+        if value
+    }
+
+
+def _run_placement(*, include_hidden: bool, placement_name: str | None = None) -> dict:
+    context = reports.infer_context()
+    rows = _status_rows(include_hidden=include_hidden)
+    resolved = _resolve_self(rows, context)
+    self_row = resolved.get("row") if resolved.get("ok") else None
+
+    record = None
+    source = "explicit" if placement_name else "self"
+    if placement_name:
+        record = placements.get_placement(placement_name)
+        if not record:
+            return {
+                "ok": False,
+                "schema": "aura.view.placement.v1",
+                "error": "placement-not-found",
+                "placement": placement_name,
+            }
+    else:
+        self_placements = self_row.get("placements") if isinstance(self_row, dict) else []
+        if not self_placements:
+            return {
+                "ok": False,
+                "schema": "aura.view.placement.v1",
+                "error": "placement-not-resolved",
+                "source": resolved.get("source"),
+                "hint": "Provide a placement name, e.g. aura view placement <name>.",
+            }
+        if len(self_placements) > 1:
+            return {
+                "ok": False,
+                "schema": "aura.view.placement.v1",
+                "error": "placement-ambiguous",
+                "placements": [p.get("name") or p.get("placement_id") for p in self_placements],
+                "hint": "Provide one placement name, e.g. aura view placement <name>.",
+            }
+        selected = self_placements[0]
+        placement_name = selected.get("name") or selected.get("placement_id")
+        record = placements.get_placement(placement_name) if placement_name else None
+        if not record:
+            return {
+                "ok": False,
+                "schema": "aura.view.placement.v1",
+                "error": "placement-not-found",
+                "placement": placement_name,
+            }
+
+    member_refs = _placement_member_refs(record)
+    live_rows = []
+    seen_live_targets = set()
+    hidden_non_live = 0
+    missing_members = []
+    for ref in member_refs:
+        matches = [row for row in rows if _placement_ref_matches(row, ref)]
+        live_matches = [row for row in matches if _is_live(row)]
+        if live_matches:
+            row = live_matches[0]
+            target = _row_target(row)
+            if target not in seen_live_targets:
+                live_rows.append(row)
+                seen_live_targets.add(target)
+        elif matches:
+            hidden_non_live += 1
+        else:
+            hidden_non_live += 1
+            missing_members.append(ref)
+
+    live_rows = sorted(live_rows, key=lambda row: _row_target(row) or "")
+    return {
+        "ok": True,
+        "schema": "aura.view.placement.v1",
+        "source": source,
+        "placement": _placement_summary(record),
+        "self": _compact_status(self_row) if self_row else None,
+        "counts": {
+            "members": len(member_refs),
+            "seats": len(live_rows),
+            "hidden_non_live_members": hidden_non_live,
+            "missing_members": len(missing_members),
+        },
         "seats": [_compact_status(row) for row in live_rows],
     }
 
@@ -387,6 +518,10 @@ def run(args):
         return _run_fleet(include_hidden=include_hidden, fleet_name=target)
     if action == "roster":
         return _run_roster(include_hidden=include_hidden)
+    if action == "live":
+        return _run_live(include_hidden=include_hidden)
+    if action == "placement":
+        return _run_placement(include_hidden=include_hidden, placement_name=target)
     if action == "historical":
         return _run_historical(include_hidden=include_hidden)
     if action == "physical":
