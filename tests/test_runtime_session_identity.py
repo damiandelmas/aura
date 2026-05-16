@@ -45,6 +45,55 @@ def test_runtime_session_discovers_codex_thread_from_resume_argv(monkeypatch):
     assert runtime_session.merge({"name": "engineer"}, result)["session_id"] == "019dd2b7-8919-75d2-b472-7c778a93da92"
 
 
+def test_runtime_session_discovers_codex_fork_source_from_argv(monkeypatch):
+    from lib import runtime_session
+
+    source_id = "019dd2b7-8919-75d2-b472-7c778a93da92"
+    argv = ["codex", "--cd", "/unit", "fork", source_id, "continue here"]
+    monkeypatch.setattr(runtime_session, "_descendant_pids", lambda pid: [pid, 1002])
+    monkeypatch.setattr(
+        runtime_session,
+        "_read_process_cmdline",
+        lambda pid: argv if pid == 1002 else [],
+    )
+    monkeypatch.setattr(runtime_session, "_read_process_environ", lambda pid: {})
+
+    result = runtime_session.discover_from_pane_pid("codex", 1001)
+
+    assert result["source_session_id"] == source_id
+    assert "runtime_session_id" not in result
+    assert result["runtime_session_source"] == "argv:codex-fork"
+    assert result["runtime_session_binding"] == "pending-fork-child"
+    assert result["runtime_session_confidence"] == "source-exact-child-pending"
+    assert result["runtime_session_evidence"]["reason"] == "codex-fork-argv"
+
+
+def test_runtime_session_merge_preserves_fork_source_when_child_binds():
+    from lib import runtime_session
+
+    record = {
+        "name": "forked",
+        "source_session_id": "019dd2b7-8919-75d2-b472-7c778a93da92",
+        "runtime_session_mode": "native-fork",
+        "runtime_session_source": "spawn:fork-session",
+        "runtime_session_binding": "pending-fork-child",
+    }
+    child = {
+        "runtime_session_id": "019e2d0f-1e2d-7bf2-9863-6253cb5ff857",
+        "runtime_session_source": "codex-hook:session-start",
+        "runtime_session_binding": "bound",
+        "runtime_session_confidence": "exact",
+    }
+
+    merged = runtime_session.merge(record, child)
+
+    assert merged["source_session_id"] == record["source_session_id"]
+    assert merged["runtime_session_mode"] == "native-fork"
+    assert merged["runtime_session_id"] == child["runtime_session_id"]
+    assert merged["session_id"] == child["runtime_session_id"]
+    assert merged["runtime_session_binding"] == "bound"
+
+
 def test_runtime_session_ignores_inherited_codex_thread_env(monkeypatch):
     from lib import runtime_session
 
@@ -441,6 +490,120 @@ def test_spawn_codex_resume_session_builds_autonomous_resume_command(monkeypatch
     assert result["isolation"] == "shared-native-thread"
     assert result["backend_ref"] == "unitfleet:outreach"
     assert result["session_observation"]["status"] == "already-bound"
+
+
+def test_spawn_codex_fork_session_records_parent_pending_child(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+    created = []
+    sent = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((name, command))
+            return {"ok": True, "target": "unitfleet:forked", "pane_id": "%43"}
+
+        @staticmethod
+        def send_text(name, text, submit=False):
+            sent.append((name, text, submit))
+            return {"ok": True}
+
+    source_id = "019dd1ba-70ff-72c3-8ccd-739cccf4e3fc"
+    args = argparse.Namespace(
+        name="forked",
+        runtime="codex",
+        resume_session=None,
+        fork_session=source_id,
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt="inherit and report",
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert created[0][1] == (
+        f"codex --cd {unit} --dangerously-bypass-approvals-and-sandbox "
+        f"fork {source_id} 'inherit and report'"
+    )
+    assert sent == []
+    assert result["source_session_id"] == source_id
+    assert result["runtime_session_mode"] == "native-fork"
+    assert result["runtime_session_binding"] == "pending-fork-child"
+    assert result["runtime_session_confidence"] == "source-exact-child-pending"
+    assert "runtime_session_id" not in result
+    assert result["prompt_delivery"] == {
+        "submitted": True,
+        "transport": "runtime-native-argv",
+        "mode": "fork-argument",
+    }
+    assert result["session_observation"]["status"] == "pending"
+
+
+def test_spawn_codex_fork_session_conflicts_and_unsupported_runtime(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+    source_id = "019dd1ba-70ff-72c3-8ccd-739cccf4e3fc"
+    base = dict(
+        name="forked",
+        runtime="codex",
+        resume_session=None,
+        fork_session=source_id,
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    conflict = spawn._spawn_terminal_runtime(
+        argparse.Namespace(**{**base, "resume_session": source_id}),
+        FakeTerminal,
+        lambda x: x,
+    )
+    assert conflict["ok"] is False
+    assert conflict["error"] == "use either --resume-session or --fork-session, not both"
+
+    command_conflict = spawn._spawn_terminal_runtime(
+        argparse.Namespace(**{**base, "launch_command": "codex fork raw"}),
+        FakeTerminal,
+        lambda x: x,
+    )
+    assert command_conflict["ok"] is False
+    assert command_conflict["error"] == "use either --fork-session or --command, not both"
+
+    unsupported = spawn._spawn_terminal_runtime(
+        argparse.Namespace(**{**base, "runtime": "shell"}),
+        FakeTerminal,
+        lambda x: x,
+    )
+    assert unsupported["ok"] is False
+    assert unsupported["error"] == "runtime does not support native fork: shell"
 
 
 def test_spawn_codex_resume_resolves_cwd_choice_to_requested_cwd(monkeypatch, tmp_path):

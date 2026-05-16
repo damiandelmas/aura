@@ -62,6 +62,8 @@ def main():
                          help="JSONL session to resume")
     p_spawn.add_argument("--resume-session", metavar="SESSION_ID",
                          help="Runtime-native session id to resume for terminal runtimes such as Codex")
+    p_spawn.add_argument("--fork-session", metavar="SESSION_ID",
+                         help="Runtime-native session id to fork for supported runtimes such as Codex")
     p_spawn.add_argument("--identity-provider", metavar="PROVIDER",
                          help="Explicit external identity provider for this live spawn, e.g. desks")
     p_spawn.add_argument("--identity-id", metavar="ID",
@@ -91,7 +93,7 @@ def main():
     p_spawn.add_argument("--silent", dest="silent", action="store_true",
                          help="Silent keeper: skip AGENT_STARTED/AGENT_STOPPED lifecycle hooks. For ledger clones and similar background agents.")
     p_spawn.add_argument("--clone", dest="clone", action="store_true",
-                         help="Force a real fork of --memory session (new UUID, isolated JSONL). Without --clone, --memory resumes in-place (parent and child share JSONL). Equivalent to --at L<tail> unless --at is also set.")
+                         help="Force an Aura JSONL --memory clone (new UUID, isolated JSONL). Runtime-native conversation forks use --fork-session.")
     p_spawn.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "omx", "opencode", "openclaw", "shell", "command"],
                          help="Run a generic terminal-backed runtime instead of the Claude wrapper path")
     p_spawn.add_argument("--profile", metavar="NAME",

@@ -113,6 +113,7 @@ def run(args):
                 "runtime_session_id": os.environ.get("AURA_RUNTIME_SESSION_ID") or os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID"),
                 "tmux_pane": os.environ.get("TMUX_PANE"),
             },
+            "_aura_cli_omit": ["current"],
         }
     if reg_agent and registry.is_hidden_agent(reg_agent) and not getattr(args, "allow_hidden", False):
         return {
@@ -233,7 +234,14 @@ def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None, send
             )
             delivery.append_attempt(record, state="skipped_duplicate", evidence={"previous_message_id": previous})
             record = delivery.append_record(record)
-            return {"ok": True, "skipped": True, "reason": "duplicate", "previous_message_id": previous, "record": record}
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "duplicate",
+                "previous_message_id": previous,
+                "record": record,
+                "_aura_cli_omit": ["record"],
+            }
 
     blocker = None
     if getattr(args, "defer_if_busy", False):
@@ -279,6 +287,7 @@ def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None, send
             "error": f"target not ready for paste: {blocker}",
             "record": record,
             "deferred_record": deferred_record,
+            "_aura_cli_omit": ["record", "deferred_record"],
         }
 
     message_id = delivery.new_message_id()
@@ -332,7 +341,13 @@ def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None, send
     )
 
     if not result.get("ok"):
-        return {"ok": False, "error": result.get("error", "tmux send failed"), "message_id": message_id, "record": record}
+        return {
+            "ok": False,
+            "error": result.get("error", "tmux send failed"),
+            "message_id": message_id,
+            "record": record,
+            "_aura_cli_omit": ["record"],
+        }
 
     response = {
         "ok": True,
@@ -348,6 +363,7 @@ def _send_tmux(args, terminal, delivery, terminal_target=None, sender=None, send
         "submit_verify_reason": verify_reason,
         "submit_retry": submit_retry,
         "record": record,
+        "_aura_cli_omit": ["record"],
     }
     return response
 

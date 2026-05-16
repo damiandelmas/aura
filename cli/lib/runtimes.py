@@ -63,8 +63,10 @@ RUNTIMES: dict[str, dict] = {
         "context_candidates": ["AGENTS.md"],
         "capabilities": {
             "supports_resume": True,
+            "supports_fork": True,
             "session_id_source": "codex-state-or-resume-argv",
             "resume_command": "codex --dangerously-bypass-approvals-and-sandbox resume {session_id}",
+            "fork_command": "codex --dangerously-bypass-approvals-and-sandbox fork {session_id}{prompt_arg}",
         },
     },
     "omx": {
@@ -128,6 +130,21 @@ def build_resume_command(runtime: str, session_id: str, *, cwd: str | None = Non
     if not resume_template:
         raise ValueError(f"runtime does not support native resume: {resolved}")
     command = resume_template.format(session_id=shlex.quote(session_id))
+    if resolved == "codex" and cwd:
+        return command.replace("codex ", f"codex --cd {shlex.quote(cwd)} ", 1)
+    return command
+
+
+def build_fork_command(runtime: str, session_id: str, *, prompt: str | None = None, cwd: str | None = None) -> str:
+    resolved, spec = resolve_runtime(runtime)
+    fork_template = (spec.get("capabilities") or {}).get("fork_command")
+    if not fork_template:
+        raise ValueError(f"runtime does not support native fork: {resolved}")
+    prompt_arg = f" {shlex.quote(prompt)}" if prompt else ""
+    command = fork_template.format(
+        session_id=shlex.quote(session_id),
+        prompt_arg=prompt_arg,
+    )
     if resolved == "codex" and cwd:
         return command.replace("codex ", f"codex --cd {shlex.quote(cwd)} ", 1)
     return command

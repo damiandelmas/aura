@@ -2065,11 +2065,18 @@ def run(args):
         if not preflight.get("ok"):
             return preflight
         existing = preflight.get("source_record")
-        if getattr(args, "move_terminal", False):
+        target_name = getattr(args, "name", None) or (existing or {}).get("name")
+        target_fleet = getattr(args, "fleet", None) or (existing or {}).get("fleet")
+        same_fleet_rename = bool(
+            existing
+            and target_fleet == existing.get("fleet")
+            and target_name
+            and target_name != existing.get("name")
+        )
+        physical_move = bool(getattr(args, "move_terminal", False) or same_fleet_rename)
+        if physical_move:
             if not existing:
                 return {"ok": False, "error": f"agent not found: {args.source}"}
-            target_name = getattr(args, "name", None) or existing.get("name")
-            target_fleet = getattr(args, "fleet", None) or existing.get("fleet")
             moved = _move_terminal(
                 existing,
                 fleet=target_fleet,
@@ -2110,7 +2117,8 @@ def run(args):
                     evidence={
                         "source": result.get("source"),
                         "target": result.get("target"),
-                        "move_terminal": bool(getattr(args, "move_terminal", False)),
+                        "move_terminal": physical_move,
+                        "implicit_same_fleet_rename": same_fleet_rename,
                         "metadata_keys": sorted(metadata.keys()),
                     },
                     source_command="aura seat rehome",

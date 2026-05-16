@@ -102,6 +102,25 @@ def test_standard_send_tmux_does_not_preflight_block_busy_target(monkeypatch, tm
     assert record["attempts"][-1]["evidence"]["paste_ok"] is True
 
 
+def test_cli_output_can_hide_operator_record_for_routine_send(capsys):
+    from lib.output import output
+
+    output({
+        "ok": True,
+        "message_id": "aura-msg-test",
+        "target": "unitfleet:worker",
+        "record": {"attempts": [{"evidence": {"large": "debug"}}]},
+        "_aura_cli_omit": ["record"],
+    })
+
+    rendered = json.loads(capsys.readouterr().out)
+    assert rendered == {
+        "ok": True,
+        "message_id": "aura-msg-test",
+        "target": "unitfleet:worker",
+    }
+
+
 def test_send_refuses_current_seat_without_force(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")

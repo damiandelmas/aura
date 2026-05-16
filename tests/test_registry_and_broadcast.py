@@ -281,6 +281,54 @@ def test_seat_rehome_command_loads_role_metadata(tmp_path, monkeypatch):
     assert moved["desks_unit"] == "engine"
 
 
+def test_seat_rehome_same_fleet_rename_mirrors_terminal_without_unsafe_flag(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.delenv("AURA_ENABLE_UNSAFE_MOVE_TERMINAL", raising=False)
+    from commands import seat
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "old-seat",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "pane_ref": "tmux:unitfleet:%12",
+        "terminal_ref": "unitfleet:old-seat",
+        "backend_ref": "unitfleet:old-seat",
+    })
+
+    def fake_move_terminal(record, *, fleet, name, index):
+        assert record["pane_ref"] == "tmux:unitfleet:%12"
+        assert fleet == "unitfleet"
+        assert name == "new-seat"
+        assert index is None
+        return {
+            "ok": True,
+            "terminal_ref": "unitfleet:new-seat",
+            "backend_ref": "unitfleet:new-seat",
+            "pane_ref": "tmux:unitfleet:%12",
+            "physical_fleet": "unitfleet",
+        }
+
+    monkeypatch.setattr(seat, "_move_terminal", fake_move_terminal)
+    result = seat.run(argparse.Namespace(
+        seat_action="rehome",
+        source="unitfleet:old-seat",
+        name="new-seat",
+        fleet=None,
+        role_home=None,
+        manifest=None,
+        move_terminal=False,
+        index=None,
+        no_alias_old=False,
+    ))
+
+    assert result["ok"] is True
+    moved = registry.get_agent("unitfleet:new-seat")
+    assert moved["terminal_ref"] == "unitfleet:new-seat"
+    assert moved["backend_ref"] == "unitfleet:new-seat"
+    assert moved["pane_ref"] == "tmux:unitfleet:%12"
+
+
 def test_seat_rehome_move_terminal_updates_physical_refs(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.setenv("AURA_ENABLE_UNSAFE_MOVE_TERMINAL", "1")
@@ -905,12 +953,34 @@ def test_send_blocks_hidden_targets_without_operator_override(tmp_path, monkeypa
     assert result["reason"] == "target-hidden"
 
 
+def test_inspect_default_uses_status_not_raw_capture(monkeypatch):
+    from commands import inspect
+
+    seen = {}
+
+    class FakeCheck:
+        @staticmethod
+        def run(args):
+            seen["output"] = args.output
+            return {"ok": True, "name": "worker", "fleet": "unitfleet", "status": "idle"}
+
+    monkeypatch.setattr(inspect, "check", FakeCheck)
+
+    result = inspect.run(argparse.Namespace(name="unitfleet:worker", raw=False, sense=False, lines=40, format="text"))
+
+    assert seen["output"] is False
+    assert result["ok"] is True
+    assert result["inspect_mode"] == "status"
+    assert "output" not in result
+
+
 def test_broadcast_targets_registered_fleet_agents_and_excludes_shell(monkeypatch):
     from commands import broadcast
 
     registry_agents = [
-        {"name": "claude1", "fleet": "triad", "registered": True},
-        {"name": "hermes1", "fleet": "triad", "registered": True},
+        {"name": "claude1", "fleet": "triad", "registered": True, "terminal_ref": "triad:claude1"},
+        {"name": "hermes1", "fleet": "triad", "registered": True, "terminal_ref": "triad:hermes1"},
+        {"name": "stale", "fleet": "triad", "registered": True, "terminal_ref": "triad:stale"},
     ]
 
     class FakeRegistry:
@@ -928,6 +998,9 @@ def test_broadcast_targets_registered_fleet_agents_and_excludes_shell(monkeypatc
         @staticmethod
         def list_windows():
             return ["bash", "codex1"]
+        @staticmethod
+        def target_exists(target):
+            return target in {"triad:claude1", "triad:hermes1"}
 
     sent = []
 
@@ -956,8 +1029,9 @@ def test_broadcast_targets_registered_fleet_agents_and_excludes_shell(monkeypatc
     result = broadcast.run(args)
 
     assert result["ok"] is True
-    assert result["count"] == 3
-    assert [x[0] for x in sent] == ["claude1", "hermes1", "codex1"]
+    assert result["schema"] == "aura.broadcast_fleet.v1"
+    assert result["count"] == 2
+    assert [x[0] for x in sent] == ["triad:claude1", "triad:hermes1"]
     assert all(x[1] == "ping" for x in sent)
     assert all(x[3] == "chatbot-pipeline" for x in sent)
 
@@ -968,7 +1042,7 @@ def test_broadcast_parses_message_when_fleet_flag_is_set(monkeypatch):
     class FakeRegistry:
         @staticmethod
         def list_agents(fleet=None, include_hidden=False):
-            return [{"name": "claude1", "fleet": fleet, "registered": True}]
+            return [{"name": "claude1", "fleet": fleet, "registered": True, "terminal_ref": f"{fleet}:claude1"}]
         @staticmethod
         def is_hidden_agent(record):
             return bool(record.get("hidden")) or record.get("kind") == "ether" or str(record.get("fleet") or "").startswith("_")
@@ -981,6 +1055,9 @@ def test_broadcast_parses_message_when_fleet_flag_is_set(monkeypatch):
         @staticmethod
         def list_windows():
             return []
+        @staticmethod
+        def target_exists(target):
+            return target == "triad:claude1"
 
     sent = []
     class FakeSend:
@@ -1006,7 +1083,7 @@ def test_broadcast_parses_message_when_fleet_flag_is_set(monkeypatch):
     result = broadcast.run(args)
 
     assert result["fleet"] == "triad"
-    assert sent == [("claude1", "hello world")]
+    assert sent == [("triad:claude1", "hello world")]
 
 
 def test_broadcast_blocks_hidden_fleet_without_operator_override(monkeypatch):

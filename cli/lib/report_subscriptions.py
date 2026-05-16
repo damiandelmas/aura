@@ -12,6 +12,9 @@ import uuid
 from lib import events
 
 
+FINAL_REPORT_STATES = {"scheduled", "notified", "notify_failed", "deduped", "skipped_self"}
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -162,6 +165,21 @@ def matches_report(record: dict[str, Any], report: dict[str, Any]) -> bool:
     return True
 
 
+def is_self_delivery(record: dict[str, Any], report: dict[str, Any]) -> bool:
+    target = record.get("to")
+    return bool(target and _matches_target(str(target), report))
+
+
+def canonical_target(target: str) -> str:
+    try:
+        from lib import registry
+
+        resolved, chain = registry.resolve_alias(target)
+        return resolved if chain and resolved else target
+    except Exception:
+        return target
+
+
 def schedule_for_report(report: dict[str, Any], *, delay_seconds: float = 1.5) -> list[dict[str, Any]]:
     scheduled: list[dict[str, Any]] = []
     report_id = report.get("report_id")
@@ -172,7 +190,16 @@ def schedule_for_report(report: dict[str, Any], *, delay_seconds: float = 1.5) -
             continue
         reports = dict(record.get("reports") or {})
         prior = reports.get(report_id)
-        if prior and prior.get("status") in {"scheduled", "notified", "notify_failed"}:
+        if prior and prior.get("status") in FINAL_REPORT_STATES:
+            continue
+        if is_self_delivery(record, report):
+            reports[report_id] = {
+                "status": "skipped_self",
+                "scheduled_at": now_iso(),
+                "reason": "report-source-is-notification-target",
+            }
+            record["reports"] = reports
+            _save(record)
             continue
         reports[report_id] = {
             "status": "scheduled",
@@ -212,20 +239,34 @@ def release_for_report(report: dict[str, Any]) -> list[dict[str, Any]]:
     report_id = report.get("report_id")
     if not report_id:
         return released
+    delivered_by_target: dict[str, str] = {}
     for record in list_records():
         reports = dict(record.get("reports") or {})
         state = reports.get(report_id) or {}
         if state.get("status") != "scheduled":
             continue
+        target = str(record.get("to") or "")
+        dedupe_target = canonical_target(target)
+        if dedupe_target in delivered_by_target:
+            reports[report_id] = {
+                **state,
+                "status": "deduped",
+                "deduped_at": now_iso(),
+                "deduped_by": delivered_by_target[dedupe_target],
+                "reason": "recipient-report-already-notified",
+            }
+            record["reports"] = reports
+            released.append(_save(record))
+            continue
         args = argparse.Namespace(
-            target=record.get("to"),
+            target=target,
             message=render_report_message(report),
             sender=record.get("sender") or "aura-event",
             mode=None,
             nudge=False,
             transport="auto",
-            dedupe_key=f"report-sub:{record.get('subscription_id')}:{report_id}",
-            force=True,
+            dedupe_key=f"report-sub:{dedupe_target}:{report_id}",
+            force=False,
             allow_hidden=False,
             defer_if_busy=False,
             defer_ttl="15m",
@@ -245,6 +286,7 @@ def release_for_report(report: dict[str, Any]) -> list[dict[str, Any]]:
         if result and result.get("ok"):
             state["status"] = "notified"
             state["message_id"] = result.get("message_id")
+            delivered_by_target[dedupe_target] = record.get("subscription_id")
         else:
             state["status"] = "notify_failed"
             state["error"] = (result or {}).get("error") or "send failed"

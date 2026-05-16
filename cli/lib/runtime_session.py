@@ -419,17 +419,17 @@ def _current_process_session_env_names(runtime: str | None) -> tuple[str, ...]:
     return (*names, "AURA_RUNTIME_SESSION_ID", "AURA_SESSION_ID")
 
 
-def _discover_codex_resume_argv(pid: int) -> dict:
+def _discover_codex_runtime_argv(pid: int) -> dict:
     argv = _read_process_cmdline(pid)
     if not argv:
         return {}
     for index, part in enumerate(argv):
-        if part != "resume":
+        if part not in {"resume", "fork"}:
             continue
         if index + 1 >= len(argv):
             continue
         match = UUID_RE.search(argv[index + 1])
-        if match:
+        if match and part == "resume":
             return {
                 "runtime_session_id": match.group(0),
                 "runtime_session_source": "argv:codex-resume",
@@ -443,6 +443,28 @@ def _discover_codex_resume_argv(pid: int) -> dict:
                 },
                 "runtime_session_pid": pid,
             }
+        if match and part == "fork":
+            return {
+                "source_session_id": match.group(0),
+                "runtime_session_source": "argv:codex-fork",
+                "runtime_session_binding": "pending-fork-child",
+                "runtime_session_bind_method": "argv-fork-source",
+                "runtime_session_bind_source": "argv:codex-fork",
+                "runtime_session_confidence": "source-exact-child-pending",
+                "runtime_session_evidence": {
+                    "reason": "codex-fork-argv",
+                    "source_session_id": match.group(0),
+                    "argv": argv,
+                },
+                "runtime_session_pid": pid,
+            }
+    return {}
+
+
+def _discover_codex_resume_argv(pid: int) -> dict:
+    discovered = _discover_codex_runtime_argv(pid)
+    if discovered.get("runtime_session_source") == "argv:codex-resume":
+        return discovered
     return {}
 
 
@@ -458,7 +480,7 @@ def discover_from_pane_pid(
     pids = _descendant_pids(int(pane_pid))
     if runtime == "codex":
         for pid in pids:
-            discovered = _discover_codex_resume_argv(pid)
+            discovered = _discover_codex_runtime_argv(pid)
             if discovered:
                 return discovered
         discovered = _discover_codex_state_thread(
@@ -544,6 +566,11 @@ def merge(record: dict, session: dict) -> dict:
             for key in (
                 "runtime_session_source",
                 "runtime_session_binding",
+                "runtime_session_bind_method",
+                "runtime_session_bind_source",
+                "runtime_session_confidence",
+                "runtime_session_evidence",
+                "source_session_id",
                 "runtime_session_diagnostics",
                 "runtime_session_possible_matches",
                 "runtime_session_cwd",

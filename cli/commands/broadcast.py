@@ -1,6 +1,7 @@
 """Broadcast a message to every agent in a fleet or live scope."""
 
 import argparse
+import os
 
 _registry = None
 _terminal = None
@@ -46,7 +47,51 @@ def _fleet_and_message_from_args(args):
     return registry.current_fleet(), ""
 
 
-def _targets_for_fleet(fleet: str, include_shell: bool = False, allow_hidden: bool = False) -> list[str]:
+def _target_exists(terminal, target: str | None) -> bool:
+    if not target:
+        return False
+    if hasattr(terminal, "target_exists"):
+        return bool(terminal.target_exists(target))
+    if hasattr(terminal, "window_exists"):
+        return bool(terminal.window_exists(target))
+    return False
+
+
+def _seat_name(agent: dict) -> str | None:
+    return agent.get("seat") or agent.get("name")
+
+
+def _logical_target(agent: dict, fallback_fleet: str | None = None) -> str | None:
+    seat = _seat_name(agent)
+    fleet = agent.get("fleet") or fallback_fleet
+    if not seat:
+        return None
+    return f"{fleet}:{seat}" if fleet else seat
+
+
+def _live_terminal_target(agent: dict, terminal, fallback_fleet: str | None = None) -> str | None:
+    for key in ("pane_ref", "terminal_ref", "backend_ref"):
+        target = agent.get(key)
+        if _target_exists(terminal, target):
+            return str(target)
+    logical = _logical_target(agent, fallback_fleet)
+    if _target_exists(terminal, logical):
+        return logical
+    return None
+
+
+def _is_current_target(target: str) -> bool:
+    fleet = os.environ.get("AURA_FLEET")
+    seat = os.environ.get("AURA_SEAT") or os.environ.get("AURA_AGENT_NAME")
+    return bool(seat and target in {seat, f"{fleet}:{seat}" if fleet else ""})
+
+
+def _targets_for_fleet(
+    fleet: str,
+    include_shell: bool = False,
+    allow_hidden: bool = False,
+    include_self: bool = False,
+) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
     registry = _registry_mod()
@@ -55,31 +100,38 @@ def _targets_for_fleet(fleet: str, include_shell: bool = False, allow_hidden: bo
     if registry.is_hidden_fleet(fleet) and not allow_hidden:
         return []
 
+    if hasattr(terminal, "configure_session"):
+        terminal.configure_session(fleet)
+
     for agent in registry.list_agents(fleet, include_hidden=allow_hidden):
         if registry.is_hidden_agent(agent) and not allow_hidden:
             continue
-        name = agent.get("name")
-        if name and name not in seen:
-            names.append(name)
-            seen.add(name)
+        target = _logical_target(agent, fleet)
+        if not target or target in seen:
+            continue
+        if not include_self and _is_current_target(target):
+            continue
+        if not _live_terminal_target(agent, terminal, fleet):
+            continue
+        names.append(target)
+        seen.add(target)
+        seen.add(_seat_name(agent) or target)
 
     # If the command is running inside this fleet's tmux session, include live
     # windows that are not yet registered. This keeps sidecar control useful
     # while the registry is catching up. Shell windows are excluded by default.
-    if hasattr(terminal, "configure_session"):
-        terminal.configure_session(fleet)
-    if getattr(terminal, "SESSION_NAME", fleet) == fleet and (allow_hidden or not registry.is_hidden_fleet(fleet)):
+    if include_shell and getattr(terminal, "SESSION_NAME", fleet) == fleet and (allow_hidden or not registry.is_hidden_fleet(fleet)):
         for name in terminal.list_windows():
-            if not include_shell and name in ("bash", "sh", "shell"):
+            if name in ("bash", "sh", "shell"):
                 continue
-            if name not in seen:
+            if name not in seen and (include_self or not _is_current_target(f"{fleet}:{name}")):
                 names.append(name)
                 seen.add(name)
 
     return names
 
 
-def _live_targets(*, runtime: str | None = None, allow_hidden: bool = False) -> list[dict]:
+def _live_targets(*, runtime: str | None = None, allow_hidden: bool = False, include_self: bool = False) -> list[dict]:
     """Return registered live targets across fleets.
 
     This is registry-first: global broadcast is for Aura seats, not raw
@@ -101,11 +153,15 @@ def _live_targets(*, runtime: str | None = None, allow_hidden: bool = False) -> 
             continue
         if registry.is_hidden_fleet(fleet) and not allow_hidden:
             continue
+        if hasattr(terminal, "configure_session"):
+            terminal.configure_session(fleet)
         target = f"{fleet}:{name}"
         if target in seen:
             continue
-        terminal_ref = agent.get("pane_ref") or agent.get("terminal_ref") or target
-        if not terminal.target_exists(terminal_ref):
+        terminal_ref = _live_terminal_target(agent, terminal, fleet)
+        if not terminal_ref:
+            continue
+        if _is_current_target(target) and not include_self:
             continue
         seen.add(target)
         rows.append({
@@ -154,8 +210,17 @@ def _broadcast_to_targets(args, target_rows: list[dict], message: str) -> dict:
         "sent_count": len(sent),
         "failed_count": len(failed),
         "targets": [row["target"] for row in target_rows],
+        "failed_targets": [row["target"] for row in failed],
         "results": results,
     }
+
+
+def _fleet_target_rows(fleet: str, targets: list[str]) -> list[dict]:
+    rows = []
+    for target in targets:
+        seat = target.split(":", 1)[1] if target.startswith(f"{fleet}:") else target
+        rows.append({"target": target, "fleet": fleet, "seat": seat})
+    return rows
 
 
 def run(args):
@@ -163,7 +228,11 @@ def run(args):
     if scope in {"live", "all-live"}:
         message = _message_for_scope(args)
         runtime = getattr(args, "runtime", None)
-        targets = _live_targets(runtime=runtime, allow_hidden=bool(getattr(args, "allow_hidden", False)))
+        targets = _live_targets(
+            runtime=runtime,
+            allow_hidden=bool(getattr(args, "allow_hidden", False)),
+            include_self=bool(getattr(args, "force", False)),
+        )
         fanout = _broadcast_to_targets(args, targets, message)
         fleets = sorted({row["fleet"] for row in targets})
         return {
@@ -174,6 +243,7 @@ def run(args):
             "fleet_count": len(fleets),
             "fleets": fleets,
             **fanout,
+            "_aura_cli_omit": ["results"],
         }
 
     fleet, message = _fleet_and_message_from_args(args)
@@ -188,33 +258,18 @@ def run(args):
             "fleet": fleet,
             "hint": "use --allow-hidden for explicit operator access to hidden/internal fleets",
         }
-    targets = _targets_for_fleet(fleet, include_shell=include_shell, allow_hidden=allow_hidden)
+    targets = _targets_for_fleet(
+        fleet,
+        include_shell=include_shell,
+        allow_hidden=allow_hidden,
+        include_self=bool(getattr(args, "force", False)),
+    )
 
-    results = []
-    send = _send_mod()
-    for target in targets:
-        dedupe_key = getattr(args, "dedupe_key", None)
-        if dedupe_key:
-            dedupe_key = f"{dedupe_key}:{target}"
-        send_args = argparse.Namespace(
-            target=target,
-            message=message,
-            sender=getattr(args, "sender", None),
-            service_sender=getattr(args, "service_sender", None),
-            mode=None,
-            nudge=False,
-            transport=getattr(args, "transport", "auto") or "auto",
-            dedupe_key=dedupe_key,
-            force=getattr(args, "force", False),
-            allow_hidden=allow_hidden,
-        )
-        result = send.run(send_args)
-        results.append({"target": target, "result": result})
-
+    fanout = _broadcast_to_targets(args, _fleet_target_rows(fleet, targets), message)
     return {
-        "ok": True,
+        "ok": fanout["failed_count"] == 0,
+        "schema": "aura.broadcast_fleet.v1",
         "fleet": fleet,
-        "count": len(results),
-        "targets": targets,
-        "results": results,
+        **fanout,
+        "_aura_cli_omit": ["results"],
     }

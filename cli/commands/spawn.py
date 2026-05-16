@@ -319,9 +319,12 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         requested_runtime = "command"
     runtime, spec = runtimes.resolve_runtime(requested_runtime)
     resume_session = getattr(args, 'resume_session', None)
+    fork_session = getattr(args, 'fork_session', None)
     launch_command = getattr(args, 'launch_command', None)
     workdir_path = workspace_state.resolve_workdir(getattr(args, 'cwd', None))
     workdir = str(workdir_path)
+    if resume_session and fork_session:
+        return result_fn({"ok": False, "error": "use either --resume-session or --fork-session, not both", "name": args.name})
     if resume_session:
         if launch_command:
             return result_fn({"ok": False, "error": "use either --resume-session or --command, not both", "name": args.name})
@@ -329,6 +332,8 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             launch_command = runtimes.build_resume_command(runtime, resume_session, cwd=workdir)
         except ValueError as exc:
             return result_fn({"ok": False, "error": str(exc), "name": args.name})
+    if fork_session and launch_command:
+        return result_fn({"ok": False, "error": "use either --fork-session or --command, not both", "name": args.name})
     role_meta = dict(getattr(args, "_role_manifest_meta", None) or {})
     identity_provider_arg = getattr(args, "identity_provider", None)
     identity_id_arg = getattr(args, "identity_id", None)
@@ -479,14 +484,6 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             **({"desks_runtime_profile_ref": desks_runtime_profile_ref} if desks_runtime_profile_ref else {}),
         }
     recorded_profile = profile if runtime == "hermes" else omx_profile if runtime == "omx" else codex_profile if runtime == "codex" else None
-    command = runtimes.build_command(
-        runtime,
-        spec,
-        name=args.name,
-        profile=profile,
-        model=getattr(args, 'model', None),
-        command_override=launch_command,
-    )
     context_path = workspace_state.infer_context_file(
         workdir_path,
         spec,
@@ -498,6 +495,19 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         label="work",
     )
     prompt_text = workspace_state.read_work_prompt(work_path) or getattr(args, 'prompt', None)
+    if fork_session:
+        try:
+            launch_command = runtimes.build_fork_command(runtime, fork_session, prompt=prompt_text, cwd=workdir)
+        except ValueError as exc:
+            return result_fn({"ok": False, "error": str(exc), "name": args.name})
+    command = runtimes.build_command(
+        runtime,
+        spec,
+        name=args.name,
+        profile=profile,
+        model=getattr(args, 'model', None),
+        command_override=launch_command,
+    )
     native_state_ref = workspace_state.infer_native_state_ref(workdir_path, spec)
     fleet = getattr(terminal, "SESSION_NAME", None) or registry.current_fleet(default="aura")
     launch_id = f"aura-launch-{uuid.uuid4().hex[:16]}"
@@ -634,6 +644,20 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 "resume_session": resume_session,
             },
         }
+    elif fork_session:
+        session_meta = {
+            "session_id": None,
+            "runtime_session_id": None,
+            "runtime_session_source": "spawn:fork-session",
+            "runtime_session_binding": "pending-fork-child",
+            "runtime_session_bind_method": "spawn-fork-session-source",
+            "runtime_session_bind_source": "spawn:fork-session",
+            "runtime_session_confidence": "source-exact-child-pending",
+            "runtime_session_evidence": {
+                "reason": "aura-spawn-fork-session",
+                "source_session_id": fork_session,
+            },
+        }
     else:
         # upsert_agent merges with any previous row for the same fleet:seat.
         # A fresh spawn must clear old runtime-session evidence from that row.
@@ -687,9 +711,9 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "native_state_ref": native_state_ref,
         "aura_launch_id": launch_id,
         "seat_instance_id": seat_instance_id,
-        "source_session_id": resume_session,
-        "runtime_session_mode": "native-resume" if resume_session else None,
-        "isolation": "shared-native-thread" if resume_session and runtime == "codex" else None,
+        "source_session_id": fork_session or resume_session,
+        "runtime_session_mode": "native-fork" if fork_session else "native-resume" if resume_session else None,
+        "isolation": "forked-native-thread" if fork_session and runtime == "codex" else "shared-native-thread" if resume_session and runtime == "codex" else None,
         "terminal_ref": launch.get("target"),
         "backend_ref": launch.get("target"),
         "pane_ref": pane_ref,
@@ -742,9 +766,9 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "command": command,
             "aura_launch_id": launch_id,
             "seat_instance_id": seat_instance_id,
-            "source_session_id": resume_session,
-            "runtime_session_mode": "native-resume" if resume_session else None,
-            "isolation": "shared-native-thread" if resume_session and runtime == "codex" else None,
+            "source_session_id": fork_session or resume_session,
+            "runtime_session_mode": "native-fork" if fork_session else "native-resume" if resume_session else None,
+            "isolation": "forked-native-thread" if fork_session and runtime == "codex" else "shared-native-thread" if resume_session and runtime == "codex" else None,
             "cwd": workdir,
             "workdir": workdir,
             "context_file": str(context_path) if context_path else None,
@@ -769,6 +793,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 "terminal_ref": launch.get("target"),
                 "pane_ref": pane_ref,
                 "resume_session": resume_session,
+                "fork_session": fork_session,
                 "prompt_requested": bool(prompt_text),
             },
             source_command="aura spawn",
@@ -791,9 +816,9 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "native_state_ref": native_state_ref,
         "aura_launch_id": launch_id,
         "seat_instance_id": seat_instance_id,
-        "source_session_id": resume_session,
-        "runtime_session_mode": "native-resume" if resume_session else None,
-        "isolation": "shared-native-thread" if resume_session and runtime == "codex" else None,
+        "source_session_id": fork_session or resume_session,
+        "runtime_session_mode": "native-fork" if fork_session else "native-resume" if resume_session else None,
+        "isolation": "forked-native-thread" if fork_session and runtime == "codex" else "shared-native-thread" if resume_session and runtime == "codex" else None,
         "terminal_ref": launch.get("target"),
         "backend_ref": launch.get("target"),
         "pane_ref": pane_ref,
@@ -812,7 +837,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
 
     prompt_target = pane_ref or launch.get("target") or args.name
     observation_session = session_meta
-    if _should_send_codex_startup_handshake(runtime=runtime, resume_session=resume_session):
+    if _should_send_codex_startup_handshake(runtime=runtime, resume_session=resume_session, fork_session=fork_session):
         time.sleep(float(os.environ.get("AURA_CODEX_STARTUP_HANDSHAKE_DELAY", "1.0")))
         handshake_result = _send_codex_startup_handshake(
             terminal=terminal,
@@ -856,7 +881,13 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 if readiness.get(key) is not None
             })
 
-    if prompt_text:
+    if prompt_text and fork_session:
+        result["prompt_delivery"] = {
+            "submitted": True,
+            "transport": "runtime-native-argv",
+            "mode": "fork-argument",
+        }
+    elif prompt_text:
         flex_packet = _render_flex_project_launch_packet(flex_manifest, flex_root)
         prompt_result = terminal.send_text(
             args.name,
@@ -971,8 +1002,8 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     return result_fn({k: v for k, v in result.items() if v is not None})
 
 
-def _should_send_codex_startup_handshake(*, runtime: str, resume_session: str | None) -> bool:
-    if runtime != "codex" or resume_session:
+def _should_send_codex_startup_handshake(*, runtime: str, resume_session: str | None, fork_session: str | None = None) -> bool:
+    if runtime != "codex" or resume_session or fork_session:
         return False
     value = os.environ.get("AURA_CODEX_STARTUP_HANDSHAKE", "0").strip().lower()
     return value not in {"0", "false", "no", "off"}

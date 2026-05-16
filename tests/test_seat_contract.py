@@ -30,6 +30,23 @@ def test_openclaw_and_shell_runtime_specs_exist():
     assert runtimes.graceful_exit("future-runtime") == "/exit"
 
 
+def test_codex_fork_command_uses_native_fork_and_quotes_prompt():
+    from lib import runtimes
+
+    session_id = "019dd1ba-70ff-72c3-8ccd-739cccf4e3fc"
+    command = runtimes.build_fork_command(
+        "codex",
+        session_id,
+        prompt="report 'ready'",
+        cwd="/tmp/unit path",
+    )
+
+    assert command == (
+        "codex --cd '/tmp/unit path' --dangerously-bypass-approvals-and-sandbox "
+        f"fork {session_id} 'report '\"'\"'ready'\"'\"''"
+    )
+
+
 def test_write_submit_retry_detection_is_narrow():
     from lib.terminal_submit import delivery_blocker, needs_submit_retry, retry_submit
 
@@ -2624,6 +2641,7 @@ def test_spawn_runtime_choices_include_openclaw_and_shell():
     assert "--cwd" in help_result.stdout
     assert "--work" in help_result.stdout
     assert "--context" in help_result.stdout
+    assert "--fork-session" in help_result.stdout
 
 
 def test_stop_uses_runtime_specific_graceful_exit(monkeypatch, tmp_path):

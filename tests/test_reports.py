@@ -666,7 +666,7 @@ def test_event_release_report_subscriptions_sends_scheduled_notification(monkeyp
     assert result["released"] == 1
     assert sent[0][0] == "unitfleet:lead"
     assert sent[0][2] == "aura-event"
-    assert sent[0][3] == f"report-sub:{subscription['subscription_id']}:{report['report_id']}"
+    assert sent[0][3] == f"report-sub:unitfleet:lead:{report['report_id']}"
     assert "[AURA REPORT state=complete from=unitfleet:worker]" in sent[0][1]
     assert "work: done" in sent[0][1]
     assert "report_id: " + report["report_id"] in sent[0][1]
@@ -674,3 +674,68 @@ def test_event_release_report_subscriptions_sends_scheduled_notification(monkeyp
     state = saved["reports"][report["report_id"]]
     assert state["status"] == "notified"
     assert state["message_id"] == "aura-msg-report-sub"
+
+
+def test_report_subscription_skips_self_echo(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+
+    from lib import report_subscriptions, reports
+
+    report_subscriptions.create(
+        name="worker-self",
+        to="unitfleet:worker",
+        fleet="unitfleet",
+        states=["complete"],
+    )
+    report = reports.append_report({"state": "complete", "work": "done"})
+    scheduled = reports.schedule_report_subscriptions(report)
+
+    assert scheduled == []
+    saved = report_subscriptions.load("worker-self")
+    state = saved["reports"][report["report_id"]]
+    assert state["status"] == "skipped_self"
+    assert state["reason"] == "report-source-is-notification-target"
+
+
+def test_report_subscription_dedupes_overlapping_recipients(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+
+    from commands import send
+    from lib import report_subscriptions, reports
+
+    sent = []
+
+    def fake_send(args):
+        sent.append((args.target, args.dedupe_key, args.force))
+        return {"ok": True, "message_id": f"aura-msg-{len(sent)}"}
+
+    monkeypatch.setattr(send, "run", fake_send)
+
+    first = report_subscriptions.create(
+        name="lead-all",
+        to="unitfleet:lead",
+        fleet="unitfleet",
+        states=["complete"],
+    )
+    second = report_subscriptions.create(
+        name="lead-worker",
+        to="unitfleet:lead",
+        target="unitfleet:worker",
+        states=["complete"],
+    )
+    report = reports.append_report({"state": "complete", "work": "done"})
+    scheduled = reports.schedule_report_subscriptions(report)
+    assert {row["subscription_id"] for row in scheduled} == {first["subscription_id"], second["subscription_id"]}
+
+    released = report_subscriptions.release_for_report(report)
+
+    assert sent == [("unitfleet:lead", f"report-sub:unitfleet:lead:{report['report_id']}", False)]
+    states = {
+        row["subscription_id"]: row["reports"][report["report_id"]]["status"]
+        for row in released
+    }
+    assert set(states.values()) == {"notified", "deduped"}

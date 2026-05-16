@@ -30,7 +30,7 @@ def run(args):
 
     check_args = argparse.Namespace(
         name=args.name,
-        output=True,
+        output=bool(getattr(args, "raw", False)),
         lines=lines,
         format=getattr(args, "format", "text"),
     )
