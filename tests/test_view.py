@@ -160,6 +160,34 @@ def test_view_keys_latest_reports_by_fleet_and_seat(monkeypatch, tmp_path):
     assert by_target["fleet-b:lead"]["last_report"]["work"] == "fleet-b work"
 
 
+def test_view_default_colleagues_include_runtime_profile_metadata(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "leader")
+    monkeypatch.setenv("AURA_RUNTIME", "codex")
+
+    from lib import registry
+    from commands import view
+
+    registry.upsert_agent({
+        "name": "worker",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "runtime_profile": "aura-worker",
+        "runtime_profile_ref": "codex/aura-worker",
+        "runtime_profile_runtime": "codex",
+        "runtime_profile_source": "desks",
+    })
+
+    result = view.run(argparse.Namespace(scope="fleet:unitfleet", limit=10, include_hidden=False))
+
+    worker = next(row for row in result["colleagues"] if row["seat"] == "worker")
+    assert worker["runtime_profile"] == "aura-worker"
+    assert worker["runtime_profile_ref"] == "codex/aura-worker"
+    assert worker["runtime_profile_runtime"] == "codex"
+    assert worker["runtime_profile_source"] == "desks"
+
+
 def test_view_self_returns_current_managed_seat(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.setenv("AURA_FLEET", "runway-engineering")
@@ -179,6 +207,10 @@ def test_view_self_returns_current_managed_seat(monkeypatch, tmp_path):
         "identity_provider": "desks",
         "identity_id": "r_self",
         "identity_label": "runway:engineering:lead:engineer",
+        "runtime_profile": "aura-worker",
+        "runtime_profile_ref": "codex/aura-worker",
+        "runtime_profile_runtime": "codex",
+        "runtime_profile_source": "desks",
     })
 
     result = view.run(argparse.Namespace(view_action="self", scope=None, limit=10, include_hidden=False))
@@ -188,6 +220,8 @@ def test_view_self_returns_current_managed_seat(monkeypatch, tmp_path):
     assert result["self"]["target"] == "runway-engineering:lead-engineer"
     assert result["self"]["runtime_session_id"] == "session-self"
     assert result["self"]["identity"]["id"] == "r_self"
+    assert result["self"]["runtime_profile_ref"] == "codex/aura-worker"
+    assert result["self"]["runtime_profile_source"] == "desks"
 
 
 def test_view_fleets_returns_live_fleet_index(monkeypatch, tmp_path):
@@ -249,6 +283,10 @@ def test_view_fleet_accepts_explicit_fleet_and_flattens_latest_report(monkeypatc
             "fleet": "flexgraph-chatbot",
             "status": "waiting",
             "runtime": "codex",
+            "runtime_profile": "aura-worker",
+            "runtime_profile_ref": "codex/aura-worker",
+            "runtime_profile_runtime": "codex",
+            "runtime_profile_source": "desks",
             "runtime_session_id": "session-engineering",
             "liveness": "alive",
             "managed_state": "spawned_bound",
@@ -273,6 +311,10 @@ def test_view_fleet_accepts_explicit_fleet_and_flattens_latest_report(monkeypatc
                 "target": "flexgraph-chatbot:engineering-lead",
                 "status": "waiting",
                 "runtime": "codex",
+                "runtime_profile": "aura-worker",
+                "runtime_profile_ref": "codex/aura-worker",
+                "runtime_profile_runtime": "codex",
+                "runtime_profile_source": "desks",
                 "session_id": "session-engineering",
                 "identity": "r_5c425f44",
                 "name": "flexgraph:chatbot:engineering:lead",

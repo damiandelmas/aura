@@ -23,6 +23,26 @@ def safe_segment(value: str) -> str:
     return segment or "unknown"
 
 
+def is_safe_logical_segment(value: str) -> bool:
+    """Return true when ``value`` is already one safe logical id segment."""
+
+    raw = str(value or "").strip()
+    if not raw or raw in {".", ".."}:
+        return False
+    if raw.startswith(("/", "\\")) or "/" in raw or "\\" in raw:
+        return False
+    return safe_segment(raw) == raw
+
+
+def validate_logical_segment(value: str, *, label: str = "segment") -> str:
+    """Return a logical id segment or raise before it becomes a filesystem path."""
+
+    raw = str(value or "").strip()
+    if not is_safe_logical_segment(raw):
+        raise ValueError(f"{label} must be a single safe logical segment")
+    return raw
+
+
 def runtime_home_root(
     runtime: str,
     fleet: str,
@@ -59,26 +79,25 @@ def runtime_profile_root(runtime: str, profile: str, *, legacy_omx: bool = False
 def validate_no_symlinks(source: Path) -> None:
     """Reject symlinks in a profile template before any copy occurs."""
 
-    if source.is_symlink():
-        raise ValueError(f"runtime profile template symlink rejected: {source}")
-    for current_root, dirs, files in os.walk(source, followlinks=False):
-        current = Path(current_root)
-        for dirname in dirs:
-            candidate = current / dirname
-            if candidate.is_symlink():
-                raise ValueError(f"runtime profile template symlink rejected: {candidate}")
-        for filename in files:
-            candidate = current / filename
-            if candidate.is_symlink():
-                raise ValueError(f"runtime profile template symlink rejected: {candidate}")
+    from lib import runtime_profiles
+
+    findings = [
+        finding
+        for finding in runtime_profiles.scan_template_safety(source)
+        if finding.reason == "symlink"
+    ]
+    if findings:
+        raise ValueError(f"runtime profile template symlink rejected: {source / findings[0].path}")
 
 
 def copy_template_tree_no_replace(source: Path, destination: Path) -> bool:
     """Copy template contents without overwriting existing runtime-home files."""
 
+    from lib import runtime_profiles
+
     if not source.is_dir():
         return False
-    validate_no_symlinks(source)
+    runtime_profiles.validate_template_safety(source)
     copied_any = False
     destination.mkdir(parents=True, exist_ok=True)
     for current_root, dirs, files in os.walk(source):
@@ -106,10 +125,12 @@ def apply_templates(profile_root: Path, mappings: dict[str, Path]) -> tuple[bool
     after earlier template files have already been copied.
     """
 
+    from lib import runtime_profiles
+
     for dirname in mappings:
         source = profile_root / dirname
         if source.exists() or source.is_symlink():
-            validate_no_symlinks(source)
+            runtime_profiles.validate_template_safety(source)
 
     applied: list[str] = []
     for dirname, destination in mappings.items():

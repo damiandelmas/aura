@@ -42,6 +42,10 @@ def _compact_status(row: dict) -> dict:
             "liveness": row.get("liveness"),
             "managed_state": row.get("managed_state"),
             "runtime": row.get("runtime"),
+            "runtime_profile": row.get("runtime_profile"),
+            "runtime_profile_ref": row.get("runtime_profile_ref"),
+            "runtime_profile_runtime": row.get("runtime_profile_runtime"),
+            "runtime_profile_source": row.get("runtime_profile_source"),
             "runtime_session_binding": row.get("runtime_session_binding"),
             "runtime_session_id": row.get("runtime_session_id") or row.get("session_id"),
             "seat_instance_id": row.get("seat_instance_id"),
@@ -75,6 +79,16 @@ def _agent_status(row: dict | None) -> dict | None:
         "target": row.get("target") or _target_for(row),
         "status": row.get("status"),
         "runtime": row.get("runtime"),
+        **{
+            key: row.get(key)
+            for key in (
+                "runtime_profile",
+                "runtime_profile_ref",
+                "runtime_profile_runtime",
+                "runtime_profile_source",
+            )
+            if row.get(key)
+        },
         "session_id": row.get("runtime_session_id") or row.get("session_id"),
         "identity": identity.get("id"),
         "name": identity.get("name") or row.get("identity_label"),
@@ -402,6 +416,16 @@ def run(args):
             "seat": seat,
             "fleet": agent.get("fleet"),
             "runtime": agent.get("runtime"),
+            **{
+                key: agent.get(key)
+                for key in (
+                    "runtime_profile",
+                    "runtime_profile_ref",
+                    "runtime_profile_runtime",
+                    "runtime_profile_source",
+                )
+                if agent.get(key)
+            },
             "status": agent.get("status"),
             "terminal": agent.get("terminal"),
             "session_id": agent.get("session_id") or agent.get("runtime_session_id"),

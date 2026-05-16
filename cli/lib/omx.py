@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from lib import runtime_boxes
+from lib import omx_adapter, runtime_bases, runtime_boxes
 
 
 SETUP_MARKER = "aura-omx-box.json"
@@ -41,10 +41,14 @@ class OmxBox:
     profile_root: Path | None = None
     profile_applied: bool = False
     profile_templates_applied: tuple[str, ...] = ()
+    base_root: Path | None = None
+    base_applied: bool = False
+    base_templates_applied: tuple[str, ...] = ()
     setup_skipped: bool = False
     setup_error: str | None = None
     star_prompt_preseeded: bool = False
     source_cwd_trusted: bool = False
+    adapter: omx_adapter.OmxAdapterResult | None = None
 
     def launch_env(self, source_cwd: str) -> dict[str, str]:
         env = {
@@ -65,6 +69,7 @@ class OmxBox:
             "OMX_NOTIFY_FALLBACK": "0",
             "OMX_SOURCE_CWD": source_cwd,
             "AURA_OMX_BOX": str(self.root),
+            "PATH": omx_adapter.adapter_path_prefix(self.runtime),
         }
         if self.profile:
             env["AURA_OMX_PROFILE"] = self.profile
@@ -80,12 +85,17 @@ class OmxBox:
             "omx_box_omx_state": str(self.omx_state),
             "omx_box_team_state_root": str(self.omx_team_state_root),
             "omx_box_runtime": str(self.runtime),
+            "omx_box_behavior_source": "aura-runtime-base",
+            **({"omx_box_base_root": str(self.base_root)} if self.base_root else {}),
+            "omx_box_base_applied": self.base_applied,
+            "omx_box_base_templates_applied": list(self.base_templates_applied),
             "omx_box_setup_ran": self.setup_ran,
             "omx_box_setup_skipped": self.setup_skipped,
             "omx_box_auth_seeded": self.auth_seeded,
             "omx_box_config_seeded": self.config_seeded,
             "omx_box_star_prompt_preseeded": self.star_prompt_preseeded,
             "omx_box_source_cwd_trusted": self.source_cwd_trusted,
+            **(self.adapter.metadata() if self.adapter else {"omx_adapter_enabled": False}),
             **({"omx_profile": self.profile} if self.profile else {}),
             **({"omx_profile_root": str(self.profile_root)} if self.profile_root else {}),
             "omx_profile_applied": self.profile_applied,
@@ -150,13 +160,13 @@ def _apply_profile_template(profile: str | None, *, home: Path, codex_home: Path
 
 
 def _seed_codex_home(codex_home: Path) -> tuple[bool, bool]:
+    """Seed auth only; boxed OMX behavior comes from Aura bases/templates."""
+
     source = _source_codex_home()
     auth_seeded = False
-    config_seeded = False
     for name in ("auth.json", "credentials.json"):
         auth_seeded = _copy_if_present(source / name, codex_home / name, replace=True) or auth_seeded
-    config_seeded = _copy_if_present(source / "config.toml", codex_home / "config.toml", replace=False)
-    return auth_seeded, config_seeded
+    return auth_seeded, False
 
 
 def _toml_quoted_key(value: str) -> str:
@@ -176,23 +186,67 @@ def _preseed_star_prompt(home: Path) -> bool:
     return True
 
 
-def _trust_source_cwd(codex_home: Path, source_cwd: str) -> bool:
-    """Pre-trust the operator-selected cwd in the boxed Codex config."""
+def _git_toplevel(path: Path) -> Path | None:
+    git = shutil.which("git")
+    if not git:
+        return None
+    try:
+        result = subprocess.run(
+            [git, "-C", str(path), "rev-parse", "--show-toplevel"],
+            text=True,
+            capture_output=True,
+            timeout=5,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return Path(value).expanduser().resolve() if value else None
 
-    config_path = codex_home / "config.toml"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    cwd = str(Path(source_cwd).expanduser().resolve())
-    header = f"[projects.{_toml_quoted_key(cwd)}]"
-    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+
+def _codex_project_config_roots(path: Path) -> list[Path]:
+    """Return ancestor project roots that contain project-local Codex config."""
+
+    roots: list[Path] = []
+    for candidate in (path, *path.parents):
+        if (candidate / ".codex").is_dir():
+            roots.append(candidate)
+    return roots
+
+
+def _trust_project_path(existing: str, path: Path) -> tuple[str, bool]:
+    header = f"[projects.{_toml_quoted_key(str(path))}]"
     if header in existing:
         start = existing.index(header)
         next_table = existing.find("\n[", start + 1)
         block_end = next_table if next_table != -1 else len(existing)
         if 'trust_level = "trusted"' in existing[start:block_end]:
-            return True
+            return existing, False
     separator = "" if not existing or existing.endswith("\n") else "\n"
-    addition = f'{separator}\n{header}\ntrust_level = "trusted"\n'
-    config_path.write_text(existing + addition, encoding="utf-8")
+    return existing + f'{separator}\n{header}\ntrust_level = "trusted"\n', True
+
+
+def _trust_source_cwd(codex_home: Path, source_cwd: str) -> bool:
+    """Pre-trust the operator-selected cwd and effective Codex project root."""
+
+    config_path = codex_home / "config.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    cwd = Path(source_cwd).expanduser().resolve()
+    trust_paths = [cwd]
+    git_root = _git_toplevel(cwd)
+    if git_root and git_root not in trust_paths:
+        trust_paths.append(git_root)
+    for config_root in _codex_project_config_roots(cwd):
+        if config_root not in trust_paths:
+            trust_paths.append(config_root)
+    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    changed = False
+    for path in trust_paths:
+        existing, path_changed = _trust_project_path(existing, path)
+        changed = changed or path_changed
+    if changed:
+        config_path.write_text(existing, encoding="utf-8")
     return True
 
 
@@ -280,6 +334,15 @@ def prepare_box(*, fleet: str, seat: str, source_cwd: str, profile: str | None =
         codex_home=codex_home,
         omx_root=omx_root,
     )
+    base_path, base_applied, base_templates_applied = runtime_bases.apply_default_runtime_base(
+        "omx",
+        runtime_bases.template_mappings(
+            "omx",
+            home=home,
+            codex_home=codex_home,
+            omx_root=omx_root,
+        ),
+    )
     auth_seeded, config_seeded = _seed_codex_home(codex_home)
     already_ready = _has_setup(codex_home)
     force_setup = os.environ.get("AURA_OMX_BOX_FORCE_SETUP", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -287,7 +350,8 @@ def prepare_box(*, fleet: str, seat: str, source_cwd: str, profile: str | None =
     setup_skipped = False
     setup_error = None
     star_prompt_preseeded = _preseed_star_prompt(home)
-    if _setup_disabled():
+    setup_disabled = _setup_disabled()
+    if setup_disabled:
         setup_skipped = True
     elif force_setup or not already_ready:
         try:
@@ -301,6 +365,9 @@ def prepare_box(*, fleet: str, seat: str, source_cwd: str, profile: str | None =
             raise
 
     source_cwd_trusted = _trust_source_cwd(codex_home, source_cwd)
+    adapter_result = omx_adapter.apply_adapter(root=root, codex_home=codex_home, runtime=runtime)
+    if adapter_result.error and not setup_disabled:
+        raise RuntimeError(f"omx adapter failed: {adapter_result.error}")
 
     return OmxBox(
         root=root,
@@ -317,8 +384,12 @@ def prepare_box(*, fleet: str, seat: str, source_cwd: str, profile: str | None =
         profile_root=profile_path,
         profile_applied=profile_applied,
         profile_templates_applied=profile_templates_applied,
+        base_root=base_path,
+        base_applied=base_applied,
+        base_templates_applied=base_templates_applied,
         setup_skipped=setup_skipped,
         setup_error=setup_error,
         star_prompt_preseeded=star_prompt_preseeded,
         source_cwd_trusted=source_cwd_trusted,
+        adapter=adapter_result,
     )

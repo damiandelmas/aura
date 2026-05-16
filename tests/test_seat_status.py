@@ -184,3 +184,27 @@ units:
     assert row["org"]["program"] == "archeology"
     assert "identity_missing" not in row["risk_flags"]
     assert "org_position_missing" not in row["risk_flags"]
+
+
+def test_status_includes_runtime_profile_metadata(aura_state):
+    from lib import registry, seat_status
+
+    registry.upsert_agent({
+        "name": "profiled-worker",
+        "fleet": "runway-engineering",
+        "runtime": "codex",
+        "registered": True,
+        "seat_instance_id": "si_status004",
+        "pane_ref": "tmux:runway-engineering:%222",
+        "runtime_profile": "aura-worker",
+        "runtime_profile_ref": "codex/aura-worker",
+        "runtime_profile_runtime": "codex",
+        "runtime_profile_source": "desks",
+    })
+
+    row = seat_status.build_seat_status("runway-engineering:profiled-worker", terminal=FakeTerminal)
+
+    assert row["runtime_profile"] == "aura-worker"
+    assert row["runtime_profile_ref"] == "codex/aura-worker"
+    assert row["runtime_profile_runtime"] == "codex"
+    assert row["runtime_profile_source"] == "desks"

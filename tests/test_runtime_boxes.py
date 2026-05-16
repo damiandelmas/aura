@@ -103,3 +103,105 @@ def test_runtime_box_templates_reject_directory_symlink(tmp_path):
         )
 
     assert not (tmp_path / "box" / "codex-home" / "linked-dir").exists()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "dev",
+        "aura-worker",
+        "profile_01",
+        "gpt-5.5",
+    ],
+)
+def test_validate_logical_segment_accepts_safe_ids(value):
+    from lib import runtime_boxes
+
+    assert runtime_boxes.validate_logical_segment(value, label="profile") == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        ".",
+        "..",
+        "../secret",
+        "/tmp/profile",
+        "codex/dev",
+        "codex\\dev",
+        "dev profile",
+        "dev/profile",
+    ],
+)
+def test_validate_logical_segment_rejects_path_like_or_lossy_ids(value):
+    from lib import runtime_boxes
+
+    with pytest.raises(ValueError, match="profile must be a single safe logical segment"):
+        runtime_boxes.validate_logical_segment(value, label="profile")
+
+
+def test_codex_box_pretrusts_source_cwd(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_CODEX_SOURCE_CODEX_HOME", str(tmp_path / "source-codex"))
+    source_cwd = tmp_path / "project"
+    source_cwd.mkdir()
+
+    from lib import codex
+
+    box = codex.prepare_box(fleet="quick", seat="codex", source_cwd=str(source_cwd), profile=None)
+
+    config = (box.codex_home / "config.toml").read_text(encoding="utf-8")
+    assert box.source_cwd_trusted is True
+    assert box.metadata()["codex_box_source_cwd_trusted"] is True
+    assert f'[projects."{source_cwd}"]' in config
+    assert 'trust_level = "trusted"' in config
+
+
+def test_codex_box_uses_aura_base_config_and_auth_only_from_global(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    source = tmp_path / "source-codex"
+    source.mkdir()
+    (source / "config.toml").write_text('[tui]\nstatus_line = ["git-branch"]\n', encoding="utf-8")
+    (source / "auth.json").write_text('{"token":"secret"}\n', encoding="utf-8")
+    monkeypatch.setenv("AURA_CODEX_SOURCE_CODEX_HOME", str(source))
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+
+    from lib import codex
+
+    box = codex.prepare_box(fleet="fleet", seat="seat", source_cwd=str(cwd), profile=None)
+
+    config = (box.codex_home / "config.toml").read_text(encoding="utf-8")
+    assert "context-remaining" in config
+    assert 'status_line = ["git-branch"]' not in config
+    assert (box.codex_home / "auth.json").is_file()
+    meta = box.metadata()
+    assert meta["codex_box_behavior_source"] == "aura-runtime-base"
+    assert meta["codex_box_auth_source"] == "user-global-auth-only"
+    assert meta["codex_box_config_seeded"] is False
+
+
+def test_omx_box_uses_aura_base_config_and_auth_only_from_global(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
+    source = tmp_path / "source-codex"
+    source.mkdir()
+    (source / "config.toml").write_text('[tui]\nstatus_line = ["git-branch"]\n', encoding="utf-8")
+    (source / "credentials.json").write_text('{"token":"secret"}\n', encoding="utf-8")
+    monkeypatch.setenv("AURA_OMX_SOURCE_CODEX_HOME", str(source))
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+
+    from lib import omx
+
+    box = omx.prepare_box(fleet="fleet", seat="seat", source_cwd=str(cwd), profile=None)
+
+    config = (box.codex_home / "config.toml").read_text(encoding="utf-8")
+    assert "context-remaining" in config
+    assert 'status_line = ["git-branch"]' not in config
+    assert (box.codex_home / "credentials.json").is_file()
+    meta = box.metadata()
+    assert meta["omx_box_behavior_source"] == "aura-runtime-base"
+    assert meta["omx_box_config_seeded"] is False
+    assert str(meta["omx_box_team_state_root"]).endswith("omx-root/.omx/state")
