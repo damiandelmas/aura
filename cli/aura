@@ -262,6 +262,27 @@ def main():
                                 help="Restart even without a safe latest report boundary")
     p_seat_restart.add_argument("--dry-run", action="store_true",
                                 help="Show restart plan without stopping or relaunching")
+    p_seat_rollover = seat_sub.add_parser(
+        "rollover",
+        help="Start a fresh runtime session for a seat while preserving rollover evidence",
+    )
+    p_seat_rollover.add_argument("target", help="Seat ref, usually fleet:seat")
+    p_seat_rollover.add_argument("--cwd", help="Override relaunch working directory")
+    p_seat_rollover.add_argument(
+        "--runtime",
+        choices=["claude-code", "claude", "hermes", "codex", "omx", "opencode", "openclaw", "shell", "command"],
+        help="Override runtime for relaunch",
+    )
+    p_seat_rollover.add_argument("--prompt", help="Optional first prompt for the fresh runtime session")
+    p_seat_rollover.add_argument(
+        "--reason",
+        default="session rollover",
+        help="Reason recorded in the rollover receipt",
+    )
+    p_seat_rollover.add_argument("--force", action="store_true",
+                                 help="Rollover even without a safe latest report boundary")
+    p_seat_rollover.add_argument("--dry-run", action="store_true",
+                                 help="Show rollover plan without stopping or relaunching")
     p_seat_cut = seat_sub.add_parser("cut", help="End one seat intentionally")
     p_seat_cut.add_argument("name", help="Seat ref, usually fleet:seat")
     p_seat_cut.add_argument("--force", action="store_true",

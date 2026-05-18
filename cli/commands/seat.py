@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -670,7 +671,9 @@ def _restart_plan(args, record: dict) -> dict:
         return {"ok": False, "phase": "build_plan", "error": "seat has no runtime; cannot reconstruct restart command"}
     if runtime == "command" and not command:
         return {"ok": False, "phase": "build_plan", "error": "command runtime has no recorded command; refusing restart"}
-    if not command:
+    fresh_session = bool(getattr(args, "fresh_session", False))
+    should_rebuild_command = fresh_session and runtime != "command"
+    if should_rebuild_command or not command:
         try:
             from lib import runtimes
 
@@ -684,6 +687,12 @@ def _restart_plan(args, record: dict) -> dict:
                 model=record.get("model"),
             )
         except Exception as exc:
+            if should_rebuild_command:
+                return {
+                    "ok": False,
+                    "phase": "build_plan",
+                    "error": f"cannot reconstruct fresh launch command: {exc}",
+                }
             return {"ok": False, "phase": "build_plan", "error": f"cannot reconstruct launch command: {exc}"}
     if not cwd:
         return {"ok": False, "phase": "build_plan", "error": "seat has no cwd/workdir; refusing restart"}
@@ -704,7 +713,9 @@ def _restart_plan(args, record: dict) -> dict:
     if role_cwd and not getattr(args, "cwd", None):
         cwd_path = Path(role_cwd)
 
-    resume_session_id = record.get("runtime_session_id") or record.get("session_id")
+    resume_session_id = None
+    if not fresh_session:
+        resume_session_id = record.get("runtime_session_id") or record.get("session_id")
     try:
         from lib import runtimes
 
@@ -728,6 +739,7 @@ def _restart_plan(args, record: dict) -> dict:
         "role_meta": role_meta,
         "prompt": prompt,
         "resume_session_id": resume_session_id,
+        "fresh_session": fresh_session,
     }
 
 
@@ -1210,6 +1222,119 @@ def _restart(args, registry, terminal) -> dict:
         "runtime_capsule_launch": updated.get("runtime_capsule_launch"),
         "runtime_capsule_session": updated.get("runtime_capsule_session"),
         "warnings": warnings,
+    }
+
+
+def _rollover(args, registry, terminal) -> dict:
+    before = registry.get_agent(args.target)
+    if not before:
+        return {
+            "ok": False,
+            "schema": "aura.seat_rollover.v1",
+            "phase": "resolve_failed",
+            "target": args.target,
+            "error": "seat not found",
+        }
+
+    rollover_id = f"aura-seat-rollover-{uuid.uuid4().hex[:16]}"
+    restart_args = argparse.Namespace(**vars(args))
+    restart_args.fresh_session = True
+    restart_result = _restart(restart_args, registry, terminal)
+    reason = getattr(args, "reason", None) or "session rollover"
+
+    if not restart_result.get("ok"):
+        return {
+            **restart_result,
+            "schema": "aura.seat_rollover.v1",
+            "rollover_id": rollover_id,
+            "reason": reason,
+            "restart_error_schema": restart_result.get("schema"),
+        }
+
+    if restart_result.get("dry_run"):
+        return {
+            **restart_result,
+            "schema": "aura.seat_rollover.v1",
+            "rollover_id": rollover_id,
+            "reason": reason,
+            "restart_schema": restart_result.get("schema"),
+        }
+
+    seat_name = before.get("name") or before.get("seat")
+    canonical_ref = registry.seat_ref(before.get("fleet"), seat_name)
+    after = registry.get_agent(args.target) or registry.get_agent(canonical_ref) or {}
+    updated_after = after
+    if after:
+        updated_after = registry.upsert_agent({
+            **after,
+            "last_rollover_id": rollover_id,
+            "last_rollover_at": registry.now_iso(),
+            "last_rollover_reason": reason,
+            "rollover_count": int(before.get("rollover_count") or 0) + 1,
+        })
+
+    rollover_event = {}
+    rollover_warnings = list(restart_result.get("warnings") or [])
+    try:
+        from lib import session_ledger
+
+        rollover_event = session_ledger.append_record({
+            "event": "seat_rollover",
+            "kind": "aura.seat.rollover",
+            "rollover_id": rollover_id,
+            "restart_id": restart_result.get("restart_id"),
+            "target": args.target,
+            "seat_ref": restart_result.get("seat_ref"),
+            "reason": reason,
+            "old_runtime_session_id": (restart_result.get("old") or {}).get("runtime_session_id"),
+            "new_runtime_session_id": (restart_result.get("new") or {}).get("runtime_session_id"),
+            "old_seat_instance_id": (restart_result.get("old") or {}).get("seat_instance_id"),
+            "new_seat_instance_id": (restart_result.get("new") or {}).get("seat_instance_id"),
+            "old_pane_ref": (restart_result.get("old") or {}).get("pane_ref"),
+            "new_pane_ref": (restart_result.get("new") or {}).get("pane_ref"),
+            "actor": "cli",
+            "forced": bool(getattr(args, "force", False)),
+        })
+        session_ledger.append_seat_event(
+            event="seat_rollover",
+            before=before,
+            after=updated_after or after,
+            evidence={
+                "rollover_id": rollover_id,
+                "restart_id": restart_result.get("restart_id"),
+                "reason": reason,
+                "old": restart_result.get("old"),
+                "new": restart_result.get("new"),
+                "fresh_session": True,
+                "session_observation": restart_result.get("session_observation"),
+            },
+            source_command="aura seat rollover",
+            rollover_id=rollover_id,
+            restart_id=restart_result.get("restart_id"),
+            old_runtime_session_id=(restart_result.get("old") or {}).get("runtime_session_id"),
+            new_runtime_session_id=(restart_result.get("new") or {}).get("runtime_session_id"),
+        )
+    except Exception as exc:
+        rollover_event = {}
+        rollover_warnings.append(f"rollover-ledger-write-failed: {exc}")
+
+    return {
+        "ok": True,
+        "schema": "aura.seat_rollover.v1",
+        "target": args.target,
+        "seat_ref": restart_result.get("seat_ref"),
+        "rollover_id": rollover_id,
+        "reason": reason,
+        "old": restart_result.get("old"),
+        "new": restart_result.get("new"),
+        "restart_id": restart_result.get("restart_id"),
+        "seat_history_event_id": rollover_event.get("event_id") or rollover_id,
+        "restart_event_id": restart_result.get("seat_history_event_id"),
+        "session_observation": restart_result.get("session_observation"),
+        "runtime_capsule_ref": restart_result.get("runtime_capsule_ref"),
+        "runtime_capsule_launch": restart_result.get("runtime_capsule_launch"),
+        "runtime_capsule_session": restart_result.get("runtime_capsule_session"),
+        "warnings": rollover_warnings,
     }
 
 
@@ -2056,6 +2181,10 @@ def run(args):
         from lib import terminal
 
         return _restart(args, registry, terminal)
+    if action == "rollover":
+        from lib import terminal
+
+        return _rollover(args, registry, terminal)
     if action == "adopt":
         target = getattr(args, "target", None)
         fleet, _, error = _normalize_adoption_target(target)

@@ -423,3 +423,103 @@ def test_restart_requires_report_boundary_without_force(monkeypatch, tmp_path):
     assert result["ok"] is False
     assert result["phase"] == "handoff_missing"
     assert RestartTerminal.killed == []
+
+
+def test_rollover_starts_fresh_session_and_records_rollover(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import seat
+    from lib import registry
+
+    RestartTerminal.reset()
+    registry.upsert_agent(_record(
+        tmp_path,
+        runtime="codex",
+        command="codex --dangerously-bypass-approvals-and-sandbox",
+        seat_instance_id="si_oldrollover1",
+    ))
+
+    result = seat._rollover(_args(reason="daily boundary", prompt="fresh day"), registry, RestartTerminal)
+
+    assert result["ok"] is True
+    assert result["schema"] == "aura.seat_rollover.v1"
+    assert result["reason"] == "daily boundary"
+    assert result["old"]["runtime_session_id"] == "old-session"
+    assert result["new"]["seat_instance_id"] != "si_oldrollover1"
+    assert " resume old-session" not in RestartTerminal.respawned[0][2]
+    assert RestartTerminal.respawned[0][2] == "codex --dangerously-bypass-approvals-and-sandbox"
+    assert "fresh day" in RestartTerminal.sent[0][1]
+
+    updated = registry.get_agent("engineer", fleet="unitfleet")
+    assert updated["previous_runtime_session_id"] == "old-session"
+    assert updated["restart_from_session_id"] == "old-session"
+    assert updated["runtime_session_id"] is None
+    assert updated["last_rollover_reason"] == "daily boundary"
+    assert updated["rollover_count"] == 1
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "state" / "registry" / "session-ledger.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(row["event"] == "seat_restart" for row in rows)
+    assert any(row["event"] == "seat_rollover" for row in rows)
+    rollover_history = [
+        row
+        for row in rows
+        if row.get("event") == "seat_rollover" and row.get("schema") == "aura.seat_history.v1"
+    ][-1]
+    assert rollover_history["evidence"]["old"]["runtime_session_id"] == "old-session"
+    assert rollover_history["evidence"]["fresh_session"] is True
+
+
+def test_rollover_dry_run_does_not_mutate_registry_or_terminal(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import seat
+    from lib import registry
+
+    RestartTerminal.reset()
+    registry.upsert_agent(_record(
+        tmp_path,
+        runtime="codex",
+        command="codex --dangerously-bypass-approvals-and-sandbox",
+    ))
+
+    result = seat._rollover(_args(dry_run=True, reason="inspect only"), registry, RestartTerminal)
+
+    assert result["ok"] is True
+    assert result["schema"] == "aura.seat_rollover.v1"
+    assert result["dry_run"] is True
+    assert result["reason"] == "inspect only"
+    assert result["plan"]["fresh_session"] is True
+    assert RestartTerminal.respawned == []
+    assert RestartTerminal.sent == []
+    assert registry.get_agent("engineer", fleet="unitfleet")["runtime_session_id"] == "old-session"
+
+
+def test_rollover_rebuilds_fresh_command_after_restart_persisted_resume(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import seat
+    from lib import registry
+
+    RestartTerminal.reset()
+    registry.upsert_agent(_record(
+        tmp_path,
+        runtime="codex",
+        command="codex --dangerously-bypass-approvals-and-sandbox",
+    ))
+
+    restart_result = seat._restart(_args(prompt="normal restart"), registry, RestartTerminal)
+    assert restart_result["ok"] is True
+    assert RestartTerminal.respawned[-1][2].endswith(" resume old-session")
+
+    RestartTerminal.sent = []
+    rollover_result = seat._rollover(_args(reason="fresh boundary"), registry, RestartTerminal)
+
+    assert rollover_result["ok"] is True
+    assert RestartTerminal.respawned[-1][2] == "codex --dangerously-bypass-approvals-and-sandbox"
+    assert " resume old-session" not in RestartTerminal.respawned[-1][2]
