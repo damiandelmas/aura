@@ -31,7 +31,7 @@ def _args(runtime="codex", **overrides):
     return argparse.Namespace(**values)
 
 
-def test_quick_default_codex_creates_profile_and_delegates_boxed_spawn(monkeypatch, tmp_path):
+def test_quick_default_codex_creates_profile_and_delegates_package_spawn(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
     project = tmp_path / "project"
     project.mkdir()
@@ -59,14 +59,19 @@ def test_quick_default_codex_creates_profile_and_delegates_boxed_spawn(monkeypat
     assert captured["runtime"] == "codex"
     assert captured["runtime_profile"] == "codex/default"
     assert captured["boxed"] is True
+    assert captured["identity_provider"] == "aura-agent"
+    assert captured["_agent_package"]["alias"] == "quick-codex"
+    assert Path(captured["_agent_package"]["root"]).is_dir()
     assert captured["fleet"] == "quick-2026-05-14-1420"
     assert captured["name"] == "codex-abc123"
     assert captured["cwd"] == str(Path.cwd())
+    assert result["quick_agent_package_alias"] == "quick-codex"
+    assert result["quick_agent_package_root"] == captured["_agent_package"]["root"]
     assert not (Path.cwd() / ".codex").exists()
     assert not (Path.cwd() / ".omx").exists()
 
 
-def test_quick_default_omx_uses_legacy_profile_root_and_omx_profile(monkeypatch, tmp_path):
+def test_quick_default_omx_uses_package_body_and_runtime_profile(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
     from commands import quick
@@ -82,10 +87,13 @@ def test_quick_default_omx_uses_legacy_profile_root_and_omx_profile(monkeypatch,
     assert result["ok"] is True
     assert (profile_root / "codex-home-template").is_dir()
     assert captured["runtime"] == "omx"
-    assert captured["omx_profile"] == "default"
-    assert captured["runtime_profile"] is None
+    assert captured["omx_profile"] is None
+    assert captured["runtime_profile"] == "omx/default"
     assert captured["boxed"] is False
     assert captured["name"] == "omx-feed01"
+    assert captured["identity_provider"] == "aura-agent"
+    assert captured["_agent_package"]["alias"] == "quick-omx"
+    assert result["quick_agent_package_alias"] == "quick-omx"
 
 
 def test_quick_new_generated_profile_uses_safe_name(monkeypatch, tmp_path):
@@ -102,7 +110,38 @@ def test_quick_new_generated_profile_uses_safe_name(monkeypatch, tmp_path):
 
     assert result["quick_profile"] == "quick-2026-05-14-1420-beaded"
     assert captured["runtime_profile"] == "codex/quick-2026-05-14-1420-beaded"
+    assert captured["_agent_package"]["alias"] == "quick-codex"
     assert (tmp_path / "state" / "runtime-profiles" / "codex" / "quick-2026-05-14-1420-beaded").is_dir()
+
+
+def test_quick_reuses_canonical_agent_package(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import quick
+
+    roots = []
+
+    def fake_spawn_run(args):
+        roots.append(args._agent_package["root"])
+        return {
+            "ok": True,
+            "name": args.name,
+            "fleet": args.fleet,
+            "runtime": args.runtime,
+            "runtime_capsule_ref": args._agent_package["root"],
+        }
+
+    monkeypatch.setattr(quick.spawn, "run", fake_spawn_run)
+    monkeypatch.setattr(quick, "_now_minute", lambda: "2026-05-14-1420")
+    monkeypatch.setattr(quick, "_shortid", lambda: "abc123")
+
+    first = quick.run(_args("omx", cwd=str(tmp_path / "one")))
+    second = quick.run(_args("omx", cwd=str(tmp_path / "two")))
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert roots[0] == roots[1]
+    assert first["quick_agent_package_id"] == second["quick_agent_package_id"]
 
 
 def test_quick_rejects_path_like_profile_before_spawn(monkeypatch, tmp_path):
@@ -173,6 +212,7 @@ def test_quick_hermes_profile_maps_to_native_runtime_profile(monkeypatch, tmp_pa
     assert captured["runtime_profile"] == "hermes/aura-operator"
     assert captured["boxed"] is False
     assert captured["omx_profile"] is None
+    assert captured["_agent_package"] is None
 
 
 def test_quick_attach_switches_existing_tmux_client(monkeypatch):

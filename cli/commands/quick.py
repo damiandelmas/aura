@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from commands import spawn
-from lib import runtime_bases, runtime_boxes
+from lib import agent_packages, runtime_bases, runtime_boxes
 
 SUPPORTED_RUNTIMES = {"codex", "omx", "hermes"}
 
@@ -157,6 +157,59 @@ def _resolve_profile(args) -> tuple[str | None, dict[str, object] | None]:
     return None, None
 
 
+def _profile_ref(runtime: str, profile: str | None) -> str | None:
+    if not profile:
+        return None
+    if runtime in {"codex", "omx", "hermes"}:
+        return f"{runtime}/{profile}"
+    return None
+
+
+def _quick_agent_alias(runtime: str) -> str:
+    return f"quick-{runtime}"
+
+
+def _quick_agent_address(runtime: str) -> str:
+    return f"aura:quick:{runtime}"
+
+
+def _ensure_quick_agent(
+    runtime: str,
+    *,
+    profile_ref: str | None,
+    cwd: str,
+    fleet: str,
+    seat: str,
+) -> dict[str, object] | None:
+    """Create or reuse the canonical package-native quick body for a runtime."""
+
+    if runtime not in {"codex", "omx"}:
+        return None
+    alias = _quick_agent_alias(runtime)
+    try:
+        record = agent_packages.resolve(alias)
+    except FileNotFoundError:
+        created = agent_packages.create(
+            address=_quick_agent_address(runtime),
+            runtime=runtime,
+            profile=profile_ref,
+            cwd=cwd,
+            fleet=fleet,
+            seat=seat,
+            alias=alias,
+        )
+        record = dict(created["agent"])
+    if record.get("runtime") != runtime:
+        raise ValueError(
+            f"quick agent alias {alias!r} resolves to runtime {record.get('runtime')!r}, "
+            f"expected {runtime!r}"
+        )
+    return {
+        "agent_id": record["agent_id"],
+        "address": record["address"],
+        "alias": record.get("alias"),
+        "root": record["root"],
+    }
 
 def attach_to_result(result: dict[str, object]) -> str | None:
     """Attach or switch the current terminal to a quick launch fleet.
@@ -181,19 +234,12 @@ def attach_to_result(result: dict[str, object]) -> str | None:
         return f"tmux attach failed: {exc}"
     return None
 
-def _spawn_args(args, *, profile: str | None) -> argparse.Namespace:
+
+def _spawn_args(args, *, profile: str | None, quick_agent: dict[str, object] | None) -> argparse.Namespace:
     runtime = _validate_runtime(args.runtime)
-    runtime_profile = None
+    runtime_profile = _profile_ref(runtime, profile)
     omx_profile = None
     boxed = runtime == "codex"
-    if profile:
-        if runtime == "codex":
-            runtime_profile = f"codex/{profile}"
-            boxed = True
-        elif runtime == "omx":
-            omx_profile = profile
-        elif runtime == "hermes":
-            runtime_profile = f"hermes/{profile}"
     return argparse.Namespace(
         name=args.seat or generated_seat(runtime),
         manifest=None,
@@ -203,9 +249,6 @@ def _spawn_args(args, *, profile: str | None) -> argparse.Namespace:
         knowledge=None,
         memory=None,
         resume_session=None,
-        identity_provider=None,
-        identity_id=None,
-        identity_label=None,
         at=None,
         slice=None,
         prompt=args.prompt,
@@ -224,13 +267,33 @@ def _spawn_args(args, *, profile: str | None) -> argparse.Namespace:
         boxed=boxed,
         omx_profile=omx_profile,
         launch_command=None,
+        identity_provider="aura-agent" if quick_agent else None,
+        identity_id=quick_agent.get("agent_id") if quick_agent else None,
+        identity_label=quick_agent.get("address") if quick_agent else None,
+        fork_session=None,
+        _agent_package=quick_agent,
     )
 
 
 def run(args):
     try:
         profile, profile_meta = _resolve_profile(args)
-        spawn_args = _spawn_args(args, profile=profile)
+        runtime = _validate_runtime(args.runtime)
+        cwd = args.cwd or os.getcwd()
+        fleet = args.fleet or default_fleet()
+        seat = args.seat or generated_seat(runtime)
+        quick_agent = _ensure_quick_agent(
+            runtime,
+            profile_ref=_profile_ref(runtime, profile),
+            cwd=cwd,
+            fleet=fleet,
+            seat=seat,
+        )
+        args_for_spawn = argparse.Namespace(**vars(args))
+        args_for_spawn.cwd = cwd
+        args_for_spawn.fleet = fleet
+        args_for_spawn.seat = seat
+        spawn_args = _spawn_args(args_for_spawn, profile=profile, quick_agent=quick_agent)
     except Exception as exc:
         return {"ok": False, "error": "quick-launch-invalid", "detail": str(exc)}
 
@@ -239,6 +302,25 @@ def run(args):
         result["quick"] = True
         result["quick_runtime"] = spawn_args.runtime
         result["quick_profile"] = profile
+        if quick_agent:
+            if result.get("ok"):
+                agent_packages.append_spawn_history(
+                    str(quick_agent["agent_id"]),
+                    {
+                        "fleet": result.get("fleet"),
+                        "seat": result.get("name"),
+                        "runtime": result.get("runtime"),
+                        "cwd": result.get("cwd") or result.get("workdir") or spawn_args.cwd,
+                        "aura_launch_id": result.get("aura_launch_id"),
+                        "seat_instance_id": result.get("seat_instance_id"),
+                        "runtime_capsule_ref": result.get("runtime_capsule_ref") or quick_agent.get("root"),
+                        "quick": True,
+                    },
+                )
+            result["quick_agent_package_id"] = quick_agent.get("agent_id")
+            result["quick_agent_package_address"] = quick_agent.get("address")
+            result["quick_agent_package_alias"] = quick_agent.get("alias")
+            result["quick_agent_package_root"] = quick_agent.get("root")
         if profile_meta:
             result["quick_profile_meta"] = profile_meta
     return result
