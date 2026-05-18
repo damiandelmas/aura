@@ -47,6 +47,42 @@ def test_codex_fork_command_uses_native_fork_and_quotes_prompt():
     )
 
 
+def test_initial_prompt_argv_runtime_commands_quote_prompt():
+    import shlex
+
+    from lib import runtimes
+
+    codex_runtime, codex_spec = runtimes.resolve_runtime("codex")
+    omx_runtime, omx_spec = runtimes.resolve_runtime("omx")
+    claude_runtime, claude_spec = runtimes.resolve_runtime("claude-code")
+    shell_runtime, shell_spec = runtimes.resolve_runtime("shell")
+
+    assert runtimes.supports_initial_prompt_argv(codex_runtime, codex_spec) is True
+    assert runtimes.supports_initial_prompt_argv(omx_runtime, omx_spec) is True
+    assert runtimes.supports_initial_prompt_argv(claude_runtime, claude_spec) is True
+    assert runtimes.supports_initial_prompt_argv(shell_runtime, shell_spec) is False
+
+    codex_prompt = "say 'ready'"
+    assert runtimes.build_command(
+        "codex",
+        codex_spec,
+        name="worker",
+        prompt=codex_prompt,
+    ) == f"codex --dangerously-bypass-approvals-and-sandbox {shlex.quote(codex_prompt)}"
+    assert runtimes.build_command(
+        "omx",
+        omx_spec,
+        name="worker",
+        prompt="say ready",
+    ) == "omx --direct --madmax 'say ready'"
+    assert runtimes.build_command(
+        "shell",
+        shell_spec,
+        name="worker",
+        prompt="not native",
+    ) == "bash"
+
+
 def test_write_submit_retry_detection_is_narrow():
     from lib.terminal_submit import delivery_blocker, needs_submit_retry, retry_submit
 

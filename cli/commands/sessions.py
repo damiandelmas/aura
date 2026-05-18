@@ -301,8 +301,8 @@ def _codex_session_from_nonce(
     *,
     expected_cwd: str | None = None,
     jsonl_path: str | None = None,
+    record: dict | None = None,
 ) -> dict:
-    sessions_root = Path.home() / ".codex" / "sessions"
     if jsonl_path:
         pinned = Path(jsonl_path).expanduser()
         if not pinned.exists():
@@ -312,20 +312,49 @@ def _codex_session_from_nonce(
             found.update({"nonce": nonce, "matches": 1})
         return found
 
-    if not sessions_root.exists():
+    roots: list[Path] = []
+    try:
+        from lib import runtime_capsules
+
+        roots.extend(runtime_capsules.capsule_codex_session_roots(record))
+    except Exception:
+        pass
+    roots.append(Path.home() / ".codex" / "sessions")
+
+    seen = set()
+    existing_roots = []
+    for root in roots:
+        resolved = str(root.expanduser())
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if root.exists():
+            existing_roots.append(root)
+    if not existing_roots:
         return {"ok": False, "error": "codex sessions directory not found", "nonce": nonce}
 
+    paths: list[Path] = []
     try:
-        result = subprocess.run(
-            ["rg", "-l", nonce, str(sessions_root), "-g", "*.jsonl"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        for root in existing_roots:
+            result = subprocess.run(
+                ["rg", "-l", nonce, str(root), "-g", "*.jsonl"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            paths.extend(Path(line) for line in result.stdout.splitlines() if line.strip())
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "error": f"nonce search failed: {exc}", "nonce": nonce}
 
-    paths = [Path(line) for line in result.stdout.splitlines() if line.strip()]
+    deduped_paths: list[Path] = []
+    seen_paths = set()
+    for path in paths:
+        key = str(path)
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        deduped_paths.append(path)
+    paths = deduped_paths
     if not paths:
         return {"ok": False, "error": "nonce not found in Codex session JSONL", "nonce": nonce}
 
@@ -437,6 +466,7 @@ def _bind_nonce(args) -> dict:
         nonce,
         expected_cwd=expected_cwd,
         jsonl_path=getattr(args, "jsonl", None),
+        record=previous,
     )
     if not found.get("ok"):
         return found
@@ -545,10 +575,10 @@ def _bind_hook(args) -> dict:
         return {"ok": False, "error": "bind-hook requires --session-id"}
 
     runtime = getattr(args, "runtime", None) or os.environ.get("AURA_RUNTIME") or "codex"
-    if runtime != "codex":
+    if runtime not in {"codex", "omx"}:
         return {
             "ok": False,
-            "error": "bind-hook currently supports codex runtime only",
+            "error": "bind-hook currently supports codex-backed runtimes only",
             "runtime": runtime,
         }
 
@@ -657,6 +687,20 @@ def _bind_registry_session(
         "runtime_session_cwd": cwd,
         "registered": True,
     })
+    capsule_session = {}
+    try:
+        from lib import runtime_capsules
+
+        capsule_record = {**updated, **(extra or {})}
+        capsule_session = runtime_capsules.write_runtime_session(capsule_record)
+        if capsule_session.get("ok"):
+            updated = registry.upsert_agent({
+                **updated,
+                "runtime_capsule_ref": capsule_session.get("capsule_root"),
+                "runtime_capsule_session": capsule_session.get("path"),
+            })
+    except Exception as exc:
+        capsule_session = {"ok": False, "reason": "capsule-session-write-failed", "error": str(exc)}
     session_ledger.append_record({
         "event": event,
         "seat": seat,
@@ -702,6 +746,11 @@ def _bind_registry_session(
         "registry_updated": True,
         "desks_session_recorded": bool(desks_result.get("ok")),
     }
+    if capsule_session.get("ok"):
+        result.update({
+            "runtime_capsule_ref": capsule_session.get("capsule_root"),
+            "runtime_capsule_session": capsule_session.get("path"),
+        })
     if desks_result.get("ok") or not desks_result.get("skipped"):
         result["desks_session"] = desks_result
     if extra:

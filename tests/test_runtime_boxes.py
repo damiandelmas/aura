@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from pathlib import Path
@@ -158,6 +159,35 @@ def test_codex_box_pretrusts_source_cwd(monkeypatch, tmp_path):
     assert 'trust_level = "trusted"' in config
 
 
+def test_codex_box_installs_quiet_aura_session_start_hook(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_CODEX_SOURCE_CODEX_HOME", str(tmp_path / "source-codex"))
+    source_cwd = tmp_path / "project"
+    source_cwd.mkdir()
+
+    from lib import codex
+
+    box = codex.prepare_box(fleet="quick", seat="codex", source_cwd=str(source_cwd), profile=None)
+
+    hooks_path = box.codex_home / "hooks.json"
+    hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+    session_start = hooks["hooks"]["SessionStart"]
+    aura_hooks = [
+        hook
+        for entry in session_start
+        for hook in entry.get("hooks", [])
+        if "codex_bind_hook.py" in hook.get("command", "")
+    ]
+    assert aura_hooks
+    assert session_start[-1]["matcher"] == "startup|resume|clear"
+    trust_keys = [key for key in hooks["state"] if key.startswith(f"{hooks_path}:session_start:")]
+    assert trust_keys
+    config = (box.codex_home / "config.toml").read_text(encoding="utf-8")
+    assert f'[hooks.state."{trust_keys[-1]}"]' in config
+    assert "codex_bind_hook.py" in box.metadata()["codex_box_aura_hook_command"]
+    assert box.metadata()["codex_box_aura_hook_installed"] is True
+
+
 def test_codex_box_uses_aura_base_config_and_auth_only_from_global(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
     source = tmp_path / "source-codex"
@@ -173,8 +203,8 @@ def test_codex_box_uses_aura_base_config_and_auth_only_from_global(monkeypatch, 
     box = codex.prepare_box(fleet="fleet", seat="seat", source_cwd=str(cwd), profile=None)
 
     config = (box.codex_home / "config.toml").read_text(encoding="utf-8")
-    assert "context-remaining" in config
-    assert 'status_line = ["git-branch"]' not in config
+    assert 'status_line = ["model-with-reasoning", "git-branch", "current-dir", "session-id"]' in config
+    assert "context-remaining" not in config
     assert (box.codex_home / "auth.json").is_file()
     meta = box.metadata()
     assert meta["codex_box_behavior_source"] == "aura-runtime-base"

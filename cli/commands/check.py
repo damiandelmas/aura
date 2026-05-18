@@ -46,12 +46,34 @@ def run(args):
         launch_id=(agent or {}).get("aura_launch_id"),
     ) if terminal_alive else {}
     if reg_agent and session_info:
-        registry.upsert_agent(runtime_session.merge(dict(reg_agent), session_info))
+        merged_agent = registry.upsert_agent(runtime_session.merge(dict(reg_agent), session_info))
+        reg_agent = merged_agent
+        agent = {**(agent or {}), **merged_agent}
 
     display_name = (agent or {}).get("name") or (args.name.split(":", 1)[1] if ":" in args.name and not args.name.startswith("tmux:") else args.name)
     display_fleet = (agent or {}).get("fleet") or (args.name.split(":", 1)[0] if ":" in args.name and not args.name.startswith("tmux:") else registry.current_fleet())
 
+    session_record = {
+        key: (agent or {}).get(key)
+        for key in (
+            "session_id",
+            "runtime_session_id",
+            "runtime_session_source",
+            "runtime_session_binding",
+            "runtime_session_bind_method",
+            "runtime_session_bind_source",
+            "runtime_session_bound_at",
+            "runtime_session_confidence",
+            "runtime_session_evidence",
+            "runtime_session_env",
+            "runtime_session_cwd",
+            "runtime_session_created_at_ms",
+            "runtime_session_updated_at_ms",
+        )
+        if (agent or {}).get(key) is not None
+    }
     response = runtime_session.merge({
+        **session_record,
         "ok": True,
         "name": display_name,
         "fleet": display_fleet,

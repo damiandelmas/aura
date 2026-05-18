@@ -313,15 +313,25 @@ def _run_setup(root: Path, home: Path, codex_home: Path, omx_root: Path, runtime
     (root / SETUP_MARKER).write_text(json.dumps(marker, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def prepare_box(*, fleet: str, seat: str, source_cwd: str, profile: str | None = None) -> OmxBox:
+def prepare_box(
+    *,
+    fleet: str,
+    seat: str,
+    source_cwd: str,
+    profile: str | None = None,
+    root_override: Path | str | None = None,
+    package_layout: bool = False,
+) -> OmxBox:
     """Create and initialize the per-seat OMX box.
 
     The project cwd is intentionally *not* used as CODEX_HOME or OMX_ROOT.
     """
-    root = box_root(fleet, seat)
+    root = Path(root_override).expanduser().resolve() if root_override else box_root(fleet, seat)
     home = root / "home"
-    codex_home = root / "codex-home"
-    omx_root = root / "omx-root"
+    codex_home = root / ".codex" if package_layout else root / "codex-home"
+    # When package_layout is enabled, OMX_ROOT is the package root because
+    # upstream OMX stores runtime state under "$OMX_ROOT/.omx".
+    omx_root = root if package_layout else root / "omx-root"
     omx_state = omx_root / ".omx"
     omx_team_state_root = omx_state / "state"
     runtime = root / "runtime"

@@ -381,7 +381,10 @@ def test_spawn_exports_aura_runtime_env_and_records_pane_ref(monkeypatch, tmp_pa
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
 
     from commands import spawn
+    from lib import omx as omx_lib
+    from lib import registry
     monkeypatch.setattr(spawn.uuid, "uuid4", lambda: type("U", (), {"hex": "1234567890abcdef1234"})())
+    monkeypatch.setattr(registry.uuid, "uuid4", lambda: type("U", (), {"hex": "1234567890abcdef1234"})())
 
     unit = tmp_path / "unit"
     unit.mkdir()
@@ -414,32 +417,53 @@ def test_spawn_exports_aura_runtime_env_and_records_pane_ref(monkeypatch, tmp_pa
 
     assert result["ok"] is True
     assert result["pane_ref"] == "tmux:unitfleet:%42"
-    assert created == [
-        (
-            "codex-seat",
-            str(unit),
-            True,
-            "printf ready",
-            {
-                "AURA_AGENT_NAME": "codex-seat",
-                "AURA_SEAT": "codex-seat",
-                "AURA_FLEET": "unitfleet",
-                "AURA_RUNTIME": "codex",
-                "AURA_LAUNCH_ID": "aura-launch-1234567890abcdef",
-                "TERM": "xterm-256color",
-                "COLORTERM": "truecolor",
-                "FORCE_COLOR": "1",
-                "CLICOLOR_FORCE": "1",
-            },
-            [
-                "NO_COLOR",
-                "AURA_RUNTIME_SESSION_ID",
-                "AURA_SESSION_ID",
-                "CODEX_THREAD_ID",
-                "CODEX_CI",
-                "CLAUDE_SESSION_ID",
-            ],
+    assert len(created) == 1
+    created_name, created_workdir, created_detached, created_command, created_env, created_unset = created[0]
+    assert (created_name, created_workdir, created_detached, created_command) == (
+        "codex-seat",
+        str(unit),
+        True,
+        "printf ready",
+    )
+    assert {
+        key: created_env[key]
+        for key in (
+            "AURA_AGENT_NAME",
+            "AURA_SEAT",
+            "AURA_FLEET",
+            "AURA_RUNTIME",
+            "AURA_LAUNCH_ID",
+            "AURA_SEAT_INSTANCE_ID",
+            "AURA_REGISTRY_PATH",
+            "TERM",
+            "COLORTERM",
+            "FORCE_COLOR",
+            "CLICOLOR_FORCE",
         )
+    } == {
+        "AURA_AGENT_NAME": "codex-seat",
+        "AURA_SEAT": "codex-seat",
+        "AURA_FLEET": "unitfleet",
+        "AURA_RUNTIME": "codex",
+        "AURA_LAUNCH_ID": "aura-launch-1234567890abcdef",
+        "AURA_SEAT_INSTANCE_ID": "si_1234567890ab",
+        "AURA_REGISTRY_PATH": str(tmp_path / "agents.json"),
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        "FORCE_COLOR": "1",
+        "CLICOLOR_FORCE": "1",
+    }
+    assert created_env["AURA_STATE_DIR"]
+    assert created_env["AURA_SEAT_ALIASES_PATH"]
+    assert created_env["AURA_FLEETS_PATH"]
+    assert created_env["AURA_DELIVERY_LOG"]
+    assert created_unset == [
+        "NO_COLOR",
+        "AURA_RUNTIME_SESSION_ID",
+        "AURA_SESSION_ID",
+        "CODEX_THREAD_ID",
+        "CODEX_CI",
+        "CLAUDE_SESSION_ID",
     ]
 
 
@@ -798,6 +822,7 @@ def test_spawn_codex_prompt_embeds_aura_launch_context(monkeypatch, tmp_path):
 
     unit = tmp_path / "unit"
     unit.mkdir()
+    created = []
     sent = []
 
     class FakeTerminal:
@@ -805,6 +830,7 @@ def test_spawn_codex_prompt_embeds_aura_launch_context(monkeypatch, tmp_path):
 
         @staticmethod
         def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((name, command))
             return {"ok": True, "target": "unitfleet:builder", "pane_id": "%44"}
 
         @staticmethod
@@ -830,14 +856,18 @@ def test_spawn_codex_prompt_embeds_aura_launch_context(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert result["aura_launch_id"] == "aura-launch-abcdef1234567890"
-    assert sent[0][0] == "builder"
-    assert sent[0][2] is True
-    assert sent[0][1] == "build the artifact"
+    assert created[0][1].endswith(" 'build the artifact'")
+    assert sent == []
+    assert result["prompt_delivery"] == {
+        "submitted": True,
+        "transport": "runtime-native-argv",
+        "mode": "initial-argument",
+    }
     assert "startup_handshake" not in result
     assert "agent_map_included" not in result["prompt_delivery"]
 
 
-def test_spawn_codex_prompt_retries_submit_before_session_observation(monkeypatch, tmp_path):
+def test_spawn_codex_native_prompt_skips_retry_before_session_observation(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
@@ -851,6 +881,7 @@ def test_spawn_codex_prompt_retries_submit_before_session_observation(monkeypatc
 
     unit = tmp_path / "unit"
     unit.mkdir()
+    created = []
     sent = []
     keys = []
 
@@ -859,6 +890,7 @@ def test_spawn_codex_prompt_retries_submit_before_session_observation(monkeypatc
 
         @staticmethod
         def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((name, command))
             return {"ok": True, "target": "unitfleet:builder", "pane_id": "%44"}
 
         @staticmethod
@@ -881,7 +913,7 @@ def test_spawn_codex_prompt_retries_submit_before_session_observation(monkeypatc
         lambda *args, **kwargs: {
             "runtime_session_source": "codex-state:cwd-start",
             "runtime_session_binding": "unbound",
-            "runtime_session_diagnostics": {"reason": "codex-state-possible-match"},
+            "runtime_session_diagnostics": {"reason": "codex-state-possible-match", "confidence": "high"},
             "runtime_session_possible_matches": [{
                 "runtime_session_id": "codex-thread-after-submit",
                 "reason": "aura-launch-id",
@@ -907,16 +939,15 @@ def test_spawn_codex_prompt_retries_submit_before_session_observation(monkeypatc
     result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
 
     assert result["ok"] is True
-    assert result["prompt_delivery"]["submitted"] is True
-    assert result["prompt_delivery"]["submit_retry"]["ok"] is True
-    assert result["prompt_delivery"]["submit_retry"]["session_seen"] is True
-    assert result["prompt_delivery"]["submit_retry"]["attempts"] == 1
-    assert keys == [
-        ("tmux:unitfleet:%44", "Enter", False),
-    ]
+    assert created[0][1].endswith(" 'build the artifact'")
+    assert result["prompt_delivery"] == {
+        "submitted": True,
+        "transport": "runtime-native-argv",
+        "mode": "initial-argument",
+    }
+    assert keys == []
+    assert sent == []
     assert "runtime_session_id" not in result
-    assert sent[0][0] == "builder"
-    assert sent[0][1] == "build the artifact"
 
 
 def test_spawn_codex_startup_handshake_waits_for_hook_bound_registry(monkeypatch, tmp_path):
@@ -927,6 +958,7 @@ def test_spawn_codex_startup_handshake_waits_for_hook_bound_registry(monkeypatch
     monkeypatch.setenv("AURA_CODEX_STARTUP_READY_TIMEOUT", "1")
 
     from commands import spawn
+    from lib import omx as omx_lib
     from lib import registry
 
     unit = tmp_path / "unit"
@@ -1062,6 +1094,130 @@ def test_spawn_auto_observes_codex_session_by_launch_id(monkeypatch, tmp_path):
 
     rows = session_ledger.iter_records()
     assert not any(row.get("event") == "session_observed_after_spawn" and row.get("runtime_session_id") == "codex-thread-launch" for row in rows)
+
+
+def test_spawn_auto_observes_omx_session_by_launch_nonce(monkeypatch, tmp_path):
+    import json
+
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SPAWN_SESSION_OBSERVE_TIMEOUT", "0")
+
+    from commands import spawn
+    from lib import omx as omx_lib
+    from lib import registry
+
+    monkeypatch.setattr(spawn.uuid, "uuid4", lambda: type("U", (), {"hex": "feedfacecafebeef1234"})())
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+    capsule = tmp_path / "agent"
+    jsonl = capsule / ".codex" / "sessions" / "2026" / "05" / "16" / "rollout-omx.jsonl"
+    jsonl.parent.mkdir(parents=True)
+    jsonl.write_text(
+        "\n".join([
+            json.dumps({"type": "session_meta", "payload": {"id": "thread-omx-nonce", "cwd": str(unit)}}),
+            json.dumps({"type": "message", "payload": {"text": "aura-launch-feedfacecafebeef"}}),
+            "",
+        ]),
+        encoding="utf-8",
+    )
+
+    created = []
+    sent = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            assert env["CODEX_HOME"] == str(capsule / ".codex")
+            assert env["OMX_ROOT"] == str(capsule)
+            created.append((name, command))
+            return {"ok": True, "target": "unitfleet:pipeline", "pane_id": "%44"}
+
+        @staticmethod
+        def send_text(name, text, submit=False):
+            sent.append((name, text, submit))
+            return {"ok": True}
+
+        @staticmethod
+        def pane_pid(target):
+            return 1001
+
+    args = argparse.Namespace(
+        name="pipeline",
+        runtime="omx",
+        resume_session=None,
+        fork_session=None,
+        launch_command=None,
+        profile=None,
+        runtime_profile=None,
+        omx_profile=None,
+        model=None,
+        as_pane=True,
+        prompt="launch nonce prompt",
+        work=None,
+        cwd=str(unit),
+        context=None,
+        boxed=False,
+        identity_provider=None,
+        identity_id=None,
+        identity_label=None,
+        _agent_package={
+            "agent_id": "i_pkg",
+            "address": "flexgraph:chatbot:pipeline:conductor",
+            "alias": None,
+            "root": str(capsule),
+        },
+    )
+
+    class FakeOmxBox:
+        root = capsule
+        omx_state = capsule / ".omx"
+
+        @staticmethod
+        def launch_env(source_cwd):
+            return {
+                "HOME": str(capsule / "home"),
+                "CODEX_HOME": str(capsule / ".codex"),
+                "OMX_ROOT": str(capsule),
+                "OMX_TEAM_STATE_ROOT": str(capsule / ".omx" / "state"),
+            }
+
+        @staticmethod
+        def metadata():
+            return {
+                "omx_box_root": str(capsule),
+                "omx_box_home": str(capsule / "home"),
+                "omx_box_codex_home": str(capsule / ".codex"),
+                "omx_box_omx_root": str(capsule),
+                "omx_box_omx_state": str(capsule / ".omx"),
+                "omx_box_team_state_root": str(capsule / ".omx" / "state"),
+            }
+
+    monkeypatch.setattr(omx_lib, "prepare_box", lambda **kwargs: FakeOmxBox())
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["runtime"] == "omx"
+    assert created[0][1].endswith(" 'launch nonce prompt'")
+    assert sent == []
+    assert result["prompt_delivery"] == {
+        "submitted": True,
+        "transport": "runtime-native-argv",
+        "mode": "initial-argument",
+    }
+    assert result["runtime_session_id"] == "thread-omx-nonce"
+    assert result["session_observation"]["runtime_session_source"] == "codex-jsonl:nonce"
+    assert result["runtime_capsule_session"] == str(capsule / "runtime-session.json")
+
+    agent = registry.get_agent("pipeline", fleet="unitfleet")
+    assert agent["runtime"] == "omx"
+    assert agent["runtime_session_id"] == "thread-omx-nonce"
+    assert (capsule / "runtime-session.json").is_file()
 
 
 def test_spawn_session_observation_pending_without_high_confidence(monkeypatch, tmp_path):
@@ -1701,3 +1857,216 @@ def test_sessions_bind_nonce_can_pin_jsonl_for_repair(monkeypatch, tmp_path):
     assert result["ok"] is True
     assert result["session_id"] == "target-thread"
     assert result["jsonl"] == str(target_jsonl)
+
+
+def test_spawn_boxed_codex_writes_runtime_capsule_launch_manifest(monkeypatch, tmp_path):
+    import json
+
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+    from lib import codex as codex_lib
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+    capsule = tmp_path / "capsule"
+    (capsule / "codex-home").mkdir(parents=True)
+
+    class FakeBox:
+        root = capsule
+        codex_home = capsule / "codex-home"
+
+        def launch_env(self, source_cwd):
+            return {"HOME": str(capsule / "home"), "CODEX_HOME": str(self.codex_home)}
+
+        def metadata(self):
+            return {
+                "codex_isolation": "aura-seat-box",
+                "codex_box_root": str(self.root),
+                "codex_box_home": str(capsule / "home"),
+                "codex_box_codex_home": str(self.codex_home),
+            }
+
+    monkeypatch.setattr(codex_lib, "prepare_box", lambda **_kwargs: FakeBox())
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            assert env["CODEX_HOME"] == str(capsule / "codex-home")
+            return {"ok": True, "target": "unitfleet:builder", "pane_id": "%44"}
+
+    args = argparse.Namespace(
+        name="builder",
+        runtime="codex",
+        resume_session=None,
+        fork_session=None,
+        launch_command="codex",
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(unit),
+        context=None,
+        boxed=True,
+        runtime_profile=None,
+        omx_profile=None,
+        manifest=None,
+        role_home=None,
+        identity_provider=None,
+        identity_id=None,
+        identity_label=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["runtime_capsule_launch"] == str(capsule / "aura-launch.json")
+    body = json.loads((capsule / "aura-launch.json").read_text(encoding="utf-8"))
+    assert body["schema"] == "aura.runtime_capsule.launch.v1"
+    assert body["fleet"] == "unitfleet"
+    assert body["name"] == "builder"
+    assert body["runtime"] == "codex"
+    assert body["env_roots"]["CODEX_HOME"] == str(capsule / "codex-home")
+
+
+def test_spawn_boxed_omx_writes_runtime_capsule_launch_manifest(monkeypatch, tmp_path):
+    import json
+
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+    from lib import omx as omx_lib
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+    capsule = tmp_path / "omx-capsule"
+    runtime_dir = capsule / "runtime"
+    for rel in ("home", "codex-home", "omx-root", "omx-root/.omx/state", "runtime/bin"):
+        (capsule / rel).mkdir(parents=True, exist_ok=True)
+
+    class FakeBox:
+        root = capsule
+        home = capsule / "home"
+        codex_home = capsule / "codex-home"
+        omx_root = capsule / "omx-root"
+        omx_state = capsule / "omx-root" / ".omx"
+        omx_team_state_root = capsule / "omx-root" / ".omx" / "state"
+        runtime = runtime_dir
+
+        def launch_env(self, source_cwd):
+            return {
+                "HOME": str(self.home),
+                "CODEX_HOME": str(self.codex_home),
+                "OMX_ROOT": str(self.omx_root),
+                "OMX_TEAM_STATE_ROOT": str(self.omx_team_state_root),
+                "OMXBOX_ACTIVE": "1",
+                "OMX_AUTO_UPDATE": "0",
+                "OMX_NOTIFY_FALLBACK": "0",
+                "OMX_SOURCE_CWD": source_cwd,
+                "AURA_OMX_BOX": str(self.root),
+                "PATH": f"{runtime_dir / 'bin'}:/usr/bin",
+            }
+
+        def metadata(self):
+            return {
+                "omx_isolation": "aura-seat-box",
+                "omx_box_root": str(self.root),
+                "omx_box_home": str(self.home),
+                "omx_box_codex_home": str(self.codex_home),
+                "omx_box_omx_root": str(self.omx_root),
+                "omx_box_omx_state": str(self.omx_state),
+                "omx_box_team_state_root": str(self.omx_team_state_root),
+                "omx_box_runtime": str(runtime_dir),
+            }
+
+    monkeypatch.setattr(omx_lib, "prepare_box", lambda **_kwargs: FakeBox())
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            assert env["CODEX_HOME"] == str(capsule / "codex-home")
+            assert env["OMX_ROOT"] == str(capsule / "omx-root")
+            assert env["OMX_TEAM_STATE_ROOT"] == str(capsule / "omx-root" / ".omx" / "state")
+            assert env["OMXBOX_ACTIVE"] == "1"
+            assert env["AURA_REGISTRY_PATH"] == str(tmp_path / "agents.json")
+            assert env["AURA_STATE_DIR"]
+            return {"ok": True, "target": "unitfleet:manager", "pane_id": "%45"}
+
+    args = argparse.Namespace(
+        name="manager",
+        runtime="omx",
+        resume_session=None,
+        fork_session=None,
+        launch_command="omx",
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(unit),
+        context=None,
+        boxed=True,
+        runtime_profile=None,
+        omx_profile=None,
+        manifest=None,
+        role_home=None,
+        identity_provider=None,
+        identity_id=None,
+        identity_label=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["runtime_capsule_launch"] == str(capsule / "aura-launch.json")
+    body = json.loads((capsule / "aura-launch.json").read_text(encoding="utf-8"))
+    assert body["schema"] == "aura.runtime_capsule.launch.v1"
+    assert body["runtime"] == "omx"
+    assert body["env_roots"]["CODEX_HOME"] == str(capsule / "codex-home")
+    assert body["env_roots"]["OMX_ROOT"] == str(capsule / "omx-root")
+    assert body["env_roots"]["OMX_TEAM_STATE_ROOT"] == str(capsule / "omx-root" / ".omx" / "state")
+
+def test_check_preserves_bound_registry_session_when_live_probe_is_low_confidence(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import check
+    from lib import registry, runtime_session, terminal
+
+    registry.upsert_agent({
+        "name": "seat",
+        "fleet": "fleet",
+        "seat_ref": "fleet:seat",
+        "runtime": "omx",
+        "registered": True,
+        "terminal_ref": "fleet:seat",
+        "runtime_session_id": "bound-thread",
+        "session_id": "bound-thread",
+        "runtime_session_source": "spawn:resume-session",
+        "runtime_session_binding": "bound",
+        "runtime_session_bind_method": "spawn-resume-session",
+        "runtime_session_bind_source": "spawn:resume-session",
+        "runtime_session_confidence": "exact",
+    })
+
+    monkeypatch.setattr(terminal, "target_exists", lambda target: True)
+    monkeypatch.setattr(terminal, "configure_session", lambda fleet: None)
+    monkeypatch.setattr(terminal, "capture_output", lambda target, lines=20, ansi=False: ["ready"])
+    monkeypatch.setattr(registry, "infer_status", lambda name, term, status, target=None: "idle")
+    monkeypatch.setattr(runtime_session, "discover_for_target", lambda *args, **kwargs: {
+        "runtime_session_source": "codex-state:cwd-start",
+        "runtime_session_binding": "unbound",
+        "runtime_session_diagnostics": {"confidence": "low"},
+    })
+
+    result = check.run(argparse.Namespace(name="fleet:seat", output=True, lines=10, format="text"))
+
+    assert result["runtime_session_binding"] == "bound"
+    assert result["runtime_session_id"] == "bound-thread"
+    assert result["session_id"] == "bound-thread"

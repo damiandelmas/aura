@@ -44,8 +44,8 @@ def test_profile_create_codex_from_aura_base_without_auth_or_global_config(monke
     assert result["schema"] == "aura.profile.create.v1"
     assert config.is_file()
     text = config.read_text(encoding="utf-8")
-    assert "context-remaining" in text
-    assert "status_line" in text
+    assert 'status_line = ["model-with-reasoning", "git-branch", "current-dir", "session-id"]' in text
+    assert "context-remaining" not in text
     assert "poisoned global config" not in text
     assert not (root / "codex-home-template" / "auth.json").exists()
     assert not (root / "codex-home-template" / "credentials.json").exists()

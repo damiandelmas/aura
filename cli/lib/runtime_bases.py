@@ -41,19 +41,18 @@ AURA_OPERATOR_SKILL_ALLOWLIST = (
 
 SUPPORTED_PROFILE_PRESETS = {"aura-operator": AURA_OPERATOR_SKILL_ALLOWLIST}
 
-FOCUSED_STATUS_LINE = [
-    "model-with-reasoning",
-    "git-branch",
-    "context-remaining",
-    "total-input-tokens",
-    "total-output-tokens",
-    "five-hour-limit",
-    "weekly-limit",
-]
+CODEX_DEFAULT_CONFIG = """# Aura-owned boxed Codex runtime base.
+# This file intentionally avoids copying ~/.codex/config.toml so boxed Codex
+# seats do not inherit global/user behavior accidentally. Codex/default keeps
+# the lightweight global Codex status shape, including session id, without
+# OMX budget/context counters.
+[tui]
+status_line = ["model-with-reasoning", "git-branch", "current-dir", "session-id"]
+"""
 
-FOCUSED_CODEX_CONFIG = """# Aura-owned boxed runtime base.
-# This file intentionally avoids copying ~/.codex/config.toml so boxed seats
-# do not inherit global/user behavior accidentally.
+OMX_CODEX_CONFIG = """# Aura-owned boxed OMX runtime Codex home base.
+# This file intentionally avoids copying ~/.codex/config.toml so boxed OMX
+# seats do not inherit global/user behavior accidentally.
 [tui]
 # omx:managed-status-line
 status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"]
@@ -104,7 +103,7 @@ def _write_default_files(root: Path, runtime: str) -> None:
         (root / dirname).mkdir(parents=True, exist_ok=True)
     config_path = root / "codex-home-template" / "config.toml"
     if not config_path.exists():
-        config_path.write_text(FOCUSED_CODEX_CONFIG, encoding="utf-8")
+        config_path.write_text(CODEX_DEFAULT_CONFIG if runtime == "codex" else OMX_CODEX_CONFIG, encoding="utf-8")
 
 
 def validate_runtime_base(root: Path, runtime: str) -> list[runtime_profiles.TemplateSafetyFinding]:

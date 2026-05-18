@@ -11,9 +11,11 @@ import subprocess
 
 RUNTIME_SESSION_ENV = {
     "codex": ("CODEX_THREAD_ID",),
+    "omx": ("CODEX_THREAD_ID",),
     "claude-code": ("CLAUDE_SESSION_ID", "AURA_SESSION_ID"),
     "claude": ("CLAUDE_SESSION_ID", "AURA_SESSION_ID"),
 }
+CODEX_BACKED_RUNTIMES = {"codex", "omx"}
 
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
@@ -478,7 +480,7 @@ def discover_from_pane_pid(
     if not pane_pid:
         return {}
     pids = _descendant_pids(int(pane_pid))
-    if runtime == "codex":
+    if runtime in CODEX_BACKED_RUNTIMES:
         for pid in pids:
             discovered = _discover_codex_runtime_argv(pid)
             if discovered:
@@ -497,7 +499,7 @@ def discover_from_pane_pid(
         for name in env_names:
             value = env.get(name)
             if value:
-                if runtime == "codex" and name == "CODEX_THREAD_ID":
+                if runtime in CODEX_BACKED_RUNTIMES and name == "CODEX_THREAD_ID":
                     # Codex does not reliably rewrite process environ after a
                     # new thread starts. In tmux-spawned seats this value is
                     # often inherited from the spawning Codex session, so using

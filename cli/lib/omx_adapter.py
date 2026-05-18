@@ -125,10 +125,15 @@ def _read_marker_native_hook(root: Path) -> Path | None:
 
 def _write_native_hook_wrapper(path: Path, *, node_path: str, native_hook_path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    bind_hook_path = Path(__file__).resolve().parents[1] / "hooks" / "codex_bind_hook.py"
     script = f"""#!/usr/bin/env bash
 set -euo pipefail
 export OMX_NOTIFY_FALLBACK="${{OMX_NOTIFY_FALLBACK:-0}}"
-exec {shlex.quote(node_path)} {shlex.quote(str(native_hook_path))}
+payload_file="$(mktemp -t aura-omx-hook.XXXXXX)"
+trap 'rm -f "$payload_file"' EXIT
+cat > "$payload_file"
+{shlex.quote(shutil.which("python3") or "python3")} {shlex.quote(str(bind_hook_path))} < "$payload_file" >/dev/null 2>&1 || true
+exec {shlex.quote(node_path)} {shlex.quote(str(native_hook_path))} < "$payload_file"
 """
     path.write_text(script, encoding="utf-8")
     path.chmod(0o755)

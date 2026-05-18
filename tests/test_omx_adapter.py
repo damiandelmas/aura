@@ -69,6 +69,10 @@ def test_omx_adapter_rewrites_boxed_hooks_and_trust_state(monkeypatch, tmp_path)
     assert result.wrapper_path == runtime / "bin" / "aura-omx-native-hook"
     assert result.wrapper_path.is_file()
     assert os.access(result.wrapper_path, os.X_OK)
+    wrapper = result.wrapper_path.read_text(encoding="utf-8")
+    assert "codex_bind_hook.py" in wrapper
+    assert "payload_file" in wrapper
+    assert str(native_hook) in wrapper
     assert result.native_hook_path == native_hook
     assert result.hooks_rewritten is True
     assert result.trust_state_updated is True

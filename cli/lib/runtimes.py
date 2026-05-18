@@ -39,6 +39,7 @@ RUNTIMES: dict[str, dict] = {
         "context_candidates": ["CLAUDE.md", "AGENTS.md"],
         "capabilities": {
             "supports_resume": True,
+            "supports_initial_prompt_argv": True,
             "session_id_source": "claude-jsonl-or-env",
         },
     },
@@ -64,6 +65,7 @@ RUNTIMES: dict[str, dict] = {
         "capabilities": {
             "supports_resume": True,
             "supports_fork": True,
+            "supports_initial_prompt_argv": True,
             "session_id_source": "codex-state-or-resume-argv",
             "resume_command": "codex --dangerously-bypass-approvals-and-sandbox resume {session_id}",
             "fork_command": "codex --dangerously-bypass-approvals-and-sandbox fork {session_id}{prompt_arg}",
@@ -79,8 +81,10 @@ RUNTIMES: dict[str, dict] = {
         "native_state": ".omx",
         "context_candidates": ["AGENTS.md"],
         "capabilities": {
-            "supports_resume": False,
-            "session_id_source": "native-state",
+            "supports_resume": True,
+            "supports_initial_prompt_argv": True,
+            "session_id_source": "boxed-codex-state-or-hook",
+            "resume_command": "omx resume --dangerously-bypass-approvals-and-sandbox{cwd_arg} {session_id}",
         },
     },
     "opencode": {
@@ -107,8 +111,19 @@ def resolve_runtime(runtime: str | None) -> tuple[str, dict]:
     return key, spec
 
 
+def supports_initial_prompt_argv(runtime: str, spec: dict | None = None) -> bool:
+    resolved_spec = spec
+    if resolved_spec is None:
+        try:
+            _, resolved_spec = resolve_runtime(runtime)
+        except ValueError:
+            return False
+    return bool((resolved_spec.get("capabilities") or {}).get("supports_initial_prompt_argv"))
+
+
 def build_command(runtime: str, spec: dict, *, name: str, profile: str | None = None,
-                  model: str | None = None, command_override: str | None = None) -> str:
+                  model: str | None = None, command_override: str | None = None,
+                  prompt: str | None = None) -> str:
     if command_override:
         return command_override
 
@@ -121,6 +136,9 @@ def build_command(runtime: str, spec: dict, *, name: str, profile: str | None = 
     if runtime == "claude-code" and model:
         command = f"{command} --model {shlex.quote(model)}"
 
+    if prompt and supports_initial_prompt_argv(runtime, spec):
+        command = f"{command} {shlex.quote(prompt)}"
+
     return command
 
 
@@ -129,8 +147,12 @@ def build_resume_command(runtime: str, session_id: str, *, cwd: str | None = Non
     resume_template = (spec.get("capabilities") or {}).get("resume_command")
     if not resume_template:
         raise ValueError(f"runtime does not support native resume: {resolved}")
-    command = resume_template.format(session_id=shlex.quote(session_id))
-    if resolved == "codex" and cwd:
+    cwd_arg = f" --cd {shlex.quote(cwd)}" if cwd else ""
+    command = resume_template.format(
+        session_id=shlex.quote(session_id),
+        cwd_arg=cwd_arg,
+    )
+    if resolved == "codex" and cwd and "{cwd_arg}" not in resume_template:
         return command.replace("codex ", f"codex --cd {shlex.quote(cwd)} ", 1)
     return command
 

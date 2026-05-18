@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -223,6 +224,9 @@ def run(args):
         else:
             cmd_parts.extend(["--model", model])
 
+    native_prompt_argv = bool(prompt_text and not args.memory)
+    if native_prompt_argv:
+        cmd_parts.append(shlex.quote(prompt_text))
     cmd = " ".join(cmd_parts)
 
     # Send command to terminal
@@ -251,7 +255,27 @@ def run(args):
             if not registered:
                 return _result({"ok": False, "error": "timeout waiting for registration", "name": args.name})
 
-        # Send prompt if specified
+        # Prompt was included in the native Claude argv.  Keep the legacy mesh
+        # wait as readiness evidence, but do not send the prompt a second time.
+        if prompt_text and native_prompt_argv:
+            base = {
+                "ok": True,
+                "name": args.name,
+                "registered": registered if mesh_available else None,
+                "prompt_delivery": {
+                    "submitted": True,
+                    "transport": "runtime-native-argv",
+                    "mode": "initial-argument",
+                },
+                "workdir": workdir,
+                "context_file": str(context_path) if context_path else None,
+                "work_file": str(work_path) if work_path else None,
+            }
+            out = _result({k: v for k, v in base.items() if v is not None})
+            _record_workspace_spawn(workdir_path, out, runtime="claude-code")
+            return out
+
+        # Send prompt if specified and native argv is unavailable.
         if prompt_text:
             # Brief wait — wrapper gates message injection on Claude readiness
             time.sleep(1)
@@ -309,7 +333,7 @@ def run(args):
 
 def _spawn_terminal_runtime(args, terminal, result_fn):
     """Spawn a generic terminal-backed runtime without Claude wrapper coupling."""
-    from lib import registry, runtimes, workspace_state
+    from lib import registry, runtimes, state, workspace_state
 
     if getattr(args, 'prompt', None) and getattr(args, 'work', None):
         return result_fn({"ok": False, "error": "use either --prompt or --work, not both", "name": args.name})
@@ -335,6 +359,13 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     if fork_session and launch_command:
         return result_fn({"ok": False, "error": "use either --fork-session or --command, not both", "name": args.name})
     role_meta = dict(getattr(args, "_role_manifest_meta", None) or {})
+    agent_package = dict(getattr(args, "_agent_package", None) or {})
+    agent_package_meta = {
+        "agent_package_id": agent_package.get("agent_id"),
+        "agent_package_address": agent_package.get("address"),
+        "agent_package_alias": agent_package.get("alias"),
+        "agent_package_root": agent_package.get("root"),
+    } if agent_package else {}
     identity_provider_arg = getattr(args, "identity_provider", None)
     identity_id_arg = getattr(args, "identity_id", None)
     identity_label_arg = getattr(args, "identity_label", None)
@@ -495,6 +526,27 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         label="work",
     )
     prompt_text = workspace_state.read_work_prompt(work_path) or getattr(args, 'prompt', None)
+    native_state_ref = workspace_state.infer_native_state_ref(workdir_path, spec)
+    fleet = getattr(terminal, "SESSION_NAME", None) or registry.current_fleet(default="aura")
+    launch_id = f"aura-launch-{uuid.uuid4().hex[:16]}"
+    seat_instance_id = registry.new_seat_instance_id()
+    flex_manifest, flex_root = _resolve_launch_flex_project(workdir_path, role_meta)
+    flex_packet = _render_flex_project_launch_packet(flex_manifest, flex_root)
+    augmented_prompt = _augment_runtime_prompt(
+        runtime,
+        prompt_text,
+        fleet=fleet,
+        seat=args.name,
+        launch_id=launch_id,
+        flex_packet=flex_packet,
+    ) if prompt_text else None
+    native_initial_prompt_argv = bool(
+        augmented_prompt
+        and not fork_session
+        and not resume_session
+        and not launch_command
+        and runtimes.supports_initial_prompt_argv(runtime, spec)
+    )
     if fork_session:
         try:
             launch_command = runtimes.build_fork_command(runtime, fork_session, prompt=prompt_text, cwd=workdir)
@@ -507,11 +559,8 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         profile=profile,
         model=getattr(args, 'model', None),
         command_override=launch_command,
+        prompt=augmented_prompt if native_initial_prompt_argv else None,
     )
-    native_state_ref = workspace_state.infer_native_state_ref(workdir_path, spec)
-    fleet = getattr(terminal, "SESSION_NAME", None) or registry.current_fleet(default="aura")
-    launch_id = f"aura-launch-{uuid.uuid4().hex[:16]}"
-    seat_instance_id = registry.new_seat_instance_id()
 
     launch_env = {
         "AURA_AGENT_NAME": args.name,
@@ -519,12 +568,17 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "AURA_FLEET": fleet,
         "AURA_RUNTIME": runtime,
         "AURA_LAUNCH_ID": launch_id,
+        "AURA_SEAT_INSTANCE_ID": seat_instance_id,
+        "AURA_STATE_DIR": str(state.state_root()),
+        "AURA_REGISTRY_PATH": str(state.registry_path()),
+        "AURA_SEAT_ALIASES_PATH": str(state.seat_aliases_path()),
+        "AURA_FLEETS_PATH": str(state.fleet_registry_path()),
+        "AURA_DELIVERY_LOG": str(state.delivery_log_path()),
         "TERM": "xterm-256color",
         "COLORTERM": "truecolor",
         "FORCE_COLOR": "1",
         "CLICOLOR_FORCE": "1",
     }
-    flex_manifest, flex_root = _resolve_launch_flex_project(workdir_path, role_meta)
     flex_meta = {}
     if flex_manifest and flex_root:
         flex_meta = {
@@ -556,9 +610,12 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 seat=args.name,
                 source_cwd=workdir,
                 profile=omx_profile,
+                root_override=agent_package.get("root"),
+                package_layout=bool(agent_package),
             )
             launch_env.update(omx_box.launch_env(workdir))
             omx_box_meta = omx_box.metadata()
+            launch_env["AURA_RUNTIME_CAPSULE_REF"] = str(omx_box.root)
             runtime_home = str(omx_box.root)
             native_state_ref = str(omx_box.omx_state)
         except Exception as exc:
@@ -580,9 +637,12 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 seat=args.name,
                 source_cwd=workdir,
                 profile=codex_profile,
+                root_override=agent_package.get("root"),
+                package_layout=bool(agent_package),
             )
             launch_env.update(codex_box.launch_env(workdir))
             codex_box_meta = codex_box.metadata()
+            launch_env["AURA_RUNTIME_CAPSULE_REF"] = str(codex_box.root)
             runtime_home = str(codex_box.root)
             native_state_ref = str(codex_box.codex_home)
         except Exception as exc:
@@ -721,6 +781,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "transport": "tmux",
         "status": "starting",
         "registered": True,
+        **agent_package_meta,
         **flex_meta,
         **runtime_profile_meta,
         **omx_box_meta,
@@ -753,6 +814,21 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             registered = stored
         except Exception:
             pass
+
+    capsule_launch = {}
+    try:
+        from lib import runtime_capsules
+
+        capsule_launch = runtime_capsules.write_aura_launch(registered, env_roots=launch_env)
+        if capsule_launch.get("ok"):
+            registered = registry.upsert_agent({
+                **registered,
+                "runtime_capsule_ref": capsule_launch.get("capsule_root"),
+                "runtime_capsule_launch": capsule_launch.get("path"),
+            })
+    except Exception as exc:
+        capsule_launch = {"ok": False, "reason": "capsule-launch-write-failed", "error": str(exc)}
+
     try:
         from lib import session_ledger
 
@@ -778,6 +854,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "terminal_ref": launch.get("target"),
             "pane_ref": pane_ref,
             "status": "starting",
+            **agent_package_meta,
             **flex_meta,
             **runtime_profile_meta,
             **omx_box_meta,
@@ -824,8 +901,11 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "pane_ref": pane_ref,
         "status": "starting",
         "registered": True,
+        **agent_package_meta,
         "fleet": fleet,
         "trace_cell": registered.get("trace_cell"),
+        "runtime_capsule_ref": registered.get("runtime_capsule_ref"),
+        "runtime_capsule_launch": registered.get("runtime_capsule_launch"),
         **flex_meta,
         **runtime_profile_meta,
         **omx_box_meta,
@@ -887,18 +967,20 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "transport": "runtime-native-argv",
             "mode": "fork-argument",
         }
+    elif prompt_text and native_initial_prompt_argv:
+        prompt_delivery = {
+            "submitted": True,
+            "transport": "runtime-native-argv",
+            "mode": "initial-argument",
+        }
+        if flex_packet and flex_manifest and flex_root:
+            prompt_delivery["flex_project_packet_included"] = True
+            prompt_delivery["flex_project_packet_manifest"] = str(flex_manifest)
+        result["prompt_delivery"] = prompt_delivery
     elif prompt_text:
-        flex_packet = _render_flex_project_launch_packet(flex_manifest, flex_root)
         prompt_result = terminal.send_text(
             args.name,
-            _augment_runtime_prompt(
-                runtime,
-                prompt_text,
-                fleet=fleet,
-                seat=args.name,
-                launch_id=launch_id,
-                flex_packet=flex_packet,
-            ),
+            augmented_prompt,
             submit=True,
         )
         prompt_delivery = {
@@ -913,12 +995,13 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 pass
         if not prompt_result.get("ok"):
             result["prompt_error"] = prompt_result.get("error")
-        elif runtime == "codex" and hasattr(terminal, "send_keys"):
+        elif runtime in {"codex", "omx"} and hasattr(terminal, "send_keys"):
             prompt_delivery["submit_retry"] = _retry_codex_prompt_submit(
                 terminal=terminal,
                 target=prompt_target,
                 seat=args.name,
                 launch_id=launch_id,
+                prompt_text=augmented_prompt,
             )
         result["prompt_delivery"] = prompt_delivery
 
@@ -998,12 +1081,25 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 )
             except Exception:
                 pass
+            try:
+                from lib import runtime_capsules
+
+                capsule_session = runtime_capsules.write_runtime_session(observed_after)
+                if capsule_session.get("ok"):
+                    result["runtime_capsule_session"] = capsule_session.get("path")
+                    registry.upsert_agent({
+                        **observed_after,
+                        "runtime_capsule_ref": capsule_session.get("capsule_root"),
+                        "runtime_capsule_session": capsule_session.get("path"),
+                    })
+            except Exception as exc:
+                result["runtime_capsule_session_warning"] = str(exc)
     _record_workspace_spawn(workdir_path, result, runtime=runtime)
     return result_fn({k: v for k, v in result.items() if v is not None})
 
 
 def _should_send_codex_startup_handshake(*, runtime: str, resume_session: str | None, fork_session: str | None = None) -> bool:
-    if runtime != "codex" or resume_session or fork_session:
+    if runtime not in {"codex", "omx"} or resume_session or fork_session:
         return False
     value = os.environ.get("AURA_CODEX_STARTUP_HANDSHAKE", "0").strip().lower()
     return value not in {"0", "false", "no", "off"}
@@ -1480,7 +1576,7 @@ def _augment_runtime_prompt(
     flex_packet: str | None = None,
 ) -> str:
     del fleet, seat, launch_id
-    if runtime != "codex":
+    if runtime not in {"codex", "omx"}:
         return prompt_text
     lines = []
     if flex_packet:
@@ -1539,7 +1635,7 @@ def _codex_cwd_choice_from_capture(capture: list[str], desired_cwd: str | None) 
 
 
 def _resolve_codex_cwd_choice(*, runtime: str, resume_session: str | None, terminal, target: str | None, desired_cwd: str | None) -> dict | None:
-    if runtime != "codex" or not resume_session or not target or not hasattr(terminal, "capture_output"):
+    if runtime not in {"codex", "omx"} or not resume_session or not target or not hasattr(terminal, "capture_output"):
         return None
     attempts = int(os.environ.get("AURA_CODEX_CWD_CHOICE_ATTEMPTS", "8"))
     for index in range(max(1, attempts)):
@@ -1593,7 +1689,7 @@ def _resolve_codex_cwd_choice(*, runtime: str, resume_session: str | None, termi
     return {"detected": False, "ok": True}
 
 
-def _retry_codex_prompt_submit(*, terminal, target: str, seat: str, launch_id: str) -> dict:
+def _retry_codex_prompt_submit(*, terminal, target: str, seat: str, launch_id: str, prompt_text: str | None = None) -> dict:
     """Nudge a freshly pasted Codex spawn prompt until the thread exists.
 
     Codex can briefly accept a tmux paste before its input widget is ready,
@@ -1607,7 +1703,17 @@ def _retry_codex_prompt_submit(*, terminal, target: str, seat: str, launch_id: s
     max_attempts = int(os.environ.get("AURA_CODEX_PROMPT_SUBMIT_RETRIES", "4"))
     for index in range(max(1, max_attempts)):
         time.sleep(0.5 if index == 0 else 1.5)
-        retry_result = terminal.send_keys(target, "Enter", enter=False) or {}
+        if index and prompt_text and hasattr(terminal, "send_text"):
+            # First-run Codex/OMX startup can replace an early paste with its
+            # own default prompt after the TUI finishes booting.  If the first
+            # Enter did not create a thread, clear the input widget and paste
+            # the intended prompt again instead of repeatedly submitting the
+            # runtime's default example prompt.
+            clear_result = terminal.send_keys(target, "C-u", enter=False) or {}
+            retry_result = terminal.send_text(target, prompt_text, submit=True) or {}
+            retry_result = {"clear": clear_result, **retry_result}
+        else:
+            retry_result = terminal.send_keys(target, "Enter", enter=False) or {}
         attempts.append(retry_result)
         time.sleep(0.5)
         try:
@@ -1621,7 +1727,10 @@ def _retry_codex_prompt_submit(*, terminal, target: str, seat: str, launch_id: s
         except Exception:
             session_info = {}
         possible_matches = session_info.get("runtime_session_possible_matches") if session_info else None
-        if possible_matches:
+        diagnostics = session_info.get("runtime_session_diagnostics") or {}
+        if runtime_session.is_bound_session(session_info) or (
+            possible_matches and diagnostics.get("confidence") in {"exact", "high"}
+        ):
             return {
                 "ok": True,
                 "attempts": len(attempts),
@@ -1657,11 +1766,12 @@ def _observe_spawn_session(
 ) -> dict:
     """Best-effort post-spawn runtime session observation.
 
-    This makes Aura-spawned Codex seats self-describing without requiring the
-    agent to run bind-current as a ritual. It only binds evidence at high/exact
-    confidence; bind-current remains the repair path for ambiguous sessions.
+    This makes Aura-spawned Codex-backed seats self-describing without requiring
+    the agent to run bind-current as a ritual. It only binds evidence at
+    high/exact confidence; bind-current remains the repair path for ambiguous
+    sessions.
     """
-    if runtime != "codex":
+    if runtime not in {"codex", "omx"}:
         return {"status": "skipped", "reason": "runtime-not-observed-at-spawn", "runtime": runtime}
 
     from lib import runtime_session
@@ -1745,7 +1855,7 @@ def _observe_spawn_session(
         try:
             from commands import sessions as sessions_cmd
 
-            found = sessions_cmd._codex_session_from_nonce(launch_id, expected_cwd=workdir)
+            found = sessions_cmd._codex_session_from_nonce(launch_id, expected_cwd=workdir, record=registered)
             if found.get("ok") and found.get("session_id"):
                 evidence = {
                     "reason": "codex-jsonl-nonce",

@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+from hashlib import sha256
 
 from lib import runtime_bases, runtime_boxes
 
@@ -33,6 +38,8 @@ class CodexBox:
     base_applied: bool = False
     base_templates_applied: tuple[str, ...] = ()
     source_cwd_trusted: bool = False
+    aura_hook_installed: bool = False
+    aura_hook_command: str | None = None
 
     def launch_env(self, source_cwd: str) -> dict[str, str]:
         env = {
@@ -60,6 +67,8 @@ class CodexBox:
             "codex_box_auth_seeded": self.auth_seeded,
             "codex_box_config_seeded": self.config_seeded,
             "codex_box_source_cwd_trusted": self.source_cwd_trusted,
+            "codex_box_aura_hook_installed": self.aura_hook_installed,
+            **({"codex_box_aura_hook_command": self.aura_hook_command} if self.aura_hook_command else {}),
             **({"codex_profile": self.profile} if self.profile else {}),
             **({"codex_profile_root": str(self.profile_root)} if self.profile_root else {}),
             "codex_profile_applied": self.profile_applied,
@@ -176,6 +185,126 @@ def _trust_source_cwd(codex_home: Path, source_cwd: str) -> bool:
         config_path.write_text(existing, encoding="utf-8")
     return bool(trust_paths)
 
+
+def _canonical_json(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_canonical_json(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _canonical_json(value[key]) for key in sorted(value)}
+    return value
+
+
+def _trusted_hash(value: dict[str, Any]) -> str:
+    return "sha256:" + sha256(
+        json.dumps(_canonical_json(value), separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _append_trust_toml(config_path: Path, key: str, trusted_hash: str) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    header = f'[hooks.state.{json.dumps(key)}]'
+    block = f'{header}\ntrusted_hash = "{trusted_hash}"\n'
+    if header in existing and trusted_hash in existing[existing.index(header): existing.find("\n[", existing.index(header) + 1) if existing.find("\n[", existing.index(header) + 1) != -1 else len(existing)]:
+        return
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    config_path.write_text(f"{existing}{separator}\n{block}", encoding="utf-8")
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=False)
+            f.write("\n")
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
+def _install_aura_session_hook(codex_home: Path) -> tuple[bool, str]:
+    """Install the quiet Aura SessionStart binder into a boxed Codex home."""
+
+    hook_script = Path(__file__).resolve().parents[1] / "hooks" / "codex_bind_hook.py"
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(hook_script))}"
+    hooks_path = codex_home / "hooks.json"
+    try:
+        config = json.loads(hooks_path.read_text(encoding="utf-8")) if hooks_path.exists() else {}
+    except Exception:
+        config = {}
+    if not isinstance(config, dict):
+        config = {}
+    hooks = config.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        hooks = {}
+        config["hooks"] = hooks
+    entries = hooks.setdefault("SessionStart", [])
+    if not isinstance(entries, list):
+        entries = []
+        hooks["SessionStart"] = entries
+
+    hook_entry = {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+            {
+                "type": "command",
+                "command": command,
+                "timeout": 30,
+            }
+        ],
+    }
+    installed = any(
+        isinstance(entry, dict)
+        and any(
+            isinstance(hook, dict)
+            and hook.get("type") == "command"
+            and str(hook.get("command") or "") == command
+            for hook in (entry.get("hooks") if isinstance(entry.get("hooks"), list) else [])
+        )
+        for entry in entries
+    )
+    if not installed:
+        entries.append(hook_entry)
+        group_index = len(entries) - 1
+    else:
+        group_index = next(
+            index
+            for index, entry in enumerate(entries)
+            if isinstance(entry, dict)
+            and any(
+                isinstance(hook, dict)
+                and hook.get("type") == "command"
+                and str(hook.get("command") or "") == command
+                for hook in (entry.get("hooks") if isinstance(entry.get("hooks"), list) else [])
+            )
+        )
+        hook_entry = entries[group_index]
+
+    identity = {
+        "event_name": "session_start",
+        **({"matcher": hook_entry.get("matcher")} if isinstance(hook_entry, dict) and hook_entry.get("matcher") else {}),
+        "hooks": [{
+            "type": "command",
+            "command": command,
+            "timeout": 30,
+            "async": False,
+        }],
+    }
+    trust_key = f"{hooks_path}:session_start:{group_index}:0"
+    trust_value = {"trusted_hash": _trusted_hash(identity)}
+    state = config.setdefault("state", {})
+    if not isinstance(state, dict):
+        state = {}
+        config["state"] = state
+    state[trust_key] = trust_value
+    _atomic_write_json(hooks_path, config)
+    _append_trust_toml(codex_home / "config.toml", trust_key, trust_value["trusted_hash"])
+    return True, command
+
 def _apply_profile_template(
     profile: str | None,
     *,
@@ -199,12 +328,20 @@ def _apply_profile_template(
     return root, profile_applied, templates_applied
 
 
-def prepare_box(*, fleet: str, seat: str, source_cwd: str, profile: str | None = None) -> CodexBox:
+def prepare_box(
+    *,
+    fleet: str,
+    seat: str,
+    source_cwd: str,
+    profile: str | None = None,
+    root_override: Path | str | None = None,
+    package_layout: bool = False,
+) -> CodexBox:
     """Create a per-seat Codex box without mutating the project cwd."""
 
-    root = box_root(fleet, seat)
+    root = Path(root_override).expanduser().resolve() if root_override else box_root(fleet, seat)
     home = root / "home"
-    codex_home = root / "codex-home"
+    codex_home = root / ".codex" if package_layout else root / "codex-home"
     runtime = root / "runtime"
     for path in (home, codex_home, runtime):
         path.mkdir(parents=True, exist_ok=True)
@@ -226,6 +363,7 @@ def prepare_box(*, fleet: str, seat: str, source_cwd: str, profile: str | None =
     )
     auth_seeded, config_seeded = _seed_codex_home(codex_home)
     source_cwd_trusted = _trust_source_cwd(codex_home, source_cwd)
+    aura_hook_installed, aura_hook_command = _install_aura_session_hook(codex_home)
 
     return CodexBox(
         root=root,
@@ -242,4 +380,6 @@ def prepare_box(*, fleet: str, seat: str, source_cwd: str, profile: str | None =
         base_applied=base_applied,
         base_templates_applied=base_templates_applied,
         source_cwd_trusted=source_cwd_trusted,
+        aura_hook_installed=aura_hook_installed,
+        aura_hook_command=aura_hook_command,
     )

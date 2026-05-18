@@ -893,6 +893,21 @@ def _restart(args, registry, terminal) -> dict:
         launch_env["FLEX_PROJECT_MANIFEST"] = role_meta["flex_project_manifest"]
     if role_meta.get("flex_project_root"):
         launch_env["FLEX_PROJECT_ROOT"] = role_meta["flex_project_root"]
+    try:
+        from lib import runtime_capsules
+
+        boxed_env = runtime_capsules.boxed_launch_env_from_record(record, plan["cwd"])
+        launch_env.update(boxed_env)
+    except Exception as exc:
+        if record.get("codex_box_root") or record.get("omx_box_root"):
+            return {
+                "ok": False,
+                "schema": "aura.seat_restart.v1",
+                "phase": "build_plan",
+                "target": args.target,
+                "seat_ref": seat_ref,
+                "error": f"failed to restore boxed runtime capsule environment: {exc}",
+            }
 
     unset_env = [
         "NO_COLOR",
@@ -1014,6 +1029,20 @@ def _restart(args, registry, terminal) -> dict:
         "registered": True,
     })
 
+    capsule_launch = {}
+    try:
+        from lib import runtime_capsules
+
+        capsule_launch = runtime_capsules.write_aura_launch(updated, env_roots=launch_env)
+        if capsule_launch.get("ok"):
+            updated = registry.upsert_agent({
+                **updated,
+                "runtime_capsule_ref": capsule_launch.get("capsule_root"),
+                "runtime_capsule_launch": capsule_launch.get("path"),
+            })
+    except Exception as exc:
+        capsule_launch = {"ok": False, "reason": "capsule-launch-write-failed", "error": str(exc)}
+
     cwd_choice = None
     try:
         from commands import spawn
@@ -1053,6 +1082,18 @@ def _restart(args, registry, terminal) -> dict:
         )
         if session_observation.get("runtime_session_id"):
             updated = registry.upsert_agent({**updated, **_session_fields(session_observation)})
+            try:
+                from lib import runtime_capsules
+
+                capsule_session = runtime_capsules.write_runtime_session(updated)
+                if capsule_session.get("ok"):
+                    updated = registry.upsert_agent({
+                        **updated,
+                        "runtime_capsule_ref": capsule_session.get("capsule_root"),
+                        "runtime_capsule_session": capsule_session.get("path"),
+                    })
+            except Exception:
+                pass
             try:
                 from lib import desks_sessions
                 from lib import seat_schema
@@ -1165,6 +1206,9 @@ def _restart(args, registry, terminal) -> dict:
         "restart_id": restart_id,
         "session_observation": session_observation,
         "cwd_choice": cwd_choice,
+        "runtime_capsule_ref": updated.get("runtime_capsule_ref"),
+        "runtime_capsule_launch": updated.get("runtime_capsule_launch"),
+        "runtime_capsule_session": updated.get("runtime_capsule_session"),
         "warnings": warnings,
     }
 

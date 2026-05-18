@@ -406,7 +406,13 @@ def restore_command(row: dict[str, Any], capability: dict[str, Any] | None = Non
         parts.extend(["--cwd", _shell_quote(cwd)])
     resume_template = capability.get("resume_command")
     if resume_template:
-        parts.extend(["--command", _shell_quote(resume_template.format(session_id=session_id))])
+        try:
+            from lib import runtimes
+
+            resume_command = runtimes.build_resume_command(runtime, str(session_id), cwd=cwd)
+        except Exception:
+            resume_command = resume_template.format(session_id=session_id, cwd_arg="")
+        parts.extend(["--command", _shell_quote(resume_command)])
     elif runtime in ("claude", "claude-code"):
         parts.extend(["--memory", _shell_quote(session_id)])
     else:
