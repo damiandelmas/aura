@@ -264,8 +264,8 @@ def run(args):
     if action == "subscribe":
         if getattr(args, "subscribe_source", None) != "reports":
             return {"ok": False, "error": f"unknown subscription source: {getattr(args, 'subscribe_source', None)}"}
-        if not getattr(args, "fleet", None) and not getattr(args, "target", None):
-            return {"ok": False, "error": "report subscriptions require --fleet or --target"}
+        if not getattr(args, "fleet", None) and not getattr(args, "target", None) and not getattr(args, "placement", None):
+            return {"ok": False, "error": "report subscriptions require --fleet, --target, or --placement"}
         from lib import report_subscriptions
 
         try:
@@ -280,6 +280,7 @@ def run(args):
             to=args.to,
             fleet=getattr(args, "fleet", None),
             target=getattr(args, "target", None),
+            placement=getattr(args, "placement", None),
             states=getattr(args, "state", None) or [],
             sender=getattr(args, "sender", None) or "aura-event",
         )

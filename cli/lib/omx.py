@@ -49,14 +49,13 @@ class OmxBox:
     star_prompt_preseeded: bool = False
     source_cwd_trusted: bool = False
     adapter: omx_adapter.OmxAdapterResult | None = None
+    package_layout: bool = False
 
     def launch_env(self, source_cwd: str) -> dict[str, str]:
         env = {
-            "HOME": str(self.home),
             "CODEX_HOME": str(self.codex_home),
             # Upstream OMX stores actual state under "$OMX_ROOT/.omx".
             "OMX_ROOT": str(self.omx_root),
-            "OMX_TEAM_STATE_ROOT": str(self.omx_team_state_root),
             "OMX_LAUNCH_POLICY": "direct",
             "OMXBOX_ACTIVE": "1",
             # Aura owns update cadence/readiness for managed seats; interactive
@@ -69,13 +68,42 @@ class OmxBox:
             "OMX_NOTIFY_FALLBACK": "0",
             "OMX_SOURCE_CWD": source_cwd,
             "AURA_OMX_BOX": str(self.root),
-            "PATH": omx_adapter.adapter_path_prefix(self.runtime),
+            "OMX_TEAM_STATE_ROOT": str(self.omx_team_state_root),
         }
+        if not self.package_layout:
+            env["HOME"] = str(self.home)
+        if self.adapter and self.adapter.native_hook_path:
+            env["AURA_OMX_NATIVE_HOOK"] = str(self.adapter.native_hook_path)
         if self.profile:
             env["AURA_OMX_PROFILE"] = self.profile
         return env
 
     def metadata(self) -> dict[str, object]:
+        if self.package_layout:
+            return {
+                "omx_isolation": "aura-agent-package",
+                "omx_package_root": str(self.root),
+                "omx_package_codex_home": str(self.codex_home),
+                "omx_package_omx_root": str(self.omx_root),
+                "omx_package_omx_state": str(self.omx_state),
+                "omx_package_team_state_root": str(self.omx_team_state_root),
+                "omx_runtime_base_source": "aura-runtime-base",
+                **({"omx_runtime_base_root": str(self.base_root)} if self.base_root else {}),
+                "omx_runtime_base_applied": self.base_applied,
+                "omx_runtime_base_templates_applied": list(self.base_templates_applied),
+                "omx_setup_ran": self.setup_ran,
+                "omx_setup_skipped": self.setup_skipped,
+                "omx_auth_seeded": self.auth_seeded,
+                "omx_config_seeded": self.config_seeded,
+                "omx_star_prompt_preseeded": self.star_prompt_preseeded,
+                "omx_source_cwd_trusted": self.source_cwd_trusted,
+                **(self.adapter.metadata() if self.adapter else {"omx_adapter_enabled": False}),
+                **({"omx_profile": self.profile} if self.profile else {}),
+                **({"omx_profile_root": str(self.profile_root)} if self.profile_root else {}),
+                "omx_profile_applied": self.profile_applied,
+                "omx_profile_templates_applied": list(self.profile_templates_applied),
+                **({"omx_setup_error": self.setup_error} if self.setup_error else {}),
+            }
         return {
             "omx_isolation": "aura-seat-box",
             "omx_box_root": str(self.root),
@@ -137,7 +165,7 @@ def _copy_if_present(source: Path, destination: Path, *, replace: bool = False) 
     return True
 
 
-def _apply_profile_template(profile: str | None, *, home: Path, codex_home: Path, omx_root: Path) -> tuple[Path | None, bool, tuple[str, ...]]:
+def _apply_profile_template(profile: str | None, *, home: Path, codex_home: Path, omx_root: Path, package_layout: bool = False) -> tuple[Path | None, bool, tuple[str, ...]]:
     """Apply an explicit reusable OMX profile template into a per-seat box.
 
     Profiles are opt-in templates under ~/.aura/omx-profiles/<profile>/.
@@ -148,14 +176,13 @@ def _apply_profile_template(profile: str | None, *, home: Path, codex_home: Path
     root = profile_root(profile)
     if not root.is_dir():
         raise FileNotFoundError(f"omx profile not found: {root}")
-    profile_applied, templates_applied = runtime_boxes.apply_templates(
-        root,
-        {
-            "home-template": home,
-            "codex-home-template": codex_home,
-            "omx-root-template": omx_root,
-        },
-    )
+    mappings = {
+        "codex-home-template": codex_home,
+        "omx-root-template": omx_root,
+    }
+    if not package_layout:
+        mappings["home-template"] = home
+    profile_applied, templates_applied = runtime_boxes.apply_templates(root, mappings)
     return root, profile_applied, templates_applied
 
 
@@ -268,17 +295,19 @@ def _setup_disabled() -> bool:
     return value in {"0", "false", "no", "off", "skip"}
 
 
-def _run_setup(root: Path, home: Path, codex_home: Path, omx_root: Path, runtime: Path) -> None:
+def _run_setup(root: Path, home: Path, codex_home: Path, omx_root: Path, runtime: Path, *, package_layout: bool = False) -> None:
     env = {
         **os.environ,
-        "HOME": str(home),
         "CODEX_HOME": str(codex_home),
         "OMX_ROOT": str(omx_root),
         "OMX_LAUNCH_POLICY": "direct",
         "OMXBOX_ACTIVE": "1",
         "OMX_AUTO_UPDATE": "0",
         "OMX_NOTIFY_FALLBACK": "0",
+        "OMX_TEAM_STATE_ROOT": str(omx_root / ".omx" / "state"),
     }
+    if not package_layout:
+        env["HOME"] = str(home)
     result = subprocess.run(
         [
             "omx",
@@ -291,7 +320,7 @@ def _run_setup(root: Path, home: Path, codex_home: Path, omx_root: Path, runtime
             "--mcp",
             "none",
         ],
-        cwd=str(runtime),
+        cwd=str(root if package_layout else runtime),
         env=env,
         text=True,
         capture_output=True,
@@ -300,17 +329,6 @@ def _run_setup(root: Path, home: Path, codex_home: Path, omx_root: Path, runtime
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(detail or f"omx setup failed with exit code {result.returncode}")
-    marker = {
-        "schema": "aura.omx_box.v1",
-        "created_at": _now_iso(),
-        "root": str(root),
-        "home": str(home),
-        "codex_home": str(codex_home),
-        "omx_root": str(omx_root),
-        "omx_state": str(omx_root / ".omx"),
-        "runtime": str(runtime),
-    }
-    (root / SETUP_MARKER).write_text(json.dumps(marker, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def prepare_box(
@@ -335,7 +353,8 @@ def prepare_box(
     omx_state = omx_root / ".omx"
     omx_team_state_root = omx_state / "state"
     runtime = root / "runtime"
-    for path in (home, codex_home, omx_root, omx_team_state_root, runtime):
+    paths = (codex_home, omx_team_state_root) if package_layout else (home, codex_home, omx_root, omx_team_state_root, runtime)
+    for path in paths:
         path.mkdir(parents=True, exist_ok=True)
 
     profile_path, profile_applied, profile_templates_applied = _apply_profile_template(
@@ -343,15 +362,20 @@ def prepare_box(
         home=home,
         codex_home=codex_home,
         omx_root=omx_root,
+        package_layout=package_layout,
+    )
+    base_mappings = {
+        "codex-home-template": codex_home,
+        "omx-root-template": omx_root,
+    } if package_layout else runtime_bases.template_mappings(
+        "omx",
+        home=home,
+        codex_home=codex_home,
+        omx_root=omx_root,
     )
     base_path, base_applied, base_templates_applied = runtime_bases.apply_default_runtime_base(
         "omx",
-        runtime_bases.template_mappings(
-            "omx",
-            home=home,
-            codex_home=codex_home,
-            omx_root=omx_root,
-        ),
+        base_mappings,
     )
     auth_seeded, config_seeded = _seed_codex_home(codex_home)
     already_ready = _has_setup(codex_home)
@@ -359,17 +383,17 @@ def prepare_box(
     setup_ran = False
     setup_skipped = False
     setup_error = None
-    star_prompt_preseeded = _preseed_star_prompt(home)
+    star_prompt_preseeded = False if package_layout else _preseed_star_prompt(home)
     setup_disabled = _setup_disabled()
     if setup_disabled:
         setup_skipped = True
     elif force_setup or not already_ready:
         try:
-            _run_setup(root, home, codex_home, omx_root, runtime)
+            _run_setup(root, home, codex_home, omx_root, runtime, package_layout=package_layout)
             setup_ran = True
             # setup may refresh config.toml; re-apply box-local prompt/trust
             # preseed after it writes managed config.
-            star_prompt_preseeded = _preseed_star_prompt(home)
+            star_prompt_preseeded = False if package_layout else _preseed_star_prompt(home)
         except Exception as exc:  # pragma: no cover - exercised through caller error path.
             setup_error = str(exc)
             raise
@@ -402,4 +426,5 @@ def prepare_box(
         star_prompt_preseeded=star_prompt_preseeded,
         source_cwd_trusted=source_cwd_trusted,
         adapter=adapter_result,
+        package_layout=package_layout,
     )

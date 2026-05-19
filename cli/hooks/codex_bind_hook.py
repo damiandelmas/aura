@@ -69,11 +69,33 @@ def _target() -> str | None:
     return f"{fleet}:{seat}" if fleet and seat else None
 
 
+def _is_package_agent_root(root: Path) -> bool:
+    if _first_string(os.environ.get("AURA_AGENT_PACKAGE_ID"), os.environ.get("AURA_AGENT_PACKAGE_ROOT")):
+        return True
+    try:
+        resolved = root.expanduser().resolve()
+    except Exception:
+        resolved = root.expanduser()
+    if (resolved / "manifest.json").exists():
+        return True
+    if (resolved / "agent.json").exists():
+        try:
+            body = json.loads((resolved / "agent.json").read_text(encoding="utf-8"))
+        except Exception:
+            body = {}
+        if str(body.get("schema") or "").startswith("aura.agent_"):
+            return True
+    return False
+
+
 def _log_path() -> Path | None:
     root = _first_string(os.environ.get("AURA_RUNTIME_CAPSULE_REF"), os.environ.get("AURA_CODEX_BOX"))
     if not root:
         return None
-    return Path(root).expanduser() / "receipts" / "codex-bind-hook.jsonl"
+    root_path = Path(root).expanduser()
+    if _is_package_agent_root(root_path):
+        return None
+    return root_path / "receipts" / "codex-bind-hook.jsonl"
 
 
 def _append_log(entry: dict) -> None:

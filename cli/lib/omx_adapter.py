@@ -66,17 +66,21 @@ class OmxAdapterResult:
 
 
 def adapter_bin_dir(runtime: Path) -> Path:
-    return runtime / "bin"
+    # Compatibility API: the adapter no longer lives inside each body.
+    return wrapper_path(runtime).parent
 
 
 def wrapper_path(runtime: Path) -> Path:
-    return adapter_bin_dir(runtime) / WRAPPER_NAME
+    return Path(__file__).resolve().parents[1] / "hooks" / WRAPPER_NAME
 
 
 def adapter_path_prefix(runtime: Path, current_path: str | None = None) -> str:
     current = current_path if current_path is not None else os.environ.get("PATH", "")
-    adapter_bin = str(adapter_bin_dir(runtime))
-    return adapter_bin if not current else f"{adapter_bin}:{current}"
+    legacy_bin = runtime / "bin"
+    if not legacy_bin.is_dir():
+        return current
+    legacy = str(legacy_bin)
+    return legacy if not current else f"{legacy}:{current}"
 
 
 def _is_omx_native_hook_command(command: str, wrapper: Path | None = None) -> bool:
@@ -100,12 +104,19 @@ def _extract_native_hook_command(hooks_config: dict[str, Any]) -> tuple[str, Pat
                 if not isinstance(hook, dict):
                     continue
                 command = hook.get("command")
-                if not isinstance(command, str) or "codex-native-hook.js" not in command:
+                if not isinstance(command, str):
                     continue
                 parts = shlex.split(command)
-                for part in parts:
-                    if part.endswith("codex-native-hook.js"):
-                        return command, Path(part)
+                if WRAPPER_NAME in command:
+                    for part in parts:
+                        if part.startswith("AURA_OMX_NATIVE_HOOK="):
+                            value = part.split("=", 1)[1]
+                            if value:
+                                return command, Path(value)
+                if "codex-native-hook.js" in command:
+                    for part in parts:
+                        if part.endswith("codex-native-hook.js"):
+                            return command, Path(part)
     return None
 
 
@@ -124,19 +135,10 @@ def _read_marker_native_hook(root: Path) -> Path | None:
 
 
 def _write_native_hook_wrapper(path: Path, *, node_path: str, native_hook_path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    bind_hook_path = Path(__file__).resolve().parents[1] / "hooks" / "codex_bind_hook.py"
-    script = f"""#!/usr/bin/env bash
-set -euo pipefail
-export OMX_NOTIFY_FALLBACK="${{OMX_NOTIFY_FALLBACK:-0}}"
-payload_file="$(mktemp -t aura-omx-hook.XXXXXX)"
-trap 'rm -f "$payload_file"' EXIT
-cat > "$payload_file"
-{shlex.quote(shutil.which("python3") or "python3")} {shlex.quote(str(bind_hook_path))} < "$payload_file" >/dev/null 2>&1 || true
-exec {shlex.quote(node_path)} {shlex.quote(str(native_hook_path))} < "$payload_file"
-"""
-    path.write_text(script, encoding="utf-8")
-    path.chmod(0o755)
+    # The wrapper is a stable Aura-owned script.  Native hook location is passed
+    # at launch time via AURA_OMX_NATIVE_HOOK, so no per-agent wrapper is needed.
+    if not path.is_file():
+        raise FileNotFoundError(f"Aura OMX hook wrapper missing: {path}")
 
 
 def _canonical_json(value: Any) -> Any:
@@ -196,7 +198,7 @@ def _rewrite_hooks_config(
         native_hook_path = fallback_native_hook_path
         node_path = shutil.which("node") or "node"
     _write_native_hook_wrapper(wrapper, node_path=node_path, native_hook_path=native_hook_path)
-    wrapper_command = shlex.quote(str(wrapper))
+    wrapper_command = f"AURA_OMX_NATIVE_HOOK={shlex.quote(str(native_hook_path))} {shlex.quote(str(wrapper))}"
 
     hooks = parsed.setdefault("hooks", {})
     if not isinstance(hooks, dict):
@@ -295,10 +297,11 @@ def _probes_enabled() -> bool:
     return value not in {"0", "false", "no", "off", "skip"}
 
 
-def _run_native_probe(wrapper: Path, runtime: Path) -> str:
+def _run_native_probe(wrapper: Path, runtime: Path, native_hook_path: Path) -> str:
     if not _probes_enabled():
         return "skipped"
-    probe_root = Path(tempfile.mkdtemp(prefix="native-", dir=str(runtime)))
+    probe_parent = runtime if runtime.is_dir() else runtime.parent
+    probe_root = Path(tempfile.mkdtemp(prefix="native-", dir=str(probe_parent)))
     try:
         source = probe_root / "source"
         home = probe_root / "home"
@@ -316,6 +319,7 @@ def _run_native_probe(wrapper: Path, runtime: Path) -> str:
             "OMX_ROOT": str(omx_root),
             "OMX_TEAM_STATE_ROOT": str(omx_root / ".omx" / "state"),
             "OMX_NOTIFY_FALLBACK": "0",
+            "AURA_OMX_NATIVE_HOOK": str(native_hook_path),
         }
         payload = {
             "hook_event_name": "SessionStart",
@@ -354,7 +358,8 @@ def _run_hud_probe(native_hook_path: Path, runtime: Path) -> str:
     authority = package_root / "dist" / "hud" / "authority.js"
     if not authority.is_file():
         return "skipped:hud-authority-missing"
-    probe_root = Path(tempfile.mkdtemp(prefix="hud-", dir=str(runtime)))
+    probe_parent = runtime if runtime.is_dir() else runtime.parent
+    probe_root = Path(tempfile.mkdtemp(prefix="hud-", dir=str(probe_parent)))
     try:
         source = probe_root / "source"
         omx_root = probe_root / "omx-root"
@@ -399,21 +404,10 @@ def apply_adapter(*, root: Path, codex_home: Path, runtime: Path) -> OmxAdapterR
         if not native_hook_path:
             return OmxAdapterResult(enabled=False, error="native OMX hook not found in boxed hooks.json")
         config_updated = _update_config_trust_state(config_path, managed_trust)
-        native_probe = _run_native_probe(path, runtime)
+        native_probe = _run_native_probe(path, runtime, native_hook_path)
         hud_probe = _run_hud_probe(native_hook_path, runtime)
         if native_probe.startswith("failed") or hud_probe.startswith("failed"):
             raise RuntimeError(f"OMX adapter probe failed: native={native_probe}; hud={hud_probe}")
-        marker = {
-            "schema": "aura.omx_adapter.v1",
-            "wrapper": str(path),
-            "native_hook": str(native_hook_path),
-            "hooks_rewritten": hooks_rewritten,
-            "trust_state_updated": trust_updated,
-            "config_trust_updated": config_updated,
-            "native_probe": native_probe,
-            "hud_probe": hud_probe,
-        }
-        (root / ADAPTER_MARKER).write_text(json.dumps(marker, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return OmxAdapterResult(
             enabled=True,
             wrapper_path=path,

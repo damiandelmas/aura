@@ -303,20 +303,6 @@ def run(args):
         result["quick_runtime"] = spawn_args.runtime
         result["quick_profile"] = profile
         if quick_agent:
-            if result.get("ok"):
-                agent_packages.append_spawn_history(
-                    str(quick_agent["agent_id"]),
-                    {
-                        "fleet": result.get("fleet"),
-                        "seat": result.get("name"),
-                        "runtime": result.get("runtime"),
-                        "cwd": result.get("cwd") or result.get("workdir") or spawn_args.cwd,
-                        "aura_launch_id": result.get("aura_launch_id"),
-                        "seat_instance_id": result.get("seat_instance_id"),
-                        "runtime_capsule_ref": result.get("runtime_capsule_ref") or quick_agent.get("root"),
-                        "quick": True,
-                    },
-                )
             result["quick_agent_package_id"] = quick_agent.get("agent_id")
             result["quick_agent_package_address"] = quick_agent.get("address")
             result["quick_agent_package_alias"] = quick_agent.get("alias")

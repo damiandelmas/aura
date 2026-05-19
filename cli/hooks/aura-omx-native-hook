@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export OMX_NOTIFY_FALLBACK="${OMX_NOTIFY_FALLBACK:-0}"
+payload_file="$(mktemp -t aura-omx-hook.XXXXXX)"
+trap 'rm -f "$payload_file"' EXIT
+cat > "$payload_file"
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+python3 "$script_dir/codex_bind_hook.py" < "$payload_file" >/dev/null 2>&1 || true
+native_hook="${AURA_OMX_NATIVE_HOOK:-}"
+if [ -z "$native_hook" ]; then
+  echo "AURA_OMX_NATIVE_HOOK is required" >&2
+  exit 2
+fi
+exec "${AURA_OMX_NODE:-node}" "$native_hook" < "$payload_file"

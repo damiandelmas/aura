@@ -177,7 +177,7 @@ def main():
     p_agent_spawn.add_argument("--seat", metavar="NAME", help="Override seat for this spawn")
     p_agent_spawn.add_argument("--prompt", "-p", metavar="TEXT", help="Initial prompt")
     p_agent_spawn.add_argument("--resume-session", metavar="SESSION_ID",
-                               help="Runtime-native session id to resume; use 'latest' for the package runtime-session.json")
+                               help="Runtime-native session id to resume; use 'latest' for the latest registry-bound package session")
     p_agent_spawn.add_argument("--model", metavar="MODEL", help="Model option passed through to runtime")
     p_agent_spawn.add_argument("--wait", "-w", action="store_true", help="Wait for runtime observation/readiness")
     p_agent_spawn.add_argument("--timeout", type=int, default=30, help="Timeout for --wait")
@@ -690,6 +690,7 @@ def main():
     p_event_subscribe_reports.add_argument("--to", required=True, help="Subscriber target seat")
     p_event_subscribe_reports.add_argument("--fleet", help="Only match reports from this fleet")
     p_event_subscribe_reports.add_argument("--target", help="Only match reports from this reporting seat")
+    p_event_subscribe_reports.add_argument("--placement", help="Only match reports from members of this placement")
     p_event_subscribe_reports.add_argument("--state", action="append", choices=["working", "blocked", "needs_decision", "handoff", "complete", "parked", "failed"],
                                            help="Only match this report state; repeatable")
     p_event_subscribe_reports.add_argument("--as", dest="sender", default="aura-event", help="Sender label for notifications")

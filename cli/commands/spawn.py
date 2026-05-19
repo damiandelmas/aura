@@ -586,6 +586,15 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "flex_project_root": str(flex_root),
         }
 
+    if agent_package_meta:
+        if agent_package_meta.get("agent_package_id"):
+            launch_env["AURA_AGENT_PACKAGE_ID"] = str(agent_package_meta["agent_package_id"])
+        if agent_package_meta.get("agent_package_root"):
+            launch_env["AURA_AGENT_PACKAGE_ROOT"] = str(agent_package_meta["agent_package_root"])
+        if agent_package_meta.get("agent_package_address"):
+            launch_env["AURA_AGENT_PACKAGE_ADDRESS"] = str(agent_package_meta["agent_package_address"])
+        if agent_package_meta.get("agent_package_alias"):
+            launch_env["AURA_AGENT_PACKAGE_ALIAS"] = str(agent_package_meta["agent_package_alias"])
     if role_meta:
         launch_env.update(_desks_launch_env(role_meta))
         if role_meta.get("identity_provider"):
@@ -816,18 +825,19 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             pass
 
     capsule_launch = {}
-    try:
-        from lib import runtime_capsules
+    if not agent_package:
+        try:
+            from lib import runtime_capsules
 
-        capsule_launch = runtime_capsules.write_aura_launch(registered, env_roots=launch_env)
-        if capsule_launch.get("ok"):
-            registered = registry.upsert_agent({
-                **registered,
-                "runtime_capsule_ref": capsule_launch.get("capsule_root"),
-                "runtime_capsule_launch": capsule_launch.get("path"),
-            })
-    except Exception as exc:
-        capsule_launch = {"ok": False, "reason": "capsule-launch-write-failed", "error": str(exc)}
+            capsule_launch = runtime_capsules.write_aura_launch(registered, env_roots=launch_env)
+            if capsule_launch.get("ok"):
+                registered = registry.upsert_agent({
+                    **registered,
+                    "runtime_capsule_ref": capsule_launch.get("capsule_root"),
+                    "runtime_capsule_launch": capsule_launch.get("path"),
+                })
+        except Exception as exc:
+            capsule_launch = {"ok": False, "reason": "capsule-launch-write-failed", "error": str(exc)}
 
     try:
         from lib import session_ledger
@@ -1081,19 +1091,20 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 )
             except Exception:
                 pass
-            try:
-                from lib import runtime_capsules
+            if not agent_package:
+                try:
+                    from lib import runtime_capsules
 
-                capsule_session = runtime_capsules.write_runtime_session(observed_after)
-                if capsule_session.get("ok"):
-                    result["runtime_capsule_session"] = capsule_session.get("path")
-                    registry.upsert_agent({
-                        **observed_after,
-                        "runtime_capsule_ref": capsule_session.get("capsule_root"),
-                        "runtime_capsule_session": capsule_session.get("path"),
-                    })
-            except Exception as exc:
-                result["runtime_capsule_session_warning"] = str(exc)
+                    capsule_session = runtime_capsules.write_runtime_session(observed_after)
+                    if capsule_session.get("ok"):
+                        result["runtime_capsule_session"] = capsule_session.get("path")
+                        registry.upsert_agent({
+                            **observed_after,
+                            "runtime_capsule_ref": capsule_session.get("capsule_root"),
+                            "runtime_capsule_session": capsule_session.get("path"),
+                        })
+                except Exception as exc:
+                    result["runtime_capsule_session_warning"] = str(exc)
     _record_workspace_spawn(workdir_path, result, runtime=runtime)
     return result_fn({k: v for k, v in result.items() if v is not None})
 
@@ -1960,6 +1971,20 @@ def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> Non
             "flex_project_manifest": result.get("flex_project_manifest"),
             "flex_project_root": result.get("flex_project_root"),
             "omx_isolation": result.get("omx_isolation"),
+            "omx_package_root": result.get("omx_package_root"),
+            "omx_package_codex_home": result.get("omx_package_codex_home"),
+            "omx_package_omx_root": result.get("omx_package_omx_root"),
+            "omx_package_omx_state": result.get("omx_package_omx_state"),
+            "omx_package_team_state_root": result.get("omx_package_team_state_root"),
+            "omx_runtime_base_source": result.get("omx_runtime_base_source"),
+            "omx_runtime_base_root": result.get("omx_runtime_base_root"),
+            "omx_runtime_base_applied": result.get("omx_runtime_base_applied"),
+            "omx_runtime_base_templates_applied": result.get("omx_runtime_base_templates_applied"),
+            "omx_setup_ran": result.get("omx_setup_ran"),
+            "omx_setup_skipped": result.get("omx_setup_skipped"),
+            "omx_auth_seeded": result.get("omx_auth_seeded"),
+            "omx_config_seeded": result.get("omx_config_seeded"),
+            "omx_source_cwd_trusted": result.get("omx_source_cwd_trusted"),
             "omx_box_root": result.get("omx_box_root"),
             "omx_box_home": result.get("omx_box_home"),
             "omx_box_codex_home": result.get("omx_box_codex_home"),
@@ -1976,6 +2001,15 @@ def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> Non
             "omx_profile_applied": result.get("omx_profile_applied"),
             "omx_profile_templates_applied": result.get("omx_profile_templates_applied"),
             "codex_isolation": result.get("codex_isolation"),
+            "codex_package_root": result.get("codex_package_root"),
+            "codex_package_codex_home": result.get("codex_package_codex_home"),
+            "codex_runtime_base_source": result.get("codex_runtime_base_source"),
+            "codex_runtime_base_root": result.get("codex_runtime_base_root"),
+            "codex_runtime_base_applied": result.get("codex_runtime_base_applied"),
+            "codex_runtime_base_templates_applied": result.get("codex_runtime_base_templates_applied"),
+            "codex_auth_seeded": result.get("codex_auth_seeded"),
+            "codex_config_seeded": result.get("codex_config_seeded"),
+            "codex_source_cwd_trusted": result.get("codex_source_cwd_trusted"),
             "codex_box_root": result.get("codex_box_root"),
             "codex_box_home": result.get("codex_box_home"),
             "codex_box_codex_home": result.get("codex_box_codex_home"),

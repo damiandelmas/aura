@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from lib import agent_packages
@@ -21,14 +20,19 @@ def _resume_session(record: dict, args) -> str | None:
         return None
     if str(requested).strip().lower() not in {"latest", "last"}:
         return requested
-    path = Path(record["root"]) / "runtime-session.json"
-    if not path.exists():
-        raise FileNotFoundError(f"agent package has no runtime-session.json: {path}")
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    session_id = payload.get("runtime_session_id") or payload.get("session_id")
-    if not session_id:
-        raise ValueError(f"runtime-session.json has no session id: {path}")
-    return str(session_id)
+    from lib import registry
+
+    agent_id = record.get("agent_id")
+    candidates = []
+    for row in registry.read_registry().values():
+        if row.get("agent_package_id") != agent_id:
+            continue
+        session_id = row.get("runtime_session_id") or row.get("session_id")
+        if session_id:
+            candidates.append((row.get("runtime_session_updated_at_ms") or row.get("updated_at") or row.get("registered_at") or "", session_id))
+    if not candidates:
+        raise FileNotFoundError(f"agent package has no latest runtime session in registry: {agent_id}")
+    return str(sorted(candidates, key=lambda item: str(item[0]))[-1][1])
 
 
 def _spawn_args(record: dict, args) -> argparse.Namespace:
@@ -49,7 +53,7 @@ def _spawn_args(record: dict, args) -> argparse.Namespace:
         fork_session=None,
         identity_provider="aura-agent",
         identity_id=record["agent_id"],
-        identity_label=record["address"],
+        identity_label=record.get("address") or record.get("alias") or record["agent_id"],
         at=None,
         slice=None,
         prompt=getattr(args, "prompt", None),
@@ -70,7 +74,7 @@ def _spawn_args(record: dict, args) -> argparse.Namespace:
         launch_command=None,
         _agent_package={
             "agent_id": record["agent_id"],
-            "address": record["address"],
+            "address": record.get("address"),
             "alias": record.get("alias"),
             "root": record["root"],
         },
@@ -110,20 +114,9 @@ def run(args):
             return {"ok": False, "error": "agent-spawn-args-failed", "detail": str(exc), "ref": args.ref}
         result = spawn.run(spawn_args)
         if isinstance(result, dict) and result.get("ok"):
-            agent_packages.append_spawn_history(
-                record["agent_id"],
-                {
-                    "fleet": result.get("fleet"),
-                    "seat": result.get("name"),
-                    "runtime": result.get("runtime"),
-                    "cwd": result.get("cwd") or result.get("workdir"),
-                    "aura_launch_id": result.get("aura_launch_id"),
-                    "seat_instance_id": result.get("seat_instance_id"),
-                    "runtime_capsule_ref": result.get("runtime_capsule_ref"),
-                },
-            )
             result["agent_package_id"] = record["agent_id"]
-            result["agent_package_address"] = record["address"]
+            if record.get("address"):
+                result["agent_package_address"] = record.get("address")
             result["agent_package_root"] = record["root"]
         return result
     return {"ok": False, "error": f"unknown agent action: {action}"}

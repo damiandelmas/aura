@@ -62,6 +62,7 @@ def create(
     to: str,
     fleet: str | None = None,
     target: str | None = None,
+    placement: str | None = None,
     states: list[str] | None = None,
     sender: str = "aura-event",
 ) -> dict[str, Any]:
@@ -76,6 +77,7 @@ def create(
         "sender": sender,
         "fleet": fleet,
         "target": target,
+        "placement": placement,
         "states": states or [],
         "status": "active",
         "created_at": now,
@@ -152,6 +154,32 @@ def _matches_target(target: str, report: dict[str, Any]) -> bool:
         return False
 
 
+def _matches_placement(placement: str, report: dict[str, Any]) -> bool:
+    try:
+        from lib import placements, registry
+
+        record = placements.get_placement(placement)
+        if not record:
+            return False
+        report_targets = _report_targets(report)
+        for member in record.get("members") or []:
+            seat_ref = member.get("seat_ref")
+            if not seat_ref:
+                continue
+            candidates = {str(seat_ref)}
+            try:
+                resolved, chain = registry.resolve_alias(str(seat_ref))
+                if chain and resolved:
+                    candidates.add(resolved)
+            except Exception:
+                pass
+            if candidates & report_targets:
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def matches_report(record: dict[str, Any], report: dict[str, Any]) -> bool:
     if record.get("status") != "active":
         return False
@@ -161,6 +189,8 @@ def matches_report(record: dict[str, Any], report: dict[str, Any]) -> bool:
     if record.get("fleet") and report.get("fleet") != record["fleet"]:
         return False
     if record.get("target") and not _matches_target(str(record["target"]), report):
+        return False
+    if record.get("placement") and not _matches_placement(str(record["placement"]), report):
         return False
     return True
 

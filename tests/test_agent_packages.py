@@ -31,13 +31,27 @@ def test_agent_create_writes_minimal_package(monkeypatch, tmp_path):
     assert agent["agent_id"].startswith("i_")
     assert agent["address"] == "flexgraph:chatbot:pipeline:conductor"
     assert agent["profile"] == "omx/aura-operator"
-    assert (root / "agent.json").is_file()
-    assert (root / "home").is_dir()
+    assert (root / "manifest.json").is_file()
+    assert not (root / "agent.json").exists()
     assert (root / ".codex").is_dir()
     assert (root / ".omx" / "state").is_dir()
-    assert (root / ".desks" / "identity.json").is_file()
-    assert (root / "receipts").is_dir()
-    assert (root / "artifacts").is_dir()
+    assert not (root / "home").exists()
+    assert not (root / ".desks").exists()
+    assert not (root / "runtime").exists()
+    assert not (root / "receipts").exists()
+    assert not (root / "artifacts").exists()
+    body = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    assert body == {
+        "argv": ["omx"],
+        "cwd": str((tmp_path / "unit").resolve()),
+        "env": {"CODEX_HOME": ".codex", "OMX_ROOT": ".", "OMX_TEAM_STATE_ROOT": ".omx/state"},
+        "fleet": "flexgraph-chatbot",
+        "profile": "omx/aura-operator",
+        "resume": {"default": "latest"},
+        "runtime": "omx",
+        "schema": "aura.agent_manifest.v1",
+        "seat": "pipeline",
+    }
 
 
 def test_agent_inspect_resolves_address_and_alias(monkeypatch, tmp_path):
@@ -62,7 +76,10 @@ def test_agent_inspect_resolves_address_and_alias(monkeypatch, tmp_path):
     assert by_address["agent"]["agent_id"] == created["agent"]["agent_id"]
     assert by_alias["agent"]["root"] == created["agent"]["root"]
     assert by_address["agent"]["profile"] == "codex/worker"
-    assert "agent_json" in by_address["files"]
+    assert "manifest" in by_address["files"]
+    root = Path(created["agent"]["root"])
+    assert (root / ".codex").is_dir()
+    assert not (root / ".omx").exists()
 
 
 def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
@@ -118,7 +135,9 @@ def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
     assert captured["identity_id"] == created["agent"]["agent_id"]
     assert captured["_agent_package"]["root"] == created["agent"]["root"]
     inspected = agent_packages.inspect(created["agent"]["agent_id"])
-    assert inspected["agent"]["spawn_history"][0]["runtime_capsule_ref"] == created["agent"]["root"]
+    assert "spawn_history" not in inspected["agent"]
+    body = json.loads((Path(created["agent"]["root"]) / "manifest.json").read_text(encoding="utf-8"))
+    assert "spawn_history" not in body
 
 
 def test_agent_spawn_latest_resume_reads_package_runtime_session(monkeypatch, tmp_path):
@@ -138,10 +157,16 @@ def test_agent_spawn_latest_resume_reads_package_runtime_session(monkeypatch, tm
         alias="pipeline-conductor",
     )
     root = Path(created["agent"]["root"])
-    (root / "runtime-session.json").write_text(
-        json.dumps({"runtime_session_id": "019e3334-6cf5-72cb-aafb-9e423bfb9f86"}) + "\n",
-        encoding="utf-8",
-    )
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "pipeline",
+        "fleet": "flexgraph-chatbot",
+        "runtime": "omx",
+        "agent_package_id": created["agent"]["agent_id"],
+        "runtime_session_id": "019e3334-6cf5-72cb-aafb-9e423bfb9f86",
+        "runtime_session_updated_at_ms": 1,
+    })
     captured = {}
 
     def fake_spawn(args):
@@ -199,9 +224,53 @@ def test_codex_prepare_box_supports_agent_package_layout(monkeypatch, tmp_path):
     )
 
     assert box.root == root.resolve()
-    assert box.home == root / "home"
     assert box.codex_home == root / ".codex"
+    assert not (root / "home").exists()
+    assert not (root / "runtime").exists()
     assert (root / ".codex" / "hooks.json").is_file()
+    meta = box.metadata()
+    assert meta["codex_isolation"] == "aura-agent-package"
+    assert meta["codex_package_root"] == str(root.resolve())
+    assert meta["codex_package_codex_home"] == str(root / ".codex")
+    assert not any(key.startswith("codex_box_") for key in meta)
+
+
+def test_omx_prepare_box_supports_agent_package_layout(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+
+    from lib import omx, omx_adapter
+
+    monkeypatch.setattr(
+        omx.omx_adapter,
+        "apply_adapter",
+        lambda **_: omx_adapter.OmxAdapterResult(enabled=True),
+    )
+    root = tmp_path / "state" / "agents" / "i_pkg_omx"
+    box = omx.prepare_box(
+        fleet="fleet",
+        seat="seat",
+        source_cwd=str(cwd),
+        profile=None,
+        root_override=root,
+        package_layout=True,
+    )
+
+    assert box.root == root.resolve()
+    assert box.codex_home == root / ".codex"
+    assert box.omx_root == root.resolve()
+    assert box.omx_state == root / ".omx"
+    assert not (root / "home").exists()
+    assert not (root / "runtime").exists()
+    meta = box.metadata()
+    assert meta["omx_isolation"] == "aura-agent-package"
+    assert meta["omx_package_root"] == str(root.resolve())
+    assert meta["omx_package_codex_home"] == str(root / ".codex")
+    assert meta["omx_package_omx_state"] == str(root / ".omx")
+    assert not any(key.startswith("omx_box_") for key in meta)
 
 
 def test_agent_cli_create_and_inspect_public_argv(tmp_path):
@@ -252,6 +321,44 @@ def test_agent_cli_create_and_inspect_public_argv(tmp_path):
     assert inspected["agent"]["address"] == "flexgraph:chatbot:pipeline:conductor"
     assert inspected["agent"]["root"] == created["agent"]["root"]
     assert Path(inspected["agent"]["root"], ".codex").is_dir()
+
+
+def test_agent_resolve_reads_legacy_agent_json(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from lib import agent_packages
+
+    root = agent_packages.agents_root() / "i_legacy"
+    root.mkdir(parents=True)
+    (root / "agent.json").write_text(
+        json.dumps(
+            {
+                "schema": "aura.agent_package.v1",
+                "agent_id": "i_legacy",
+                "address": "legacy:agent",
+                "runtime": "omx",
+                "cwd": str(tmp_path),
+                "fleet": "legacy",
+                "seat": "agent",
+                "root": str(root),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    agent_packages.write_index(
+        {
+            "agents": {"i_legacy": str(root)},
+            "addresses": {"legacy:agent": "i_legacy"},
+            "aliases": {"legacy-agent": "i_legacy"},
+        }
+    )
+
+    resolved = agent_packages.resolve("legacy-agent")
+
+    assert resolved["agent_id"] == "i_legacy"
+    assert resolved["runtime"] == "omx"
+    assert resolved["root"] == str(root)
 
 
 def test_agent_index_corruption_fails_loudly(monkeypatch, tmp_path):

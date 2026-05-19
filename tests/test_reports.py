@@ -504,6 +504,54 @@ def test_event_subscribe_reports_creates_named_subscription(tmp_path):
     assert shown["subscription"]["subscription_id"] == subscription["subscription_id"]
 
 
+def test_event_subscribe_reports_accepts_placement_filter(tmp_path):
+    env = {
+        **os.environ,
+        "AURA_STATE_DIR": str(tmp_path / ".aura"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    write_registry(env, [
+        {
+            "name": "worker",
+            "fleet": "unitfleet",
+            "runtime": "codex",
+            "seat_instance_id": "si_worker",
+            "pane_ref": "tmux:unitfleet:%1",
+        },
+        {
+            "name": "lead",
+            "fleet": "unitfleet",
+            "runtime": "codex",
+            "seat_instance_id": "si_lead",
+            "pane_ref": "tmux:unitfleet:%2",
+        },
+    ])
+    run_aura(["placement", "add", "ops-wave", "unitfleet:worker", "--role", "worker"], env)
+
+    result = run_aura(
+        [
+            "event",
+            "subscribe",
+            "reports",
+            "--name",
+            "ops-wave-checkins",
+            "--placement",
+            "ops-wave",
+            "--state",
+            "complete",
+            "--to",
+            "unitfleet:lead",
+        ],
+        env,
+    )
+
+    subscription = result["subscription"]
+    assert result["ok"] is True
+    assert subscription["placement"] == "ops-wave"
+    assert subscription["fleet"] is None
+    assert subscription["target"] is None
+
+
 def test_event_subscribe_reports_requires_source_filter(tmp_path):
     env = {
         **os.environ,
@@ -532,7 +580,7 @@ def test_event_subscribe_reports_requires_source_filter(tmp_path):
 
     assert raw.returncode == 1
     assert result["ok"] is False
-    assert result["error"] == "report subscriptions require --fleet or --target"
+    assert result["error"] == "report subscriptions require --fleet, --target, or --placement"
 
 
 def test_event_subscribe_reports_rejects_duplicate_active_name(tmp_path):
@@ -604,6 +652,64 @@ def test_report_command_schedules_report_subscription_after_ack(monkeypatch, tmp
     scheduled = subscription["reports"][result["report_id"]]
     assert scheduled["status"] == "scheduled"
     assert scheduled["release_delay_seconds"] == 1.5
+
+
+def test_report_subscription_matches_placement_member(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+
+    from lib import placements, report_subscriptions, reports, registry
+
+    registry.upsert_agent({
+        "fleet": "unitfleet",
+        "name": "worker",
+        "seat": "worker",
+        "seat_ref": "unitfleet:worker",
+        "runtime": "codex",
+        "registered": True,
+    })
+    placements.add_member("ops-wave", "unitfleet:worker", role="worker")
+    report_subscriptions.create(
+        name="ops-wave-checkins",
+        to="unitfleet:lead",
+        placement="ops-wave",
+        states=["complete"],
+    )
+
+    report = reports.append_report({"state": "complete", "work": "done"})
+    scheduled = reports.schedule_report_subscriptions(report)
+
+    assert len(scheduled) == 1
+    subscription = report_subscriptions.load("ops-wave-checkins")
+    assert subscription["reports"][report["report_id"]]["status"] == "scheduled"
+
+
+def test_report_subscription_ignores_nonmember_placement_report(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "otherfleet")
+    monkeypatch.setenv("AURA_SEAT", "outsider")
+
+    from lib import placements, report_subscriptions, reports, registry
+
+    registry.upsert_agent({
+        "fleet": "unitfleet",
+        "name": "worker",
+        "seat": "worker",
+        "seat_ref": "unitfleet:worker",
+        "runtime": "codex",
+        "registered": True,
+    })
+    placements.add_member("ops-wave", "unitfleet:worker", role="worker")
+    report_subscriptions.create(
+        name="ops-wave-checkins",
+        to="unitfleet:lead",
+        placement="ops-wave",
+        states=["complete"],
+    )
+
+    report = reports.append_report({"state": "complete", "work": "done elsewhere"})
+    assert reports.schedule_report_subscriptions(report) == []
 
 
 def test_paused_report_subscription_does_not_schedule(monkeypatch, tmp_path):

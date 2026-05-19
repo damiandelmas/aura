@@ -77,6 +77,8 @@ def _agent_status(row: dict | None) -> dict | None:
     return {
         "target": row.get("target") or _target_for(row),
         "status": row.get("status"),
+        "liveness": row.get("liveness"),
+        "managed_state": row.get("managed_state"),
         "runtime": row.get("runtime"),
         **{
             key: row.get(key)

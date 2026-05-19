@@ -66,13 +66,14 @@ def test_omx_adapter_rewrites_boxed_hooks_and_trust_state(monkeypatch, tmp_path)
 
     assert result.enabled is True
     assert result.error is None
-    assert result.wrapper_path == runtime / "bin" / "aura-omx-native-hook"
+    assert result.wrapper_path.name == "aura-omx-native-hook"
     assert result.wrapper_path.is_file()
     assert os.access(result.wrapper_path, os.X_OK)
     wrapper = result.wrapper_path.read_text(encoding="utf-8")
     assert "codex_bind_hook.py" in wrapper
     assert "payload_file" in wrapper
-    assert str(native_hook) in wrapper
+    assert "AURA_OMX_NATIVE_HOOK" in wrapper
+    assert not (runtime / "bin" / "aura-omx-native-hook").exists()
     assert result.native_hook_path == native_hook
     assert result.hooks_rewritten is True
     assert result.trust_state_updated is True
@@ -81,7 +82,7 @@ def test_omx_adapter_rewrites_boxed_hooks_and_trust_state(monkeypatch, tmp_path)
     assert result.hud_probe == "skipped"
 
     hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
-    wrapper_command = shlex.quote(str(result.wrapper_path))
+    wrapper_command = f"AURA_OMX_NATIVE_HOOK={shlex.quote(str(native_hook))} {shlex.quote(str(result.wrapper_path))}"
     for entries in hooks["hooks"].values():
         for entry in entries:
             for hook in entry["hooks"]:
@@ -96,9 +97,7 @@ def test_omx_adapter_rewrites_boxed_hooks_and_trust_state(monkeypatch, tmp_path)
     assert "# OMX-owned Codex hook trust state" not in config
     assert str(hooks_path) in config
     assert "sha256:old" not in config
-    marker = json.loads((root / "aura-omx-adapter.json").read_text(encoding="utf-8"))
-    assert marker["wrapper"] == str(result.wrapper_path)
-    assert marker["native_hook"] == str(native_hook)
+    assert not (root / "aura-omx-adapter.json").exists()
 
     second = omx_adapter.apply_adapter(root=root, codex_home=codex_home, runtime=runtime)
 
@@ -109,8 +108,17 @@ def test_omx_adapter_rewrites_boxed_hooks_and_trust_state(monkeypatch, tmp_path)
     assert second.wrapper_path == result.wrapper_path
 
 
-def test_omx_adapter_path_prefix_prepends_runtime_bin(tmp_path):
+def test_omx_adapter_path_prefix_keeps_path_unchanged(tmp_path):
     from lib import omx_adapter
 
     runtime = tmp_path / "runtime"
+    assert omx_adapter.adapter_path_prefix(runtime, "/usr/bin") == "/usr/bin"
+
+
+def test_omx_adapter_path_prefix_preserves_legacy_runtime_bin(tmp_path):
+    from lib import omx_adapter
+
+    runtime = tmp_path / "runtime"
+    (runtime / "bin").mkdir(parents=True)
+
     assert omx_adapter.adapter_path_prefix(runtime, "/usr/bin") == f"{runtime / 'bin'}:/usr/bin"

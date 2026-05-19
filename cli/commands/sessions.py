@@ -656,6 +656,28 @@ def _canonical_bind_target(registry, *, fleet: str, seat: str) -> tuple[str, str
     return fleet, seat, previous, []
 
 
+def _is_package_agent_record(record: dict | None) -> bool:
+    if not record:
+        return False
+    if record.get("agent_package_id") or record.get("agent_package_root"):
+        return True
+    for key in ("runtime_capsule_root", "runtime_home", "omx_box_root", "codex_box_root"):
+        raw = record.get(key)
+        if not raw:
+            continue
+        root = Path(str(raw)).expanduser()
+        if (root / "manifest.json").exists():
+            return True
+        if (root / "agent.json").exists():
+            try:
+                body = json.loads((root / "agent.json").read_text(encoding="utf-8"))
+            except Exception:
+                body = {}
+            if str(body.get("schema") or "").startswith("aura.agent_"):
+                return True
+    return False
+
+
 def _bind_registry_session(
     *,
     fleet: str,
@@ -688,19 +710,22 @@ def _bind_registry_session(
         "registered": True,
     })
     capsule_session = {}
-    try:
-        from lib import runtime_capsules
+    capsule_record = {**updated, **(extra or {})}
+    if _is_package_agent_record(capsule_record):
+        capsule_session = {"ok": False, "skipped": True, "reason": "package-agent-native-session-store"}
+    else:
+        try:
+            from lib import runtime_capsules
 
-        capsule_record = {**updated, **(extra or {})}
-        capsule_session = runtime_capsules.write_runtime_session(capsule_record)
-        if capsule_session.get("ok"):
-            updated = registry.upsert_agent({
-                **updated,
-                "runtime_capsule_ref": capsule_session.get("capsule_root"),
-                "runtime_capsule_session": capsule_session.get("path"),
-            })
-    except Exception as exc:
-        capsule_session = {"ok": False, "reason": "capsule-session-write-failed", "error": str(exc)}
+            capsule_session = runtime_capsules.write_runtime_session(capsule_record)
+            if capsule_session.get("ok"):
+                updated = registry.upsert_agent({
+                    **updated,
+                    "runtime_capsule_ref": capsule_session.get("capsule_root"),
+                    "runtime_capsule_session": capsule_session.get("path"),
+                })
+        except Exception as exc:
+            capsule_session = {"ok": False, "reason": "capsule-session-write-failed", "error": str(exc)}
     session_ledger.append_record({
         "event": event,
         "seat": seat,

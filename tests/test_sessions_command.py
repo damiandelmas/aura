@@ -257,7 +257,7 @@ def test_codex_bind_hook_script_binds_capsule_session_quietly(monkeypatch, tmp_p
     assert '"ok": true' in receipt
 
 
-def test_codex_bind_hook_script_accepts_omx_runtime(monkeypatch, tmp_path):
+def test_codex_bind_hook_script_accepts_omx_package_without_capsule_residue(monkeypatch, tmp_path):
     import json
     import os
     import subprocess
@@ -267,6 +267,10 @@ def test_codex_bind_hook_script_accepts_omx_runtime(monkeypatch, tmp_path):
     capsule = tmp_path / "omx-agent"
     codex_home = capsule / ".codex"
     codex_home.mkdir(parents=True)
+    (capsule / "manifest.json").write_text(
+        json.dumps({"schema": "aura.agent_manifest.v1", "runtime": "omx"}) + "\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("AURA_STATE_DIR", str(state))
 
     registry.upsert_agent({
@@ -279,6 +283,7 @@ def test_codex_bind_hook_script_accepts_omx_runtime(monkeypatch, tmp_path):
         "omx_box_root": str(capsule),
         "omx_box_codex_home": str(codex_home),
         "omx_box_omx_root": str(capsule),
+        "agent_package_id": "i_pkg",
         "agent_package_root": str(capsule),
     })
 
@@ -290,6 +295,8 @@ def test_codex_bind_hook_script_accepts_omx_runtime(monkeypatch, tmp_path):
         "AURA_RUNTIME": "omx",
         "AURA_SEAT_INSTANCE_ID": "si_omx_hook",
         "AURA_RUNTIME_CAPSULE_REF": str(capsule),
+        "AURA_AGENT_PACKAGE_ID": "i_pkg",
+        "AURA_AGENT_PACKAGE_ROOT": str(capsule),
     }
     payload = {
         "hook_event_name": "SessionStart",
@@ -310,7 +317,7 @@ def test_codex_bind_hook_script_accepts_omx_runtime(monkeypatch, tmp_path):
     row = registry.get_agent("pipeline", fleet="flexgraph-chatbot")
     assert row["runtime"] == "omx"
     assert row["runtime_session_id"] == "thread-omx-hook"
-    assert (capsule / "runtime-session.json").is_file()
-    body = json.loads((capsule / "runtime-session.json").read_text(encoding="utf-8"))
-    assert body["runtime_session_id"] == "thread-omx-hook"
-    assert body["codex_home"] == str(codex_home)
+    assert "runtime_capsule_session" not in row
+    assert not (capsule / "runtime-session.json").exists()
+    assert not (capsule / "receipts").exists()
+    assert not (capsule / "artifacts").exists()

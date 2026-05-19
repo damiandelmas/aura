@@ -40,19 +40,41 @@ class CodexBox:
     source_cwd_trusted: bool = False
     aura_hook_installed: bool = False
     aura_hook_command: str | None = None
+    package_layout: bool = False
 
     def launch_env(self, source_cwd: str) -> dict[str, str]:
         env = {
-            "HOME": str(self.home),
             "CODEX_HOME": str(self.codex_home),
             "AURA_CODEX_BOX": str(self.root),
             "AURA_CODEX_SOURCE_CWD": source_cwd,
         }
+        if not self.package_layout:
+            env["HOME"] = str(self.home)
         if self.profile:
             env["AURA_CODEX_PROFILE"] = self.profile
         return env
 
     def metadata(self) -> dict[str, object]:
+        if self.package_layout:
+            return {
+                "codex_isolation": "aura-agent-package",
+                "codex_package_root": str(self.root),
+                "codex_package_codex_home": str(self.codex_home),
+                "codex_runtime_base_source": "aura-runtime-base",
+                **({"codex_runtime_base_root": str(self.base_root)} if self.base_root else {}),
+                "codex_runtime_base_applied": self.base_applied,
+                "codex_runtime_base_templates_applied": list(self.base_templates_applied),
+                "codex_auth_source": "user-global-auth-only",
+                "codex_auth_seeded": self.auth_seeded,
+                "codex_config_seeded": self.config_seeded,
+                "codex_source_cwd_trusted": self.source_cwd_trusted,
+                "codex_aura_hook_installed": self.aura_hook_installed,
+                **({"codex_aura_hook_command": self.aura_hook_command} if self.aura_hook_command else {}),
+                **({"codex_profile": self.profile} if self.profile else {}),
+                **({"codex_profile_root": str(self.profile_root)} if self.profile_root else {}),
+                "codex_profile_applied": self.profile_applied,
+                "codex_profile_templates_applied": list(self.profile_templates_applied),
+            }
         return {
             "codex_isolation": "aura-seat-box",
             "codex_box_root": str(self.root),
@@ -311,20 +333,17 @@ def _apply_profile_template(
     home: Path,
     codex_home: Path,
     runtime: Path,
+    package_layout: bool = False,
 ) -> tuple[Path | None, bool, tuple[str, ...]]:
     if not profile:
         return None, False, ()
     root = profile_root(profile)
     if not root.is_dir():
         raise FileNotFoundError(f"codex runtime profile not found: {root}")
-    profile_applied, templates_applied = runtime_boxes.apply_templates(
-        root,
-        {
-            "home-template": home,
-            "codex-home-template": codex_home,
-            "runtime-template": runtime,
-        },
-    )
+    mappings = {"codex-home-template": codex_home}
+    if not package_layout:
+        mappings.update({"home-template": home, "runtime-template": runtime})
+    profile_applied, templates_applied = runtime_boxes.apply_templates(root, mappings)
     return root, profile_applied, templates_applied
 
 
@@ -343,7 +362,8 @@ def prepare_box(
     home = root / "home"
     codex_home = root / ".codex" if package_layout else root / "codex-home"
     runtime = root / "runtime"
-    for path in (home, codex_home, runtime):
+    paths = (codex_home,) if package_layout else (home, codex_home, runtime)
+    for path in paths:
         path.mkdir(parents=True, exist_ok=True)
 
     profile_path, profile_applied, profile_templates_applied = _apply_profile_template(
@@ -351,15 +371,17 @@ def prepare_box(
         home=home,
         codex_home=codex_home,
         runtime=runtime,
+        package_layout=package_layout,
+    )
+    base_mappings = {"codex-home-template": codex_home} if package_layout else runtime_bases.template_mappings(
+        "codex",
+        home=home,
+        codex_home=codex_home,
+        runtime_root=runtime,
     )
     base_path, base_applied, base_templates_applied = runtime_bases.apply_default_runtime_base(
         "codex",
-        runtime_bases.template_mappings(
-            "codex",
-            home=home,
-            codex_home=codex_home,
-            runtime_root=runtime,
-        ),
+        base_mappings,
     )
     auth_seeded, config_seeded = _seed_codex_home(codex_home)
     source_cwd_trusted = _trust_source_cwd(codex_home, source_cwd)
@@ -382,4 +404,5 @@ def prepare_box(
         source_cwd_trusted=source_cwd_trusted,
         aura_hook_installed=aura_hook_installed,
         aura_hook_command=aura_hook_command,
+        package_layout=package_layout,
     )

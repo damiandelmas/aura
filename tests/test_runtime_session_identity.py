@@ -1212,12 +1212,13 @@ def test_spawn_auto_observes_omx_session_by_launch_nonce(monkeypatch, tmp_path):
     }
     assert result["runtime_session_id"] == "thread-omx-nonce"
     assert result["session_observation"]["runtime_session_source"] == "codex-jsonl:nonce"
-    assert result["runtime_capsule_session"] == str(capsule / "runtime-session.json")
+    assert "runtime_capsule_session" not in result
 
     agent = registry.get_agent("pipeline", fleet="unitfleet")
     assert agent["runtime"] == "omx"
     assert agent["runtime_session_id"] == "thread-omx-nonce"
-    assert (capsule / "runtime-session.json").is_file()
+    assert "runtime_capsule_session" not in agent
+    assert not (capsule / "runtime-session.json").exists()
 
 
 def test_spawn_session_observation_pending_without_high_confidence(monkeypatch, tmp_path):

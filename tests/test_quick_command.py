@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -67,6 +68,10 @@ def test_quick_default_codex_creates_profile_and_delegates_package_spawn(monkeyp
     assert captured["cwd"] == str(Path.cwd())
     assert result["quick_agent_package_alias"] == "quick-codex"
     assert result["quick_agent_package_root"] == captured["_agent_package"]["root"]
+    package_root = Path(captured["_agent_package"]["root"])
+    manifest = json.loads((package_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["runtime"] == "codex"
+    assert sorted(path.name for path in package_root.iterdir()) == [".codex", "manifest.json"]
     assert not (Path.cwd() / ".codex").exists()
     assert not (Path.cwd() / ".omx").exists()
 
@@ -94,6 +99,10 @@ def test_quick_default_omx_uses_package_body_and_runtime_profile(monkeypatch, tm
     assert captured["identity_provider"] == "aura-agent"
     assert captured["_agent_package"]["alias"] == "quick-omx"
     assert result["quick_agent_package_alias"] == "quick-omx"
+    package_root = Path(captured["_agent_package"]["root"])
+    manifest = json.loads((package_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["runtime"] == "omx"
+    assert sorted(path.name for path in package_root.iterdir()) == [".codex", ".omx", "manifest.json"]
 
 
 def test_quick_new_generated_profile_uses_safe_name(monkeypatch, tmp_path):

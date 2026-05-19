@@ -316,6 +316,8 @@ def test_view_fleet_accepts_explicit_fleet_and_flattens_latest_report(monkeypatc
             {
                 "target": "flexgraph-chatbot:engineering-lead",
                 "status": "waiting",
+                "liveness": "alive",
+                "managed_state": "spawned_bound",
                 "runtime": "codex",
                 "runtime_profile": "aura-worker",
                 "runtime_profile_ref": "codex/aura-worker",
