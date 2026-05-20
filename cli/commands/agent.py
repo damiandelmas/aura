@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
-from lib import agent_packages
+from lib import agent_history, agent_packages
 
 
 def _profile_name(ref: str | None) -> str | None:
@@ -101,6 +102,15 @@ def run(args):
             return agent_packages.inspect(args.ref)
         except Exception as exc:
             return {"ok": False, "error": "agent-inspect-failed", "detail": str(exc), "ref": args.ref}
+    if action == "history":
+        try:
+            if getattr(args, "write", False):
+                path = agent_history.write(args.ref)
+                history = json.loads(path.read_text(encoding="utf-8"))
+                return {"ok": True, "path": str(path), "history": history}
+            return {"ok": True, "history": agent_history.build(args.ref)}
+        except Exception as exc:
+            return {"ok": False, "error": "agent-history-failed", "detail": str(exc), "ref": args.ref}
     if action == "spawn":
         try:
             record = agent_packages.resolve(args.ref)

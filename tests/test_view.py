@@ -233,14 +233,25 @@ def test_view_self_returns_current_managed_seat(monkeypatch, tmp_path):
 def test_view_fleets_returns_live_fleet_index(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
 
+    from lib import registry
     from commands import view
 
-    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
-        {"target": "runway-engineering:lead-engineer", "seat": "lead-engineer", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
-        {"target": "runway-engineering:worker", "seat": "worker", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
-        {"target": "runway-research:research-lead", "seat": "research-lead", "fleet": "runway-research", "liveness": "alive", "managed_state": "spawned_unbound"},
-        {"target": "runway-research:stale", "seat": "stale", "fleet": "runway-research", "liveness": "missing", "managed_state": "missing_pane"},
-    ])
+    registry.write_registry({
+        "runway-engineering:lead-engineer": {"name": "lead-engineer", "fleet": "runway-engineering", "pane_ref": "tmux:runway-engineering:%1"},
+        "runway-engineering:worker": {"name": "worker", "fleet": "runway-engineering", "pane_ref": "tmux:runway-engineering:%2"},
+        "runway-research:research-lead": {"name": "research-lead", "fleet": "runway-research", "backend_ref": "tmux:runway-research:research-lead"},
+        "runway-research:stale": {"name": "stale", "fleet": "runway-research", "pane_ref": "tmux:runway-research:%4"},
+        "runway-research:stopped": {"name": "stopped", "fleet": "runway-research", "pane_ref": "tmux:runway-research:%5", "managed_state": "stopped"},
+    })
+    monkeypatch.setattr(view.tmux_mirror, "list_physical_panes", lambda: {
+        "ok": True,
+        "panes": [
+            {"tmux_session": "runway-engineering", "physical_fleet": "runway-engineering", "window_name": "lead-engineer", "pane_id": "%1", "pane_ref": "tmux:runway-engineering:%1", "terminal_ref": "tmux:runway-engineering:lead-engineer"},
+            {"tmux_session": "runway-engineering", "physical_fleet": "runway-engineering", "window_name": "worker", "pane_id": "%2", "pane_ref": "tmux:runway-engineering:%2", "terminal_ref": "tmux:runway-engineering:worker"},
+            {"tmux_session": "runway-research", "physical_fleet": "runway-research", "window_name": "research-lead", "pane_id": "%3", "pane_ref": "tmux:runway-research:%3", "terminal_ref": "tmux:runway-research:research-lead"},
+            {"tmux_session": "runway-research", "physical_fleet": "runway-research", "window_name": "stopped", "pane_id": "%5", "pane_ref": "tmux:runway-research:%5", "terminal_ref": "tmux:runway-research:stopped"},
+        ],
+    })
 
     result = view.run(argparse.Namespace(view_action="fleets", view_target=None, scope=None, limit=10, include_hidden=False))
 
@@ -259,7 +270,7 @@ def test_view_fleet_returns_same_fleet_rows(monkeypatch, tmp_path):
 
     from commands import view
 
-    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
+    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False, fleet=None: [
         {"target": "runway-engineering:lead-engineer", "seat": "lead-engineer", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
         {"target": "runway-engineering:worker", "seat": "worker", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
         {"target": "runway-engineering:stale", "seat": "stale", "fleet": "runway-engineering", "liveness": "missing", "managed_state": "missing_pane"},
@@ -282,31 +293,37 @@ def test_view_fleet_accepts_explicit_fleet_and_flattens_latest_report(monkeypatc
 
     from commands import view
 
-    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
-        {
-            "target": "flexgraph-chatbot:engineering-lead",
-            "seat": "engineering-lead",
-            "fleet": "flexgraph-chatbot",
-            "status": "waiting",
-            "runtime": "codex",
-            "runtime_profile": "aura-worker",
-            "runtime_profile_ref": "codex/aura-worker",
-            "runtime_profile_runtime": "codex",
-            "runtime_profile_source": "desks",
-            "runtime_session_id": "session-engineering",
-            "liveness": "alive",
-            "managed_state": "spawned_bound",
-            "identity": {"provider": "desks", "id": "r_5c425f44", "name": "flexgraph:chatbot:engineering:lead"},
-            "latest_report": {"state": "parked", "work": "Loaded identity and waiting for assignment"},
-        },
-        {
-            "target": "other-fleet:lead",
-            "seat": "lead",
-            "fleet": "other-fleet",
-            "liveness": "alive",
-            "managed_state": "spawned_unbound",
-        },
-    ])
+    calls = []
+
+    def fake_status_rows(include_hidden=False, fleet=None):
+        calls.append(fleet)
+        return [
+            {
+                "target": "flexgraph-chatbot:engineering-lead",
+                "seat": "engineering-lead",
+                "fleet": "flexgraph-chatbot",
+                "status": "waiting",
+                "runtime": "codex",
+                "runtime_profile": "aura-worker",
+                "runtime_profile_ref": "codex/aura-worker",
+                "runtime_profile_runtime": "codex",
+                "runtime_profile_source": "desks",
+                "runtime_session_id": "session-engineering",
+                "liveness": "alive",
+                "managed_state": "spawned_bound",
+                "identity": {"provider": "desks", "id": "r_5c425f44", "name": "flexgraph:chatbot:engineering:lead"},
+                "latest_report": {"state": "parked", "work": "Loaded identity and waiting for assignment"},
+            },
+            {
+                "target": "other-fleet:lead",
+                "seat": "lead",
+                "fleet": "other-fleet",
+                "liveness": "alive",
+                "managed_state": "spawned_unbound",
+            },
+        ]
+
+    monkeypatch.setattr(view, "_status_rows", fake_status_rows)
 
     result = view.run(argparse.Namespace(view_action="fleet", view_target="flexgraph-chatbot", scope=None, limit=10, include_hidden=False))
 
@@ -330,6 +347,7 @@ def test_view_fleet_accepts_explicit_fleet_and_flattens_latest_report(monkeypatc
             },
         ],
     }
+    assert calls == ["flexgraph-chatbot"]
 
 
 def test_view_roster_returns_live_rows_by_default(monkeypatch, tmp_path):

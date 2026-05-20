@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lib import deferred, placements, queued_messages, reports, seat_status, tmux_mirror
+from lib import deferred, placements, queued_messages, registry, reports, seat_status, tmux_mirror
 
 
 def _compact_identity(row: dict) -> dict | None:
@@ -183,10 +183,54 @@ def _resolve_self(rows: list[dict], context: dict) -> dict:
     return {"ok": False, "source": "none", "error": "self-not-resolved", "match_count": 0}
 
 
-def _status_rows(*, include_hidden: bool):
+def _status_rows(*, include_hidden: bool, fleet: str | None = None):
     from lib import terminal
 
-    return seat_status.list_seat_statuses(include_hidden=include_hidden, terminal=terminal)
+    return seat_status.list_seat_statuses(fleet=fleet, include_hidden=include_hidden, terminal=terminal)
+
+
+def _physical_refs(panes: list[dict]) -> set[str]:
+    refs: set[str] = set()
+    for pane in panes:
+        for key in ("pane_ref", "terminal_ref"):
+            value = pane.get(key)
+            if value:
+                refs.add(str(value))
+                if str(value).startswith("tmux:"):
+                    refs.add(str(value)[len("tmux:"):])
+        session = pane.get("tmux_session") or pane.get("physical_fleet")
+        pane_id = pane.get("pane_id")
+        window = pane.get("window_name")
+        if pane_id:
+            refs.add(str(pane_id))
+            if session:
+                refs.add(f"{session}:{pane_id}")
+                refs.add(f"tmux:{session}:{pane_id}")
+        if window and session:
+            refs.add(f"{session}:{window}")
+            refs.add(f"tmux:{session}:{window}")
+    return refs
+
+
+def _record_refs(record: dict) -> set[str]:
+    refs = set()
+    for key in ("pane_ref", "terminal_ref", "backend_ref"):
+        value = record.get(key)
+        if value:
+            refs.add(str(value))
+            if str(value).startswith("tmux:"):
+                refs.add(str(value)[len("tmux:"):])
+    target = _target_for(record)
+    if target:
+        refs.add(target)
+        refs.add(f"tmux:{target}")
+    return refs
+
+
+def _record_can_be_live(record: dict) -> bool:
+    if record.get("terminal_state") == "terminal" or record.get("restore_suppressed"):
+        return False
+    return record.get("managed_state") not in {"missing_pane", "stopped"}
 
 
 def _run_self(*, include_hidden: bool) -> dict:
@@ -212,10 +256,16 @@ def _run_self(*, include_hidden: bool) -> dict:
 
 
 def _run_fleets(*, include_hidden: bool) -> dict:
-    rows = _status_rows(include_hidden=include_hidden)
-    live_rows = [row for row in rows if _is_live(row)]
+    mirror = tmux_mirror.list_physical_panes()
+    if not mirror.get("ok"):
+        return {"fleets": []}
+    physical_refs = _physical_refs(mirror.get("panes") or [])
     counts: dict[str, int] = {}
-    for row in live_rows:
+    for row in registry.list_agents(include_hidden=include_hidden):
+        if not _record_can_be_live(row):
+            continue
+        if not (_record_refs(row) & physical_refs):
+            continue
         fleet = row.get("fleet")
         if fleet:
             counts[fleet] = counts.get(fleet, 0) + 1
@@ -229,20 +279,24 @@ def _run_fleets(*, include_hidden: bool) -> dict:
 
 def _run_fleet(*, include_hidden: bool, fleet_name: str | None = None) -> dict:
     context = reports.infer_context()
-    rows = _status_rows(include_hidden=include_hidden)
+    if fleet_name:
+        rows = _status_rows(include_hidden=include_hidden, fleet=fleet_name)
+        fleet_rows = [row for row in rows if row.get("fleet") == fleet_name and _is_live(row)]
+        return {
+            "fleet": fleet_name,
+            "seats": [_agent_status(row) for row in sorted(fleet_rows, key=lambda row: row.get("seat") or row.get("name") or "")],
+        }
+
+    context_fleet = context.get("fleet")
+    rows = _status_rows(include_hidden=include_hidden, fleet=context_fleet)
     resolved = _resolve_self(rows, context)
     fleet = None
     self_row = None
     if resolved.get("ok"):
         self_row = resolved["row"]
         fleet = self_row.get("fleet")
-    fleet = fleet_name or fleet or context.get("fleet")
+    fleet = fleet or context_fleet
     fleet_rows = [row for row in rows if row.get("fleet") == fleet and _is_live(row)] if fleet else []
-    if fleet_name:
-        return {
-            "fleet": fleet,
-            "seats": [_agent_status(row) for row in sorted(fleet_rows, key=lambda row: row.get("seat") or row.get("name") or "")],
-        }
     return {
         "ok": bool(fleet),
         "schema": "aura.view.fleet.v1",
