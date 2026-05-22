@@ -20,7 +20,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
+from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, posture as posture_cmd, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
 from lib.output import output
 
 
@@ -531,6 +531,14 @@ def main():
                          default=env_float("AURA_SENSE_TIMEOUT", 8.0),
                          help="Seconds to wait for local LLM sense before fallback/error")
 
+    # posture
+    p_posture = subparsers.add_parser("posture", help="Log dumb terminal posture for UI polling")
+    p_posture.add_argument("name", nargs="?", help="Seat/agent name")
+    p_posture.add_argument("--fleet", "-f", metavar="NAME",
+                           help="Log posture for all registered seats in a fleet")
+    p_posture.add_argument("--lines", type=int, default=80,
+                           help="Number of captured output lines to inspect (default: 80)")
+
     # route
     p_route = subparsers.add_parser("route", help=argparse.SUPPRESS)
     p_route.add_argument("--fleet", "-f", metavar="NAME", required=True,
@@ -911,6 +919,8 @@ def main():
             result = sense.run(args)
         elif args.command == "watch":
             result = watch.run(args)
+        elif args.command == "posture":
+            result = posture_cmd.run(args)
         elif args.command == "route":
             result = route.run(args)
         elif args.command == "dash":
