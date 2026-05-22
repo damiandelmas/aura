@@ -286,3 +286,121 @@ def test_cli_smoke_apply_list_doctor_remove(monkeypatch, tmp_path):
         check=True,
     )
     assert json.loads(removed.stdout)["removed"]["name"] == "aura-operator"
+
+
+def test_inventory_duplicates_and_diff_custom_roots(tmp_path):
+    from lib import skill_libraries
+
+    root_a = tmp_path / "root-a"
+    root_b = tmp_path / "root-b"
+    skill_a = root_a / "alpha"
+    skill_b = root_b / "alpha-copy"
+    skill_c = root_b / "beta"
+    skill_a.mkdir(parents=True)
+    skill_b.mkdir(parents=True)
+    skill_c.mkdir(parents=True)
+    (skill_a / "SKILL.md").write_text("---\nname: shared\ndescription: A\n---\n\nA\n", encoding="utf-8")
+    (skill_b / "SKILL.md").write_text("---\nname: shared\ndescription: B\n---\n\nB\n", encoding="utf-8")
+    (skill_c / "SKILL.md").write_text("---\nname: beta\ndescription: B\n---\n", encoding="utf-8")
+
+    inventory = skill_libraries.inventory(roots=[str(root_a), str(root_b)], include_packages=False)
+    assert inventory["summary"]["total"] == 3
+    assert inventory["summary"]["duplicate_name_count"] == 1
+    assert inventory["summary"]["divergent_duplicate_name_count"] == 1
+
+    duplicates = skill_libraries.duplicates(roots=[str(root_a), str(root_b)], include_packages=False)
+    assert [row["name"] for row in duplicates["duplicates"]] == ["shared"]
+    assert duplicates["duplicates"][0]["divergent"] is True
+
+    diff = skill_libraries.diff_name("shared", roots=[str(root_a), str(root_b)], include_packages=False)
+    assert diff["match_count"] == 2
+    assert diff["hash_count"] == 2
+
+
+def test_adopt_existing_dry_run_and_write(monkeypatch, tmp_path):
+    agent = make_agent(monkeypatch, tmp_path)
+    skill = make_skill(tmp_path)
+    from lib import skill_libraries
+
+    target = Path(agent["root"]) / ".codex" / "skills" / "aura-operator"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.symlink_to(skill.resolve(), target_is_directory=True)
+
+    dry_run = skill_libraries.adopt_existing(agent["alias"])
+    assert dry_run["dry_run"] is True
+    assert dry_run["planned"][0]["name"] == "aura-operator"
+    assert dry_run["planned"][0]["mode"] == "symlink"
+    assert not (Path(agent["root"]) / "skills.lock.json").exists()
+
+    written = skill_libraries.adopt_existing(agent["alias"], dry_run=False)
+    assert written["adopted"][0]["provenance"] == "adopted-existing"
+    lock = json.loads((Path(agent["root"]) / "skills.lock.json").read_text(encoding="utf-8"))
+    assert lock["entries"][0]["name"] == "aura-operator"
+    assert target.is_symlink()
+
+
+def test_adopt_existing_uses_directory_name_for_colon_frontmatter(monkeypatch, tmp_path):
+    agent = make_agent(monkeypatch, tmp_path)
+    skill = tmp_path / "src" / "flex-context-docpac"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: flex:context\ndescription: Flex context.\n---\n", encoding="utf-8")
+    target = Path(agent["root"]) / ".codex" / "skills" / "flex-context-docpac"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.symlink_to(skill.resolve(), target_is_directory=True)
+    from lib import skill_libraries
+
+    result = skill_libraries.adopt_existing(agent["alias"], dry_run=False)
+
+    entry = result["adopted"][0]
+    assert entry["name"] == "flex-context-docpac"
+    assert entry["skill_name"] == "flex:context"
+
+
+def test_cli_inventory_diff_and_adopt(monkeypatch, tmp_path):
+    agent = make_agent(monkeypatch, tmp_path)
+    skill = make_skill(tmp_path)
+    target = Path(agent["root"]) / ".codex" / "skills" / "aura-operator"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.symlink_to(skill.resolve(), target_is_directory=True)
+    env = {**os.environ, "AURA_STATE_DIR": str(tmp_path / "state"), "PYTHONDONTWRITEBYTECODE": "1"}
+
+    inventory_result = subprocess.run(
+        [sys.executable, str(ROOT / "cli" / "aura"), "skills", "inventory", "--root", str(skill.parent), "--no-packages"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert json.loads(inventory_result.stdout)["summary"]["total"] == 1
+
+    diff_result = subprocess.run(
+        [sys.executable, str(ROOT / "cli" / "aura"), "skills", "diff", "aura-operator", "--root", str(skill.parent), "--no-packages"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert json.loads(diff_result.stdout)["match_count"] == 1
+
+    adopt_dry = subprocess.run(
+        [sys.executable, str(ROOT / "cli" / "aura"), "skills", "adopt", "--agent", agent["alias"]],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert json.loads(adopt_dry.stdout)["dry_run"] is True
+    assert not (Path(agent["root"]) / "skills.lock.json").exists()
+
+    adopt_write = subprocess.run(
+        [sys.executable, str(ROOT / "cli" / "aura"), "skills", "adopt", "--agent", agent["alias"], "--write"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert json.loads(adopt_write.stdout)["adopted"][0]["name"] == "aura-operator"

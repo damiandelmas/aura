@@ -38,4 +38,31 @@ def run(args):
             dry_run=bool(getattr(args, "dry_run", False)),
             prune=bool(getattr(args, "prune", False)),
         )
+    if action == "inventory":
+        return _handle(
+            skill_libraries.inventory,
+            roots=getattr(args, "root", None),
+            include_packages=not bool(getattr(args, "no_packages", False)),
+        )
+    if action == "duplicates":
+        return _handle(
+            skill_libraries.duplicates,
+            roots=getattr(args, "root", None),
+            include_packages=not bool(getattr(args, "no_packages", False)),
+            include_identical=bool(getattr(args, "include_identical", False)),
+        )
+    if action == "diff":
+        return _handle(
+            skill_libraries.diff_name,
+            args.name,
+            roots=getattr(args, "root", None),
+            include_packages=not bool(getattr(args, "no_packages", False)),
+        )
+    if action == "adopt":
+        return _handle(
+            skill_libraries.adopt_existing,
+            args.agent,
+            dry_run=not bool(getattr(args, "write", False)),
+            replace_lock=bool(getattr(args, "replace_lock", False)),
+        )
     return {"ok": False, "error": f"unknown skills action: {action}"}
