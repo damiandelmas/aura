@@ -189,6 +189,43 @@ def test_profile_inspect_redacts_hermes_native_profile(monkeypatch, tmp_path):
     assert "SECRET" not in str(result)
 
 
+def test_profile_list_includes_hermes_default_and_named_profiles(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    default_root = home / ".hermes"
+    named_root = default_root / "profiles" / "aura-operator"
+    named_root.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    from commands import profile
+
+    result = profile.run(_args("list", runtime="hermes"))
+
+    assert result["ok"] is True
+    rows = {row["ref"]: row for row in result["profiles"]}
+    assert rows["hermes/default"]["root"] == str(default_root)
+    assert rows["hermes/aura-operator"]["root"] == str(named_root)
+
+
+def test_profile_inspect_hermes_default_uses_root_home_and_redacts(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    root = home / ".hermes"
+    root.mkdir(parents=True)
+    (root / ".env").write_text("SECRET=value\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+
+    from commands import profile
+
+    result = profile.run(_args("inspect", runtime="hermes", profile_ref="default"))
+
+    assert result["ok"] is True
+    row = result["profile"]
+    assert row["ref"] == "hermes/default"
+    assert row["root"] == str(root)
+    assert row["native_profile"] is True
+    assert row["contents_redacted"] is True
+    assert "SECRET" not in str(result)
+
+
 def test_profile_inspect_missing_and_invalid_refs_fail_explicitly(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 

@@ -75,6 +75,8 @@ def _profile_root(runtime: str, profile: str) -> Path:
     if runtime == "omx":
         return runtime_boxes.runtime_profile_root("omx", profile, legacy_omx=True)
     if runtime == "hermes":
+        if profile == "default":
+            return (Path.home() / ".hermes").resolve()
         return (Path.home() / ".hermes" / "profiles" / profile).resolve()
     raise ValueError(f"unsupported quick runtime: {runtime}")
 
@@ -98,9 +100,10 @@ def _ensure_profile_skeleton(runtime: str, profile: str, *, existed: bool) -> Pa
                 (root / dirname).mkdir(parents=True, exist_ok=True)
         return root
     if runtime == "hermes":
-        # Hermes owns profile semantics natively; Aura quick only ensures a home.
-        for dirname in ("skills", "sessions", "logs", "home"):
-            (root / dirname).mkdir(parents=True, exist_ok=True)
+        if not root.is_dir():
+            raise FileNotFoundError(
+                f"Hermes profile not found: {root}; create it with 'hermes profile create {profile}'"
+            )
         return root
     raise ValueError(f"unsupported quick runtime: {runtime}")
 
@@ -146,9 +149,11 @@ def _resolve_profile(args) -> tuple[str | None, dict[str, object] | None]:
     if args.preset and not any(profile_modes):
         raise ValueError("--preset requires --default, --new, or --profile")
     if args.default:
-        profile = "aura-default" if runtime == "hermes" else "default"
+        profile = "default"
         return profile, ensure_profile(runtime, profile, mode="default", preset=args.preset)
     if args.new is not None:
+        if runtime == "hermes":
+            raise ValueError("Hermes profiles are native; create one with 'hermes profile create NAME'")
         profile = args.new or generated_profile_name()
         return profile, ensure_profile(runtime, profile, mode="new", preset=args.preset)
     if args.profile:

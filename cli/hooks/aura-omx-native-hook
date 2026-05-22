@@ -11,4 +11,18 @@ if [ -z "$native_hook" ]; then
   echo "AURA_OMX_NATIVE_HOOK is required" >&2
   exit 2
 fi
+if [ -z "${OMX_ROOT:-}" ] && [ -z "${OMX_STATE_ROOT:-}" ] && [ -z "${OMX_TEAM_STATE_ROOT:-}" ]; then
+  codex_home="${CODEX_HOME:-$HOME/.codex}"
+  if [ "$(basename "$codex_home")" = ".codex" ]; then
+    aura_omx_root="$(CDPATH= cd -- "$(dirname -- "$codex_home")" && pwd)"
+  else
+    aura_omx_root="${codex_home%/}/omx-root"
+  fi
+  if [ "$aura_omx_root" = "$HOME" ]; then
+    aura_omx_root="$HOME/.codex/unmanaged-omx-root"
+  fi
+  export OMX_ROOT="$aura_omx_root"
+  export OMX_STATE_ROOT="$aura_omx_root"
+  export OMX_TEAM_STATE_ROOT="$aura_omx_root/.omx/state"
+fi
 exec "${AURA_OMX_NODE:-node}" "$native_hook" < "$payload_file"

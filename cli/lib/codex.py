@@ -21,6 +21,19 @@ from hashlib import sha256
 
 from lib import runtime_bases, runtime_boxes
 
+HOOK_EVENT_STATE_LABELS: dict[str, str] = {
+    "SessionStart": "session_start",
+    "PreToolUse": "pre_tool_use",
+    "PermissionRequest": "permission_request",
+    "PostToolUse": "post_tool_use",
+    "PreCompact": "pre_compact",
+    "PostCompact": "post_compact",
+    "UserPromptSubmit": "user_prompt_submit",
+    "SubagentStart": "subagent_start",
+    "SubagentStop": "subagent_stop",
+    "Stop": "stop",
+}
+
 
 @dataclass(frozen=True)
 class CodexBox:
@@ -227,10 +240,106 @@ def _append_trust_toml(config_path: Path, key: str, trusted_hash: str) -> None:
     existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
     header = f'[hooks.state.{json.dumps(key)}]'
     block = f'{header}\ntrusted_hash = "{trusted_hash}"\n'
-    if header in existing and trusted_hash in existing[existing.index(header): existing.find("\n[", existing.index(header) + 1) if existing.find("\n[", existing.index(header) + 1) != -1 else len(existing)]:
+    if header in existing:
+        start = existing.index(header)
+        next_table = existing.find("\n[", start + 1)
+        end = next_table if next_table != -1 else len(existing)
+        current = existing[start:end].strip()
+        if f'trusted_hash = "{trusted_hash}"' in current:
+            return
+        suffix = existing[end:]
+        if suffix.startswith("\n"):
+            suffix = suffix[1:]
+        separator = "\n" if end < len(existing) else ""
+        config_path.write_text(f"{existing[:start]}{block}{separator}{suffix}", encoding="utf-8")
         return
     separator = "" if not existing or existing.endswith("\n") else "\n"
     config_path.write_text(f"{existing}{separator}\n{block}", encoding="utf-8")
+
+
+def _command_hook_identity(event_name: str, entry: dict[str, Any], hook: dict[str, Any]) -> dict[str, Any] | None:
+    command = hook.get("command")
+    if hook.get("type") != "command" or not isinstance(command, str) or not command.strip():
+        return None
+    try:
+        timeout = max(1, int(hook.get("timeout", 600)))
+    except (TypeError, ValueError):
+        timeout = 600
+    hook_identity: dict[str, Any] = {
+        "type": "command",
+        "command": command,
+        "timeout": timeout,
+        "async": bool(hook.get("async", False)),
+    }
+    if "statusMessage" in hook:
+        hook_identity["statusMessage"] = hook["statusMessage"]
+    identity: dict[str, Any] = {
+        "event_name": HOOK_EVENT_STATE_LABELS[event_name],
+        "hooks": [hook_identity],
+    }
+    matcher = entry.get("matcher")
+    if matcher:
+        identity["matcher"] = matcher
+    return identity
+
+
+def _trust_state_key(hooks_path: Path, event_name: str, group_index: int, handler_index: int) -> str:
+    return f"{hooks_path}:{HOOK_EVENT_STATE_LABELS[event_name]}:{group_index}:{handler_index}"
+
+
+def _trust_boxed_command_hooks(codex_home: Path) -> dict[str, str]:
+    """Trust command hooks already materialized in an Aura-owned Codex box.
+
+    Boxed profiles are copied from Aura-owned templates after safety checks.
+    Without pre-seeded trust, Codex pauses at the hook-review TUI before the
+    first prompt, which makes automated Aura profile tests and workers stall.
+    """
+
+    hooks_path = codex_home / "hooks.json"
+    if not hooks_path.is_file():
+        return {}
+    try:
+        parsed = json.loads(hooks_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    hooks = parsed.get("hooks")
+    if not isinstance(hooks, dict):
+        return {}
+
+    trusted: dict[str, str] = {}
+    for event_name, entries in hooks.items():
+        if event_name not in HOOK_EVENT_STATE_LABELS or not isinstance(entries, list):
+            continue
+        for group_index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            handlers = entry.get("hooks")
+            if not isinstance(handlers, list):
+                continue
+            for handler_index, hook in enumerate(handlers):
+                if not isinstance(hook, dict):
+                    continue
+                identity = _command_hook_identity(event_name, entry, hook)
+                if identity is None:
+                    continue
+                key = _trust_state_key(hooks_path, event_name, group_index, handler_index)
+                trusted[key] = _trusted_hash(identity)
+
+    if not trusted:
+        return {}
+    state = parsed.setdefault("state", {})
+    if not isinstance(state, dict):
+        state = {}
+        parsed["state"] = state
+    for key, trusted_hash in trusted.items():
+        previous = state.get(key) if isinstance(state.get(key), dict) else {}
+        state[key] = {**previous, "trusted_hash": trusted_hash}
+    _atomic_write_json(hooks_path, parsed)
+    for key, trusted_hash in trusted.items():
+        _append_trust_toml(codex_home / "config.toml", key, trusted_hash)
+    return trusted
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -386,6 +495,7 @@ def prepare_box(
     auth_seeded, config_seeded = _seed_codex_home(codex_home)
     source_cwd_trusted = _trust_source_cwd(codex_home, source_cwd)
     aura_hook_installed, aura_hook_command = _install_aura_session_hook(codex_home)
+    _trust_boxed_command_hooks(codex_home)
 
     return CodexBox(
         root=root,

@@ -47,7 +47,8 @@ RUNTIMES: dict[str, dict] = {
         "alias_for": "claude-code",
     },
     "hermes": {
-        "command": "hermes -p {profile}",
+        "command": "hermes",
+        "profile_command": "hermes -p {profile}",
         "graceful_exit": "/exit",
         "submit_key": "Enter",
         "native_state": ".hermes",
@@ -127,10 +128,16 @@ def build_command(runtime: str, spec: dict, *, name: str, profile: str | None = 
     if command_override:
         return command_override
 
-    profile = profile or name
-    command = spec["command"].format(
+    if runtime == "hermes" and (not profile or profile == "default"):
+        command_template = spec["command"]
+        profile_for_template = ""
+    else:
+        profile_for_template = profile or name
+        command_template = spec.get("profile_command") if profile else None
+        command_template = command_template or spec["command"]
+    command = command_template.format(
         name=shlex.quote(name),
-        profile=shlex.quote(profile),
+        profile=shlex.quote(profile_for_template),
     )
 
     if runtime == "claude-code" and model:

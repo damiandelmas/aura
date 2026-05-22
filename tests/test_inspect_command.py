@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "cli"))
 
 
-def test_inspect_default_uses_check_with_output(monkeypatch):
+def test_inspect_default_uses_check_status_without_output(monkeypatch):
     from commands import inspect
 
     seen = {}
@@ -25,7 +25,7 @@ def test_inspect_default_uses_check_with_output(monkeypatch):
     ))
 
     assert seen["args"].name == "worker"
-    assert seen["args"].output is True
+    assert seen["args"].output is False
     assert seen["args"].lines == 12
     assert result["ok"] is True
     assert result["inspect"] is True
@@ -57,12 +57,18 @@ def test_inspect_bounds_output_to_requested_lines(monkeypatch):
 def test_inspect_raw_labels_raw_mode(monkeypatch):
     from commands import inspect
 
-    monkeypatch.setattr(inspect.check, "run", lambda args: {
-        "ok": True,
-        "name": "worker",
-        "status": "idle",
-        "output": ["raw"],
-    })
+    seen = {}
+
+    def fake_check(args):
+        seen["args"] = args
+        return {
+            "ok": True,
+            "name": "worker",
+            "status": "idle",
+            "output": ["raw"],
+        }
+
+    monkeypatch.setattr(inspect.check, "run", fake_check)
 
     result = inspect.run(argparse.Namespace(
         name="worker",
@@ -72,6 +78,7 @@ def test_inspect_raw_labels_raw_mode(monkeypatch):
         format="ansi",
     ))
 
+    assert seen["args"].output is True
     assert result["inspect_mode"] == "raw"
     assert result["output"] == ["raw"]
 

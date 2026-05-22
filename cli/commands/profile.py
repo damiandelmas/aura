@@ -27,6 +27,8 @@ def _runtime_profile_root(runtime: str, profile: str) -> Path:
     if runtime == "omx":
         return runtime_boxes.runtime_profile_root("omx", profile, legacy_omx=True)
     if runtime == "hermes":
+        if profile == "default":
+            return (Path.home() / ".hermes").resolve()
         return (Path.home() / ".hermes" / "profiles" / profile).resolve()
     raise ValueError(f"runtime profile unsupported for {runtime}")
 
@@ -120,6 +122,10 @@ def _list_profiles(args) -> dict[str, object]:
         if runtime in FUTURE_RUNTIMES:
             continue
         parent = _profile_parent(runtime)
+        if runtime == "hermes":
+            root = _runtime_profile_root(runtime, "default")
+            if root.is_dir():
+                profiles.append(_profile_row(runtime, "default", root))
         if not parent.is_dir():
             continue
         for child in sorted(parent.iterdir(), key=lambda p: p.name):

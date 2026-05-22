@@ -224,6 +224,55 @@ def test_quick_hermes_profile_maps_to_native_runtime_profile(monkeypatch, tmp_pa
     assert captured["_agent_package"] is None
 
 
+def test_quick_hermes_without_profile_uses_native_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home" / ".hermes").mkdir(parents=True)
+
+    from commands import quick
+
+    captured = {}
+    monkeypatch.setattr(quick.spawn, "run", lambda args: captured.update(vars(args)) or {"ok": True})
+
+    result = quick.run(_args("hermes"))
+
+    assert result["ok"] is True
+    assert captured["runtime"] == "hermes"
+    assert captured["runtime_profile"] is None
+    assert captured["boxed"] is False
+    assert result["quick_profile"] is None
+
+
+def test_quick_hermes_default_maps_to_native_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home" / ".hermes").mkdir(parents=True)
+
+    from commands import quick
+
+    captured = {}
+    monkeypatch.setattr(quick.spawn, "run", lambda args: captured.update(vars(args)) or {"ok": True})
+
+    result = quick.run(_args("hermes", default=True))
+
+    assert result["ok"] is True
+    assert captured["runtime"] == "hermes"
+    assert captured["runtime_profile"] == "hermes/default"
+    assert result["quick_profile"] == "default"
+    assert result["quick_profile_meta"]["profile_root"] == str(tmp_path / "home" / ".hermes")
+
+
+def test_quick_hermes_new_profile_requires_native_hermes_create(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home" / ".hermes").mkdir(parents=True)
+
+    from commands import quick
+
+    result = quick.run(_args("hermes", new="worker"))
+
+    assert result["ok"] is False
+    assert result["error"] == "quick-launch-invalid"
+    assert "hermes profile create" in result["detail"]
+
+
 def test_quick_attach_switches_existing_tmux_client(monkeypatch):
     from commands import quick
 

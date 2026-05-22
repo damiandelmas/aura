@@ -106,6 +106,220 @@ def test_write_submit_retry_detection_is_narrow():
     assert FakeTerminal.calls == [("seat1", "Enter", False)]
 
 
+def test_spawn_prompt_retry_does_not_repaste_after_prompt_is_visible(monkeypatch):
+    from commands import spawn
+    from lib import runtime_session
+
+    monkeypatch.setenv("AURA_CODEX_PROMPT_SUBMIT_RETRIES", "2")
+    monkeypatch.setattr(runtime_session, "discover_for_target", lambda *args, **kwargs: {})
+
+    class FakeTerminal:
+        keys = []
+        texts = []
+
+        @staticmethod
+        def capture_output(target, lines=80):
+            return [
+                "› HOOK LAB REPORT PROBE: do not edit files.",
+                "• REPORT_PROBE_READY",
+            ]
+
+        @classmethod
+        def send_keys(cls, target, text, enter=True):
+            cls.keys.append((target, text, enter))
+            return {"ok": True, "target": target, "submitted": False}
+
+        @classmethod
+        def send_text(cls, target, text, submit=True):
+            cls.texts.append((target, text, submit))
+            return {"ok": True, "target": target, "submitted": submit}
+
+    result = spawn._retry_codex_prompt_submit(
+        terminal=FakeTerminal,
+        target="fleet:%1",
+        seat="worker",
+        launch_id="launch-1",
+        prompt_text="HOOK LAB REPORT PROBE: do not edit files.",
+    )
+
+    assert result["ok"] is True
+    assert result["session_seen"] is False
+    assert [attempt["reason"] for attempt in result["results"]] == ["no-queued-input", "no-queued-input"]
+    assert FakeTerminal.keys == []
+    assert FakeTerminal.texts == []
+
+
+def test_spawn_prompt_retry_repastes_when_startup_paste_lands_above_tui(monkeypatch):
+    from commands import spawn
+    from lib import runtime_session
+
+    monkeypatch.setenv("AURA_CODEX_PROMPT_SUBMIT_RETRIES", "2")
+    monkeypatch.setattr(runtime_session, "discover_for_target", lambda *args, **kwargs: {})
+
+    class FakeTerminal:
+        keys = []
+        texts = []
+
+        @staticmethod
+        def capture_output(target, lines=80):
+            return [
+                "HOOK SMOKE PROBE: do not edit files.",
+                "╭─────────────────────────────────────────╮",
+                "│ >_ OpenAI Codex                         │",
+                "╰─────────────────────────────────────────╯",
+                "› Explain this codebase",
+            ]
+
+        @classmethod
+        def send_keys(cls, target, text, enter=True):
+            cls.keys.append((target, text, enter))
+            return {"ok": True, "target": target, "submitted": enter}
+
+        @classmethod
+        def send_text(cls, target, text, submit=True):
+            cls.texts.append((target, text, submit))
+            return {"ok": True, "target": target, "submitted": submit}
+
+    result = spawn._retry_codex_prompt_submit(
+        terminal=FakeTerminal,
+        target="fleet:%1",
+        seat="worker",
+        launch_id="launch-1",
+        prompt_text="HOOK SMOKE PROBE: do not edit files.",
+    )
+
+    assert result["ok"] is True
+    assert result["session_seen"] is False
+    assert FakeTerminal.keys == [("fleet:%1", "C-u", False)]
+    assert FakeTerminal.texts == [("fleet:%1", "HOOK SMOKE PROBE: do not edit files.", True)]
+    assert result["results"][1]["reason"] == "startup-prompt-not-in-composer"
+
+
+def test_spawn_prompt_retry_repastes_when_startup_paste_lands_above_skills_placeholder(monkeypatch):
+    from commands import spawn
+    from lib import runtime_session
+
+    monkeypatch.setenv("AURA_CODEX_PROMPT_SUBMIT_RETRIES", "2")
+    monkeypatch.setattr(runtime_session, "discover_for_target", lambda *args, **kwargs: {})
+
+    class FakeTerminal:
+        keys = []
+        texts = []
+
+        @staticmethod
+        def capture_output(target, lines=80):
+            return [
+                "HOOK SMOKE PROBE: do not edit files.",
+                "╭─────────────────────────────────────────╮",
+                "│ >_ OpenAI Codex                         │",
+                "╰─────────────────────────────────────────╯",
+                "› Use /skills to list available skills",
+            ]
+
+        @classmethod
+        def send_keys(cls, target, text, enter=True):
+            cls.keys.append((target, text, enter))
+            return {"ok": True, "target": target, "submitted": enter}
+
+        @classmethod
+        def send_text(cls, target, text, submit=True):
+            cls.texts.append((target, text, submit))
+            return {"ok": True, "target": target, "submitted": submit}
+
+    result = spawn._retry_codex_prompt_submit(
+        terminal=FakeTerminal,
+        target="fleet:%1",
+        seat="worker",
+        launch_id="launch-1",
+        prompt_text="HOOK SMOKE PROBE: do not edit files.",
+    )
+
+    assert result["ok"] is True
+    assert result["session_seen"] is False
+    assert FakeTerminal.keys == [("fleet:%1", "C-u", False)]
+    assert FakeTerminal.texts == [("fleet:%1", "HOOK SMOKE PROBE: do not edit files.", True)]
+    assert result["results"][1]["reason"] == "startup-prompt-not-in-composer"
+
+
+def test_spawn_prompt_retry_does_not_accept_high_confidence_cwd_match(monkeypatch):
+    from commands import spawn
+    from lib import runtime_session
+
+    monkeypatch.setenv("AURA_CODEX_PROMPT_SUBMIT_RETRIES", "1")
+    monkeypatch.setattr(
+        runtime_session,
+        "discover_for_target",
+        lambda *args, **kwargs: {
+            "runtime_session_source": "codex-state:cwd-start",
+            "runtime_session_binding": "unbound",
+            "runtime_session_diagnostics": {
+                "reason": "codex-state-possible-match",
+                "confidence": "high",
+            },
+            "runtime_session_possible_matches": [{
+                "runtime_session_id": "old-cwd-seat-name-match",
+                "reason": "cwd-start-seat-name",
+            }],
+        },
+    )
+
+    class FakeTerminal:
+        keys = []
+
+        @staticmethod
+        def capture_output(target, lines=80):
+            return ["› [Pasted Content 1024 chars]"]
+
+        @classmethod
+        def send_keys(cls, target, text, enter=True):
+            cls.keys.append((target, text, enter))
+            return {"ok": True, "target": target, "submitted": enter}
+
+    result = spawn._retry_codex_prompt_submit(
+        terminal=FakeTerminal,
+        target="fleet:%1",
+        seat="worker",
+        launch_id="launch-1",
+        prompt_text="queued prompt",
+    )
+
+    assert result["ok"] is True
+    assert result["session_seen"] is False
+    assert FakeTerminal.keys == [("fleet:%1", "Enter", False)]
+
+
+def test_spawn_prompt_retry_enters_only_when_input_is_queued(monkeypatch):
+    from commands import spawn
+    from lib import runtime_session
+
+    monkeypatch.setenv("AURA_CODEX_PROMPT_SUBMIT_RETRIES", "1")
+    monkeypatch.setattr(runtime_session, "discover_for_target", lambda *args, **kwargs: {})
+
+    class FakeTerminal:
+        keys = []
+
+        @staticmethod
+        def capture_output(target, lines=80):
+            return ["› [Pasted Content 1024 chars]", "", "gpt-5.5 high"]
+
+        @classmethod
+        def send_keys(cls, target, text, enter=True):
+            cls.keys.append((target, text, enter))
+            return {"ok": True, "target": target, "submitted": False}
+
+    result = spawn._retry_codex_prompt_submit(
+        terminal=FakeTerminal,
+        target="fleet:%1",
+        seat="worker",
+        launch_id="launch-1",
+        prompt_text="queued prompt",
+    )
+
+    assert result["ok"] is True
+    assert result["session_seen"] is False
+    assert FakeTerminal.keys == [("fleet:%1", "Enter", False)]
+
+
 def test_send_tmux_attempts_without_submit_verification(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_DELIVERY_LOG", str(tmp_path / "deliveries.jsonl"))
 
@@ -1015,6 +1229,9 @@ def test_spawn_omx_profile_flags_conflict(monkeypatch, tmp_path):
 def test_spawn_hermes_profile_behavior_unchanged(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "agents.json"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    home = tmp_path / "home"
+    (home / ".hermes" / "profiles" / "hermes-prof").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
 
     from commands import spawn
 
@@ -1051,8 +1268,204 @@ def test_spawn_hermes_profile_behavior_unchanged(monkeypatch, tmp_path):
     assert result["ok"] is True
     assert result["runtime"] == "hermes"
     assert result["profile"] == "hermes-prof"
+    assert result["runtime_profile_ref"] == "hermes/hermes-prof"
     assert result["command"] == "hermes -p hermes-prof"
     assert created[0][3] == "hermes -p hermes-prof"
+
+
+def test_spawn_hermes_without_profile_uses_native_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    home = tmp_path / "home"
+    (home / ".hermes").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    from commands import spawn
+
+    unit = tmp_path / "project"
+    unit.mkdir()
+    created = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+        BACKEND_NAME = "tmux"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((name, workdir, detached, command, env, unset_env))
+            return {"ok": True, "target": f"unitfleet:{name}", "pane_id": "%80"}
+
+    args = argparse.Namespace(
+        name="Hermes",
+        runtime="hermes",
+        resume_session=None,
+        launch_command=None,
+        profile=None,
+        runtime_profile=None,
+        boxed=False,
+        omx_profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["runtime"] == "hermes"
+    assert result.get("profile") is None
+    assert result["runtime_profile_ref"] == "hermes/default"
+    assert result["runtime_home"] == str(home / ".hermes")
+    assert result["command"] == "hermes"
+    assert created[0][3] == "hermes"
+
+
+def test_spawn_hermes_missing_explicit_profile_fails_before_terminal(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    home = tmp_path / "home"
+    (home / ".hermes").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    from commands import spawn
+
+    unit = tmp_path / "project"
+    unit.mkdir()
+    created = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+        BACKEND_NAME = "tmux"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((name, workdir, detached, command, env, unset_env))
+            return {"ok": True, "target": f"unitfleet:{name}", "pane_id": "%81"}
+
+    args = argparse.Namespace(
+        name="Hermes",
+        runtime="hermes",
+        resume_session=None,
+        launch_command=None,
+        profile="missing",
+        runtime_profile=None,
+        boxed=False,
+        omx_profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is False
+    assert result["error"] == "runtime-profile-not-found"
+    assert result["runtime_profile_ref"] == "hermes/missing"
+    assert created == []
+
+
+def test_spawn_hermes_runtime_profile_ref_uses_named_profile(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    home = tmp_path / "home"
+    (home / ".hermes" / "profiles" / "aura-operator").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    from commands import spawn
+
+    unit = tmp_path / "project"
+    unit.mkdir()
+    created = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+        BACKEND_NAME = "tmux"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((name, workdir, detached, command, env, unset_env))
+            return {"ok": True, "target": f"unitfleet:{name}", "pane_id": "%82"}
+
+    args = argparse.Namespace(
+        name="hermes-seat",
+        runtime="hermes",
+        resume_session=None,
+        launch_command=None,
+        profile=None,
+        runtime_profile="hermes/aura-operator",
+        boxed=False,
+        omx_profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["profile"] == "aura-operator"
+    assert result["runtime_profile_ref"] == "hermes/aura-operator"
+    assert result["runtime_home"] == str(home / ".hermes" / "profiles" / "aura-operator")
+    assert result["command"] == "hermes -p aura-operator"
+    assert created[0][3] == "hermes -p aura-operator"
+
+
+def test_spawn_hermes_runtime_profile_default_uses_root_profile(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    home = tmp_path / "home"
+    (home / ".hermes").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    from commands import spawn
+
+    unit = tmp_path / "project"
+    unit.mkdir()
+    created = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+        BACKEND_NAME = "tmux"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((name, workdir, detached, command, env, unset_env))
+            return {"ok": True, "target": f"unitfleet:{name}", "pane_id": "%83"}
+
+    args = argparse.Namespace(
+        name="hermes-seat",
+        runtime="hermes",
+        resume_session=None,
+        launch_command=None,
+        profile=None,
+        runtime_profile="hermes/default",
+        boxed=False,
+        omx_profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert result["profile"] == "default"
+    assert result["runtime_profile_ref"] == "hermes/default"
+    assert result["runtime_home"] == str(home / ".hermes")
+    assert result["command"] == "hermes"
+    assert created[0][3] == "hermes"
 
 
 def test_spawn_codex_unboxed_behavior_unchanged(monkeypatch, tmp_path):
@@ -1654,6 +2067,9 @@ def test_spawn_role_home_identity_manifest_preserves_desks_runtime_profile_sourc
 def test_spawn_hermes_uses_desks_runtime_profile_when_cli_absent(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "agents.json"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    home = tmp_path / "home"
+    (home / ".hermes" / "profiles" / "aura-operator").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
 
     from commands import spawn
 
@@ -2479,11 +2895,32 @@ def test_capture_stop_sense_and_watch_commands_are_public_contract_names():
     assert "stop" in help_result.stdout
     assert "sense" in help_result.stdout
     assert "watch" in help_result.stdout
+    assert "posture" in help_result.stdout
     assert "write" in help_result.stdout
     assert "route" in help_result.stdout
     assert "dash" in help_result.stdout
     assert "event" in help_result.stdout
     assert "--json" not in help_result.stdout
+
+
+def test_posture_cli_dispatches_to_posture_command(tmp_path):
+    result = subprocess.run(
+        [sys.executable, str(CLI), "posture"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "AURA_STATE_DIR": str(tmp_path / ".aura"),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+    )
+
+    assert result.returncode == 1
+    assert json.loads(result.stdout) == {
+        "ok": False,
+        "error": "posture requires a seat name or --fleet",
+    }
 
 
 def test_cli_output_is_json_even_when_stdout_is_tty(monkeypatch, capsys):

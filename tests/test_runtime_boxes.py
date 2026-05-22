@@ -188,6 +188,133 @@ def test_codex_box_installs_quiet_aura_session_start_hook(monkeypatch, tmp_path)
     assert box.metadata()["codex_box_aura_hook_installed"] is True
 
 
+def test_codex_box_pretrusts_profile_command_hooks(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_CODEX_SOURCE_CODEX_HOME", str(tmp_path / "source-codex"))
+    source_cwd = tmp_path / "project"
+    source_cwd.mkdir()
+    profile_root = tmp_path / "state" / "runtime-profiles" / "codex" / "hook-lab"
+    codex_template = profile_root / "codex-home-template"
+    (codex_template / "hooks").mkdir(parents=True)
+    (codex_template / "hooks" / "probe.py").write_text("print('{}')\n", encoding="utf-8")
+    (codex_template / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": 'python3 "$CODEX_HOME/hooks/probe.py" UserPromptSubmit',
+                                    "timeout": 10,
+                                }
+                            ]
+                        }
+                    ],
+                    "PreCompact": [
+                        {
+                            "matcher": "manual|auto",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": 'python3 "$CODEX_HOME/hooks/probe.py" PreCompact',
+                                }
+                            ],
+                        }
+                    ],
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    from lib import codex
+
+    box = codex.prepare_box(fleet="quick", seat="codex", source_cwd=str(source_cwd), profile="hook-lab")
+
+    hooks_path = box.codex_home / "hooks.json"
+    hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+    state = hooks["state"]
+    config = (box.codex_home / "config.toml").read_text(encoding="utf-8")
+    expected_labels = {"user_prompt_submit", "pre_compact", "session_start"}
+    trusted_labels = {
+        key.split(":")[-3]
+        for key, value in state.items()
+        if key.startswith(str(hooks_path)) and value.get("trusted_hash", "").startswith("sha256:")
+    }
+
+    assert expected_labels <= trusted_labels
+    assert str(hooks_path) in config
+    assert "user_prompt_submit" in config
+    assert "pre_compact" in config
+    assert any(
+        "codex_bind_hook.py" in hook.get("command", "")
+        for entry in hooks["hooks"]["SessionStart"]
+        for hook in entry.get("hooks", [])
+    )
+
+
+def test_codex_box_hook_pretrust_replaces_stale_trust_without_duplicates(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_CODEX_SOURCE_CODEX_HOME", str(tmp_path / "source-codex"))
+    source_cwd = tmp_path / "project"
+    source_cwd.mkdir()
+    profile_root = tmp_path / "state" / "runtime-profiles" / "codex" / "hook-lab"
+    codex_template = profile_root / "codex-home-template"
+    codex_template.mkdir(parents=True)
+    (codex_template / "hooks.json").write_text(
+        json.dumps(
+            {
+                "state": {"keep-user-state": {"trusted_hash": "sha256:user"}},
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "python3 hook.py",
+                                    "timeout": "not-an-int",
+                                }
+                            ]
+                        }
+                    ],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    from lib import codex
+
+    box = codex.prepare_box(fleet="quick", seat="codex", source_cwd=str(source_cwd), profile="hook-lab")
+    hooks_path = box.codex_home / "hooks.json"
+    key = f"{hooks_path}:user_prompt_submit:0:0"
+    first_hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+    first_hash = first_hooks["state"][key]["trusted_hash"]
+    assert first_hash.startswith("sha256:")
+    assert first_hooks["state"]["keep-user-state"] == {"trusted_hash": "sha256:user"}
+
+    config_path = box.codex_home / "config.toml"
+    stale_block = f'[hooks.state."{key}"]\ntrusted_hash = "sha256:stale"\n'
+    config_path.write_text(stale_block + "\n[after]\nvalue = true\n", encoding="utf-8")
+    first_hooks["state"][key]["trusted_hash"] = "sha256:stale"
+    hooks_path.write_text(json.dumps(first_hooks, indent=2) + "\n", encoding="utf-8")
+
+    trusted = codex._trust_boxed_command_hooks(box.codex_home)
+    config = config_path.read_text(encoding="utf-8")
+    final_hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+
+    assert trusted[key] == first_hash
+    assert final_hooks["state"][key]["trusted_hash"] == first_hash
+    assert config.count(f'[hooks.state."{key}"]') == 1
+    assert f'trusted_hash = "{first_hash}"' in config
+    assert "sha256:stale" not in config
+    assert "[after]\nvalue = true\n" in config
+
+
 def test_codex_box_uses_aura_base_config_and_auth_only_from_global(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
     source = tmp_path / "source-codex"

@@ -470,7 +470,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "name": args.name,
             "runtime": runtime,
         })
-    profile = raw_profile or args.name
+    profile = None if runtime == "hermes" else raw_profile or args.name
     omx_profile = None
     codex_profile = None
     if runtime == "omx":
@@ -494,6 +494,27 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         if runtime_profile:
             profile = runtime_profile
             profile_source = "cli-runtime-profile"
+        elif raw_profile:
+            profile = raw_profile
+            if not runtime_profile_ref:
+                runtime_profile = raw_profile
+                runtime_profile_ref = f"hermes/{raw_profile}"
+                runtime_profile_source = profile_source or "cli-profile"
+        else:
+            runtime_profile = "default"
+            runtime_profile_ref = "hermes/default"
+            runtime_profile_source = runtime_profile_source or "runtime-default"
+        hermes_root = _runtime_home(runtime, profile)
+        if hermes_root and not Path(hermes_root).is_dir():
+            return result_fn({
+                "ok": False,
+                "error": "runtime-profile-not-found",
+                "detail": f"Hermes runtime profile not found: {hermes_root}",
+                "name": args.name,
+                "runtime": runtime,
+                "runtime_profile_ref": runtime_profile_ref,
+                "expected_root": hermes_root,
+            })
     elif runtime_profile_ref_arg:
         return result_fn({
             "ok": False,
@@ -1201,7 +1222,9 @@ def _wait_for_hook_bound_session(*, fleet: str, seat: str, timeout: float) -> di
 
 
 def _runtime_home(runtime: str, profile: str | None) -> str | None:
-    if runtime == "hermes" and profile:
+    if runtime == "hermes":
+        if not profile or profile == "default":
+            return str(Path.home() / ".hermes")
         return str(Path.home() / ".hermes" / "profiles" / profile)
     return None
 
@@ -1708,25 +1731,13 @@ def _retry_codex_prompt_submit(*, terminal, target: str, seat: str, launch_id: s
     Enter until state-db evidence appears makes spawn prompt delivery
     deterministic without binding the seat manually.
     """
-    from lib import runtime_session
+    from lib import runtime_session, terminal_submit
 
     attempts = []
     max_attempts = int(os.environ.get("AURA_CODEX_PROMPT_SUBMIT_RETRIES", "4"))
+    repasted = False
     for index in range(max(1, max_attempts)):
         time.sleep(0.5 if index == 0 else 1.5)
-        if index and prompt_text and hasattr(terminal, "send_text"):
-            # First-run Codex/OMX startup can replace an early paste with its
-            # own default prompt after the TUI finishes booting.  If the first
-            # Enter did not create a thread, clear the input widget and paste
-            # the intended prompt again instead of repeatedly submitting the
-            # runtime's default example prompt.
-            clear_result = terminal.send_keys(target, "C-u", enter=False) or {}
-            retry_result = terminal.send_text(target, prompt_text, submit=True) or {}
-            retry_result = {"clear": clear_result, **retry_result}
-        else:
-            retry_result = terminal.send_keys(target, "Enter", enter=False) or {}
-        attempts.append(retry_result)
-        time.sleep(0.5)
         try:
             session_info = runtime_session.discover_for_target(
                 "codex",
@@ -1740,7 +1751,7 @@ def _retry_codex_prompt_submit(*, terminal, target: str, seat: str, launch_id: s
         possible_matches = session_info.get("runtime_session_possible_matches") if session_info else None
         diagnostics = session_info.get("runtime_session_diagnostics") or {}
         if runtime_session.is_bound_session(session_info) or (
-            possible_matches and diagnostics.get("confidence") in {"exact", "high"}
+            possible_matches and diagnostics.get("confidence") == "exact"
         ):
             return {
                 "ok": True,
@@ -1752,6 +1763,48 @@ def _retry_codex_prompt_submit(*, terminal, target: str, seat: str, launch_id: s
                 "runtime_session_diagnostics": session_info.get("runtime_session_diagnostics"),
                 "runtime_session_possible_matches": possible_matches,
             }
+        capture = []
+        if hasattr(terminal, "capture_output"):
+            try:
+                capture = terminal.capture_output(target, 160) or []
+            except Exception:
+                capture = []
+        prompt_prefix = str(prompt_text or "").splitlines()[0][:80]
+        prompt_visible = bool(prompt_prefix) and any(
+            line.strip().startswith(("› ", "❯ ")) and prompt_prefix in line
+            for line in (str(raw) for raw in capture)
+        )
+        codex_tui_visible = any("OpenAI Codex" in str(line) for line in capture)
+        idle_prompt_visible = any(str(line).strip().startswith(("› ", "❯ ")) for line in capture)
+        default_prompt_visible = any(
+            marker in str(line)
+            for line in capture
+            for marker in ("› Implement {feature}", "❯ Implement {feature}", "› Explain this codebase")
+        )
+        if capture and not terminal_submit.needs_submit_retry(capture):
+            if (
+                index
+                and prompt_text
+                and not prompt_visible
+                and not repasted
+                and hasattr(terminal, "send_text")
+                and (default_prompt_visible or (codex_tui_visible and idle_prompt_visible))
+            ):
+                clear_result = terminal.send_keys(target, "C-u", enter=False) or {}
+                retry_result = terminal.send_text(target, prompt_text, submit=True) or {}
+                retry_result = {"clear": clear_result, "reason": "startup-prompt-not-in-composer", **retry_result}
+                repasted = True
+            else:
+                retry_result = {
+                    "ok": True,
+                    "target": target,
+                    "submitted": False,
+                    "reason": "no-queued-input",
+                }
+        else:
+            retry_result = terminal.send_keys(target, "Enter", enter=False) or {}
+        attempts.append(retry_result)
+        time.sleep(0.5)
     return {
         "ok": any(result.get("ok") for result in attempts),
         "attempts": len(attempts),
