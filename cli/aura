@@ -20,7 +20,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, posture as posture_cmd, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
+from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, posture as posture_cmd, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
 from lib.output import output
 
 
@@ -186,6 +186,28 @@ def main():
     p_agent_spawn.add_argument("--timeout", type=int, default=30, help="Timeout for --wait")
     p_agent_spawn.add_argument("--as-pane", dest="as_pane", action="store_true", default=bool(os.environ.get("TMUX")), help="Spawn without stealing focus")
     p_agent_spawn.add_argument("--no-as-pane", dest="as_pane", action="store_false", help="Use focused spawn behavior")
+
+    # skills
+    p_skills = subparsers.add_parser("skills", help="Manage package-local runtime skills")
+    skills_sub = p_skills.add_subparsers(dest="skills_action", required=True)
+    p_skills_apply = skills_sub.add_parser("apply", help="Materialize skills into an agent package")
+    p_skills_apply.add_argument("--agent", required=True, help="Aura agent package id, address, or alias")
+    p_skills_apply.add_argument("--skill", action="append", required=True, help="Skill source directory; repeatable")
+    p_skills_apply.add_argument("--mode", choices=["symlink", "copy"], default="symlink", help="Materialization mode")
+    p_skills_apply.add_argument("--replace", action="store_true", help="Archive and replace an existing destination")
+    p_skills_apply.add_argument("--dry-run", action="store_true", help="Plan without mutating package files")
+    p_skills_list = skills_sub.add_parser("list", help="List package-local skills")
+    p_skills_list.add_argument("--agent", required=True, help="Aura agent package id, address, or alias")
+    p_skills_remove = skills_sub.add_parser("remove", help="Remove one Aura-owned skill from an agent package")
+    p_skills_remove.add_argument("--agent", required=True, help="Aura agent package id, address, or alias")
+    p_skills_remove.add_argument("skill_name", help="Skill name to remove")
+    p_skills_remove.add_argument("--dry-run", action="store_true", help="Plan without mutating package files")
+    p_skills_doctor = skills_sub.add_parser("doctor", help="Inspect package-local skill drift")
+    p_skills_doctor.add_argument("--agent", required=True, help="Aura agent package id, address, or alias")
+    p_skills_sync = skills_sub.add_parser("sync", help="Repair package-local Aura-owned skill drift")
+    p_skills_sync.add_argument("--agent", required=True, help="Aura agent package id, address, or alias")
+    p_skills_sync.add_argument("--dry-run", action="store_true", help="Plan without mutating package files")
+    p_skills_sync.add_argument("--prune", action="store_true", help="Remove unowned symlinks reported as missing-lock drift")
 
     # agent-map
     p_agent_map = subparsers.add_parser("agent-map", help="Render status-derived map for one managed seat")
@@ -895,6 +917,8 @@ def main():
             result = profile_cmd.run(args)
         elif args.command == "agent":
             result = agent_cmd.run(args)
+        elif args.command == "skills":
+            result = skills_cmd.run(args)
         elif args.command == "send":
             result = send.run(args)
         elif args.command == "queue":
