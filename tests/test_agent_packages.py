@@ -228,10 +228,17 @@ def test_codex_prepare_box_supports_agent_package_layout(monkeypatch, tmp_path):
     assert not (root / "home").exists()
     assert not (root / "runtime").exists()
     assert (root / ".codex" / "hooks.json").is_file()
+    hooks = json.loads((root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    assert "SessionStart" in hooks["hooks"]
+    assert "Stop" in hooks["hooks"]
+    assert "PreCompact" in hooks["hooks"]
+    assert "aura_keeper_hook.py Stop" in hooks["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert "aura_keeper_hook.py PreCompact" in hooks["hooks"]["PreCompact"][0]["hooks"][0]["command"]
     meta = box.metadata()
     assert meta["codex_isolation"] == "aura-agent-package"
     assert meta["codex_package_root"] == str(root.resolve())
     assert meta["codex_package_codex_home"] == str(root / ".codex")
+    assert meta["codex_aura_keeper_hook_installed"] is True
     assert not any(key.startswith("codex_box_") for key in meta)
 
 

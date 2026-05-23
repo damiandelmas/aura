@@ -141,7 +141,8 @@ def sample(args) -> dict:
 
 def sample_fleet(args) -> dict:
     fleet = getattr(args, "fleet", None)
-    rows = list_cmd.run(argparse.Namespace(fleet=fleet, status=None, mode=None, include_hidden=False))
+    inventory = list_cmd.run(argparse.Namespace(fleet=fleet, status=None, mode=None, include_hidden=False))
+    rows = inventory.get("rows", inventory) if isinstance(inventory, dict) else inventory
     samples = []
     for row in rows:
         if not row.get("registered"):

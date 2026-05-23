@@ -6,6 +6,20 @@ trap 'rm -f "$payload_file"' EXIT
 cat > "$payload_file"
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 python3 "$script_dir/codex_bind_hook.py" < "$payload_file" >/dev/null 2>&1 || true
+event_name="$(python3 - "$payload_file" <<'PY' 2>/dev/null || true
+import json
+import sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        payload = json.load(f)
+except Exception:
+    payload = {}
+print(payload.get("hook_event_name") or payload.get("hookEventName") or payload.get("event") or "")
+PY
+)"
+if [ "$event_name" = "Stop" ] || [ "$event_name" = "PreCompact" ]; then
+  python3 "$script_dir/aura_keeper_hook.py" "$event_name" < "$payload_file" >/dev/null 2>&1 || true
+fi
 native_hook="${AURA_OMX_NATIVE_HOOK:-}"
 if [ -z "$native_hook" ]; then
   echo "AURA_OMX_NATIVE_HOOK is required" >&2

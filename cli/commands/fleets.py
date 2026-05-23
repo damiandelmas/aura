@@ -139,12 +139,13 @@ def fleet_history(target: str | None) -> dict:
         return {"ok": False, "error": "fleet not found", "target": target}
 
     fleet_id = (fleet_record or {}).get("fleet_id")
-    live_rows = list_cmd.run(type("Args", (), {
+    inventory = list_cmd.run(type("Args", (), {
         "fleet": fleet_name,
         "status": None,
         "mode": None,
         "include_hidden": True,
     })())
+    live_rows = inventory.get("rows", inventory) if isinstance(inventory, dict) else inventory
     current_by_seat = {}
     for row in live_rows:
         seat = row.get("seat") or row.get("name")

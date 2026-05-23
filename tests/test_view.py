@@ -255,11 +255,33 @@ def test_view_fleets_returns_live_fleet_index(monkeypatch, tmp_path):
 
     result = view.run(argparse.Namespace(view_action="fleets", view_target=None, scope=None, limit=10, include_hidden=False))
 
+    assert result["ok"] is True
+    assert result["schema"] == "aura.view.fleets.v1"
+    assert result["fleets"] == [
+        {"fleet": "runway-engineering", "seats": 2},
+        {"fleet": "runway-research", "seats": 1},
+    ]
+
+
+def test_view_fleets_reports_tmux_mirror_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from commands import view
+
+    monkeypatch.setattr(view.tmux_mirror, "list_physical_panes", lambda: {
+        "ok": False,
+        "error": "no server running",
+        "panes": [],
+    })
+
+    result = view.run(argparse.Namespace(view_action="fleets", view_target=None, scope=None, limit=10, include_hidden=False))
+
     assert result == {
-        "fleets": [
-            {"fleet": "runway-engineering", "seats": 2},
-            {"fleet": "runway-research", "seats": 1},
-        ],
+        "ok": False,
+        "schema": "aura.view.fleets.v1",
+        "error": "tmux-mirror-unavailable",
+        "detail": "no server running",
+        "fleets": [],
     }
 
 

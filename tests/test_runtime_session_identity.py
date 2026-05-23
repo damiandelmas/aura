@@ -1332,7 +1332,8 @@ def test_list_merges_runtime_session_id_from_pane(monkeypatch, tmp_path):
         },
     )
 
-    rows = list_cmd.run(argparse.Namespace(fleet="unitfleet", status=None, mode=None))
+    inventory = list_cmd.run(argparse.Namespace(fleet="unitfleet", status=None, mode=None))
+    rows = inventory["rows"]
 
     engineer = next(row for row in rows if row["name"] == "engineer")
     assert engineer["session_id"] == "codex-thread-123"

@@ -72,6 +72,7 @@ def test_omx_adapter_rewrites_boxed_hooks_and_trust_state(monkeypatch, tmp_path)
     assert os.access(result.wrapper_path, os.X_OK)
     wrapper = result.wrapper_path.read_text(encoding="utf-8")
     assert "codex_bind_hook.py" in wrapper
+    assert "aura_keeper_hook.py" in wrapper
     assert "payload_file" in wrapper
     assert "AURA_OMX_NATIVE_HOOK" in wrapper
     assert not (runtime / "bin" / "aura-omx-native-hook").exists()
@@ -191,6 +192,46 @@ def test_omx_native_wrapper_preserves_existing_roots(tmp_path):
         "OMX_STATE_ROOT": None,
         "OMX_TEAM_STATE_ROOT": None,
     }
+
+
+def test_omx_native_wrapper_triggers_keeper_for_stop_payload(tmp_path):
+    wrapper = ROOT / "cli" / "hooks" / "aura-omx-native-hook"
+    home = tmp_path / "home"
+    codex_home = tmp_path / "agent" / ".codex"
+    native_hook = tmp_path / "native-hook.py"
+    keeper_hook_cmd = tmp_path / "keeper-hook-ok.py"
+    package_root = codex_home.parent
+    home.mkdir()
+    codex_home.mkdir(parents=True)
+    (package_root / "manifest.json").write_text('{"runtime":"omx"}\n', encoding="utf-8")
+    native_hook.write_text("import sys\nsys.stdin.read()\nprint('{}')\n", encoding="utf-8")
+    keeper_hook_cmd.write_text("print('{\"ok\": true, \"pid\": 12345}')\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(wrapper)],
+        input=json.dumps({"hook_event_name": "Stop", "session_id": "019e-session", "context_percent": 60}),
+        text=True,
+        capture_output=True,
+        timeout=10,
+        env={
+            "HOME": str(home),
+            "PATH": os.environ.get("PATH", ""),
+            "CODEX_HOME": str(codex_home),
+            "AURA_OMX_NATIVE_HOOK": str(native_hook),
+            "AURA_OMX_NODE": sys.executable,
+            "AURA_AGENT_PACKAGE_ID": "i_pkg",
+            "AURA_AGENT_PACKAGE_ROOT": str(package_root),
+            "AURA_FLEET": "fleet",
+            "AURA_SEAT": "worker",
+            "AURA_KEEPER_HOOK_COMMAND": f"{sys.executable} {keeper_hook_cmd}",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    state = json.loads((package_root / "memories" / ".hook-state" / "aura-keeper-hook.json").read_text(encoding="utf-8"))
+    assert state["sessions"]["019e-session"]["fired_boundaries"] == [25, 50]
+    launch_log = package_root / "memories" / ".hook-state" / "keeper-launch.log"
+    assert launch_log.is_file()
 
 
 def test_omx_adapter_path_prefix_keeps_path_unchanged(tmp_path):

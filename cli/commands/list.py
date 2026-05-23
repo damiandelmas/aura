@@ -1,4 +1,8 @@
-"""List all agents."""
+"""List registry inventory rows.
+
+This command is historical/registry inventory, not a live roster. Use
+`aura view ...` for live operational topology.
+"""
 
 
 def run(args):
@@ -147,4 +151,11 @@ def run(args):
         if runtime_session.is_bound_session(row) and row.get("runtime_session_id") and not row.get("session_id"):
             row["session_id"] = row["runtime_session_id"]
         rows.append(seat_schema.enrich(row))
-    return rows
+    return {
+        "ok": True,
+        "schema": "aura.list.registry_inventory.v1",
+        "live_semantics": False,
+        "inventory": "registry-plus-mesh-and-visible-windows",
+        "counts": {"rows": len(rows)},
+        "rows": rows,
+    }

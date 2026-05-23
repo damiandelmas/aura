@@ -43,12 +43,13 @@ def run(args):
 
         return fleets_cmd.fleet_history(getattr(args, "nonce", None) or getattr(args, "target", None) or getattr(args, "fleet", None))
 
-    rows = list_cmd.run(argparse.Namespace(
+    inventory = list_cmd.run(argparse.Namespace(
         fleet=getattr(args, "fleet", None),
         status=None,
         mode=None,
         include_hidden=bool(getattr(args, "include_hidden", False)),
     ))
+    rows = inventory.get("rows", inventory) if isinstance(inventory, dict) else inventory
     live_only = bool(getattr(args, "live", False))
     mapped = []
     from lib import runtime_session, runtimes, session_ledger

@@ -53,6 +53,8 @@ class CodexBox:
     source_cwd_trusted: bool = False
     aura_hook_installed: bool = False
     aura_hook_command: str | None = None
+    aura_keeper_hook_installed: bool = False
+    aura_keeper_hook_command: str | None = None
     package_layout: bool = False
 
     def launch_env(self, source_cwd: str) -> dict[str, str]:
@@ -83,6 +85,8 @@ class CodexBox:
                 "codex_source_cwd_trusted": self.source_cwd_trusted,
                 "codex_aura_hook_installed": self.aura_hook_installed,
                 **({"codex_aura_hook_command": self.aura_hook_command} if self.aura_hook_command else {}),
+                "codex_aura_keeper_hook_installed": self.aura_keeper_hook_installed,
+                **({"codex_aura_keeper_hook_command": self.aura_keeper_hook_command} if self.aura_keeper_hook_command else {}),
                 **({"codex_profile": self.profile} if self.profile else {}),
                 **({"codex_profile_root": str(self.profile_root)} if self.profile_root else {}),
                 "codex_profile_applied": self.profile_applied,
@@ -104,6 +108,8 @@ class CodexBox:
             "codex_box_source_cwd_trusted": self.source_cwd_trusted,
             "codex_box_aura_hook_installed": self.aura_hook_installed,
             **({"codex_box_aura_hook_command": self.aura_hook_command} if self.aura_hook_command else {}),
+            "codex_box_aura_keeper_hook_installed": self.aura_keeper_hook_installed,
+            **({"codex_box_aura_keeper_hook_command": self.aura_keeper_hook_command} if self.aura_keeper_hook_command else {}),
             **({"codex_profile": self.profile} if self.profile else {}),
             **({"codex_profile_root": str(self.profile_root)} if self.profile_root else {}),
             "codex_profile_applied": self.profile_applied,
@@ -436,6 +442,66 @@ def _install_aura_session_hook(codex_home: Path) -> tuple[bool, str]:
     _append_trust_toml(codex_home / "config.toml", trust_key, trust_value["trusted_hash"])
     return True, command
 
+
+def _find_command_entry(entries: list[Any], command: str) -> int | None:
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        handlers = entry.get("hooks")
+        if not isinstance(handlers, list):
+            continue
+        if any(
+            isinstance(hook, dict)
+            and hook.get("type") == "command"
+            and str(hook.get("command") or "") == command
+            for hook in handlers
+        ):
+            return index
+    return None
+
+
+def _install_aura_keeper_hooks(codex_home: Path) -> tuple[bool, str]:
+    """Install memory cadence hooks for package-backed Codex agents."""
+
+    hook_script = Path(__file__).resolve().parents[1] / "hooks" / "aura_keeper_hook.py"
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(hook_script))}"
+    hooks_path = codex_home / "hooks.json"
+    try:
+        config = json.loads(hooks_path.read_text(encoding="utf-8")) if hooks_path.exists() else {}
+    except Exception:
+        config = {}
+    if not isinstance(config, dict):
+        config = {}
+    hooks = config.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        hooks = {}
+        config["hooks"] = hooks
+
+    changed = False
+    for event_name in ("Stop", "PreCompact"):
+        event_command = f"{command} {event_name}"
+        entries = hooks.setdefault(event_name, [])
+        if not isinstance(entries, list):
+            entries = []
+            hooks[event_name] = entries
+            changed = True
+        if _find_command_entry(entries, event_command) is None:
+            entries.append({
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": event_command,
+                        "timeout": 30,
+                    }
+                ],
+            })
+            changed = True
+
+    if changed or not hooks_path.exists():
+        _atomic_write_json(hooks_path, config)
+    return True, command
+
+
 def _apply_profile_template(
     profile: str | None,
     *,
@@ -495,6 +561,10 @@ def prepare_box(
     auth_seeded, config_seeded = _seed_codex_home(codex_home)
     source_cwd_trusted = _trust_source_cwd(codex_home, source_cwd)
     aura_hook_installed, aura_hook_command = _install_aura_session_hook(codex_home)
+    aura_keeper_hook_installed = False
+    aura_keeper_hook_command = None
+    if package_layout:
+        aura_keeper_hook_installed, aura_keeper_hook_command = _install_aura_keeper_hooks(codex_home)
     _trust_boxed_command_hooks(codex_home)
 
     return CodexBox(
@@ -514,5 +584,7 @@ def prepare_box(
         source_cwd_trusted=source_cwd_trusted,
         aura_hook_installed=aura_hook_installed,
         aura_hook_command=aura_hook_command,
+        aura_keeper_hook_installed=aura_keeper_hook_installed,
+        aura_keeper_hook_command=aura_keeper_hook_command,
         package_layout=package_layout,
     )

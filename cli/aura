@@ -20,7 +20,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, posture as posture_cmd, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
+from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, posture as posture_cmd, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
 from lib.output import output
 
 
@@ -223,6 +223,23 @@ def main():
     p_skills_adopt.add_argument("--agent", required=True, help="Aura agent package id, address, or alias")
     p_skills_adopt.add_argument("--write", action="store_true", help="Write skills.lock.json; without this, adoption is dry-run")
     p_skills_adopt.add_argument("--replace-lock", action="store_true", help="Replace the lockfile entries with adopted existing skills")
+
+    # keeper
+    p_keeper = subparsers.add_parser("keeper", help="Run and inspect background keeper jobs")
+    keeper_sub = p_keeper.add_subparsers(dest="keeper_action", required=True)
+    p_keeper_run = keeper_sub.add_parser("run", help="Start a keeper job")
+    keeper_run_sub = p_keeper_run.add_subparsers(dest="keeper_kind", required=True)
+    p_keeper_memory = keeper_run_sub.add_parser("memory", help="Write a target-agent memory from a Flex session slice")
+    p_keeper_memory.add_argument("--target", required=True, help="Target fleet:seat, package id, address, or alias")
+    p_keeper_memory.add_argument("--boundary", required=True, help="Memory boundary such as 25, 50, 75, precompact, closeout, or manual")
+    p_keeper_memory.add_argument("--force", action="store_true", help="Launch even if the deterministic job already has a result")
+    p_keeper_status = keeper_sub.add_parser("status", help="Read keeper job status")
+    p_keeper_status.add_argument("job_id")
+    p_keeper_result = keeper_sub.add_parser("result", help="Read keeper job result")
+    p_keeper_result.add_argument("job_id")
+    p_keeper_tail = keeper_sub.add_parser("tail", help="Read the end of a keeper job log")
+    p_keeper_tail.add_argument("job_id")
+    p_keeper_tail.add_argument("--lines", type=int, default=80, help="Number of log lines to return")
 
     # agent-map
     p_agent_map = subparsers.add_parser("agent-map", help="Render status-derived map for one managed seat")
@@ -625,7 +642,7 @@ def main():
                         help="Skip graceful shutdown")
 
     # list
-    p_list = subparsers.add_parser("list", help="List all agents")
+    p_list = subparsers.add_parser("list", help="List registry inventory rows, including non-live seats")
     p_list.add_argument("--fleet", "-f", metavar="NAME",
                         help="Filter by fleet")
     p_list.add_argument("--status", choices=["idle", "busy", "waiting"],
@@ -934,6 +951,8 @@ def main():
             result = agent_cmd.run(args)
         elif args.command == "skills":
             result = skills_cmd.run(args)
+        elif args.command == "keeper":
+            result = keeper_cmd.run(args)
         elif args.command == "send":
             result = send.run(args)
         elif args.command == "queue":

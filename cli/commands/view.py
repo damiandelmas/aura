@@ -258,7 +258,13 @@ def _run_self(*, include_hidden: bool) -> dict:
 def _run_fleets(*, include_hidden: bool) -> dict:
     mirror = tmux_mirror.list_physical_panes()
     if not mirror.get("ok"):
-        return {"fleets": []}
+        return {
+            "ok": False,
+            "schema": "aura.view.fleets.v1",
+            "error": "tmux-mirror-unavailable",
+            "detail": mirror.get("error") or "tmux mirror unavailable",
+            "fleets": [],
+        }
     physical_refs = _physical_refs(mirror.get("panes") or [])
     counts: dict[str, int] = {}
     for row in registry.list_agents(include_hidden=include_hidden):
@@ -270,6 +276,8 @@ def _run_fleets(*, include_hidden: bool) -> dict:
         if fleet:
             counts[fleet] = counts.get(fleet, 0) + 1
     return {
+        "ok": True,
+        "schema": "aura.view.fleets.v1",
         "fleets": [
             {"fleet": fleet, "seats": counts[fleet]}
             for fleet in sorted(counts)
