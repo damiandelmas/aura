@@ -345,6 +345,76 @@ def test_restore_plan_warns_when_launch_history_missing(monkeypatch, tmp_path):
     assert row["restore_launch_history_error"] == "codex sessions directory not found"
 
 
+def test_restore_plan_includes_placement_and_event_reconciliation(monkeypatch, tmp_path):
+    from commands import event, sessions
+    from lib import events, placements, registry, report_subscriptions
+
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    registry.upsert_agent({
+        "seat": "pipeline",
+        "name": "pipeline",
+        "fleet": "flexchat-fitcert",
+        "runtime": "codex",
+        "registered": True,
+    })
+    placements.add_member("fitcert-wave", "flexchat-fitcert:pipeline", role="pipeline", kind="workstream")
+    job = event._make_job(argparse.Namespace(
+        name="fitcert-cadence",
+        target="flexchat-fitcert:pipeline",
+        sender="aura-event",
+        every=300,
+        ticks=None,
+        template="tick {tick}",
+        run_id="unit-run",
+        start_delay=0,
+        no_daemon=True,
+    ))
+    events.save_state(job)
+    events.index_name("fitcert-cadence", job["job_id"])
+    report_subscriptions.create(
+        name="fitcert-checkins",
+        to="flexchat-fitcert:floor-manager",
+        placement="fitcert-wave",
+        sender="aura-event",
+    )
+    monkeypatch.setattr(
+        sessions.list_cmd,
+        "run",
+        lambda _args: [
+            {
+                "seat": "pipeline",
+                "fleet": "flexchat-fitcert",
+                "runtime": "codex",
+                "terminal": "alive",
+                "runtime_session_id": "session-fitcert",
+                "session_id": "session-fitcert",
+                "runtime_session_binding": "bound",
+                "runtime_session_source": "codex-hook:session-start",
+                "cwd": "/repo/fitcert",
+            }
+        ],
+    )
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="restore-plan",
+        fleet=None,
+        live=True,
+        include_hidden=False,
+    ))
+
+    row = result["rows"][0]
+    assert result["reconciliation"] == {
+        "placements": 1,
+        "event_jobs": 1,
+        "report_subscriptions": 1,
+    }
+    assert row["reconciliation"]["target"] == "flexchat-fitcert:pipeline"
+    assert row["reconciliation"]["placements"][0]["name"] == "fitcert-wave"
+    assert row["reconciliation"]["event_jobs"][0]["name"] == "fitcert-cadence"
+    assert row["reconciliation"]["report_subscriptions"][0]["name"] == "fitcert-checkins"
+    assert row["reconciliation"]["report_subscriptions"][0]["reasons"] == ["source-placement"]
+
+
 def test_sessions_fleets_counts_same_seat_name_per_fleet(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.setenv("AURA_FLEET", "fleet-a")

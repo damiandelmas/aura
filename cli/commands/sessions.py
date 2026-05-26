@@ -252,7 +252,7 @@ def _restore_plan(args):
         plan = session_ledger.restore_plan_from_rows(rows, runtimes.capability_map())
         plan["source"] = "ledger"
         plan["latest_per_seat"] = bool(getattr(args, "latest_per_seat", False))
-        return plan
+        return _add_restore_reconciliation(plan)
 
     rows_result = run(argparse.Namespace(
         sessions_action=None,
@@ -264,10 +264,102 @@ def _restore_plan(args):
         rows_result.get("rows", []),
         runtime_session=runtime_session,
     )
-    return session_ledger.restore_plan_from_rows(
+    plan = session_ledger.restore_plan_from_rows(
         rows,
         runtimes.capability_map(),
     )
+    return _add_restore_reconciliation(plan)
+
+
+def _add_restore_reconciliation(plan: dict) -> dict:
+    rows = []
+    totals = {
+        "placements": 0,
+        "event_jobs": 0,
+        "report_subscriptions": 0,
+    }
+    for row in plan.get("rows") or []:
+        reconciliation = _restore_reconciliation_for_row(row)
+        for key in totals:
+            totals[key] += len(reconciliation.get(key) or [])
+        rows.append({**row, "reconciliation": reconciliation})
+    return {
+        **plan,
+        "rows": rows,
+        "reconciliation": totals,
+    }
+
+
+def _restore_reconciliation_for_row(row: dict) -> dict:
+    fleet = row.get("fleet")
+    seat = row.get("seat") or row.get("name")
+    target = f"{fleet}:{seat}" if fleet and seat else row.get("target") or row.get("seat_ref")
+    placements_for_target = []
+    event_jobs = []
+    report_subscription_refs = []
+    try:
+        from lib import placements
+
+        placements_for_target = placements.placements_for_seat(target)
+    except Exception:
+        placements_for_target = []
+    placement_names = {record.get("name") for record in placements_for_target if record.get("name")}
+    try:
+        from lib import events
+
+        for job in events.iter_jobs():
+            if job.get("target") != target:
+                continue
+            event_jobs.append({
+                "job_id": job.get("job_id"),
+                "name": job.get("name"),
+                "status": job.get("status"),
+                "owner": job.get("sender"),
+                "target": job.get("target"),
+                "interval_seconds": job.get("interval_seconds"),
+                "tick": job.get("tick"),
+                "ticks": job.get("ticks"),
+                "last_run_at": job.get("last_tick_at"),
+                "next_tick_at": job.get("next_tick_at"),
+                "last_error": job.get("last_error"),
+                "consecutive_errors": job.get("consecutive_errors"),
+            })
+    except Exception:
+        event_jobs = []
+    try:
+        from lib import report_subscriptions
+
+        for subscription in report_subscriptions.list_records(include_removed=False):
+            reasons = []
+            if subscription.get("to") == target:
+                reasons.append("recipient")
+            if subscription.get("target") == target:
+                reasons.append("source-target")
+            if fleet and subscription.get("fleet") == fleet:
+                reasons.append("source-fleet")
+            if subscription.get("placement") in placement_names:
+                reasons.append("source-placement")
+            if not reasons:
+                continue
+            report_subscription_refs.append({
+                "subscription_id": subscription.get("subscription_id"),
+                "name": subscription.get("name"),
+                "status": subscription.get("status"),
+                "to": subscription.get("to"),
+                "fleet": subscription.get("fleet"),
+                "target": subscription.get("target"),
+                "placement": subscription.get("placement"),
+                "states": subscription.get("states") or [],
+                "reasons": reasons,
+            })
+    except Exception:
+        report_subscription_refs = []
+    return {
+        "target": target,
+        "placements": placements_for_target,
+        "event_jobs": event_jobs,
+        "report_subscriptions": report_subscription_refs,
+    }
 
 
 def _enrich_restore_rows_from_launch_history(rows: list[dict], *, runtime_session) -> list[dict]:
