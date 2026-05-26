@@ -155,6 +155,17 @@ def run(args):
             )
         except Exception as exc:
             return {"ok": False, "error": "agent-promote-seat-failed", "detail": str(exc), "target": args.target}
+    if action == "rename":
+        try:
+            return agent_packages.rename(
+                args.ref,
+                address=args.address,
+                alias=args.alias,
+                fleet=args.fleet,
+                seat=args.seat,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": "agent-rename-failed", "detail": str(exc), "ref": args.ref}
     if action == "inspect":
         try:
             return agent_packages.inspect(args.ref)

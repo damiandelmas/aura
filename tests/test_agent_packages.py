@@ -235,6 +235,95 @@ def test_agent_promote_seat_copies_runtime_home_and_binds_registry(monkeypatch, 
     assert agent_packages.resolve("ops-manager")["agent_id"] == promoted["agent"]["agent_id"]
 
 
+def test_agent_rename_updates_index_manifest_and_registry_binding(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from lib import agent_packages, registry
+
+    agent = agent_packages.create(
+        address="flexgraph:chatbot:ops:manager",
+        runtime="codex",
+        profile="worker",
+        cwd=str(tmp_path / "unit"),
+        fleet="flexgraph-chatbot",
+        seat="manager",
+        alias="ops-manager",
+    )["agent"]
+    registry.upsert_agent({
+        "name": "manager",
+        "fleet": "flexgraph-chatbot",
+        "runtime": "codex",
+        "agent_package_id": agent["agent_id"],
+        "agent_package_root": agent["root"],
+        "agent_package_address": "flexgraph:chatbot:ops:manager",
+        "identity_label": "flexgraph:chatbot:ops:manager",
+    })
+
+    renamed = agent_packages.rename(
+        "ops-manager",
+        address="flexgraph:chatbot:ops:lead",
+        alias="ops-lead",
+        fleet="flexgraph-chatbot",
+        seat="manager",
+    )
+    record = registry.get_agent("flexgraph-chatbot:manager")
+    manifest = json.loads((Path(agent["root"]) / "manifest.json").read_text(encoding="utf-8"))
+
+    assert renamed["ok"] is True
+    assert renamed["previous"] == {
+        "address": "flexgraph:chatbot:ops:manager",
+        "alias": "ops-manager",
+    }
+    assert agent_packages.resolve("ops-lead")["agent_id"] == agent["agent_id"]
+    try:
+        agent_packages.resolve("ops-manager")
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("old alias should not resolve after rename")
+    assert record["agent_package_address"] == "flexgraph:chatbot:ops:lead"
+    assert record["identity_label"] == "flexgraph:chatbot:ops:lead"
+    assert manifest["fleet"] == "flexgraph-chatbot"
+    assert manifest["seat"] == "manager"
+
+
+def test_agent_rename_refuses_live_fleet_default_drift(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from lib import agent_packages, registry
+
+    agent = agent_packages.create(
+        address="flexgraph:chatbot:ops:manager",
+        runtime="codex",
+        profile="worker",
+        cwd=str(tmp_path / "unit"),
+        fleet="flexgraph-chatbot",
+        seat="manager",
+        alias="ops-manager",
+    )["agent"]
+    registry.upsert_agent({
+        "name": "manager",
+        "fleet": "flexgraph-chatbot",
+        "runtime": "codex",
+        "agent_package_id": agent["agent_id"],
+        "agent_package_root": agent["root"],
+    })
+
+    try:
+        agent_packages.rename(
+            "ops-manager",
+            address="flexgraph:chatbot:ops:lead",
+            alias="ops-lead",
+            fleet="other-fleet",
+        )
+    except ValueError as exc:
+        assert "live registry binding" in str(exc)
+    else:
+        raise AssertionError("live package default drift should be refused")
+
+    assert agent_packages.resolve("ops-manager")["agent_id"] == agent["agent_id"]
+
+
 def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 

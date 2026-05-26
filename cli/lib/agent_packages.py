@@ -517,6 +517,96 @@ def promote_seat(
     }
 
 
+def rename(
+    ref: str,
+    *,
+    address: str,
+    alias: str | None = None,
+    fleet: str | None = None,
+    seat: str | None = None,
+) -> dict[str, Any]:
+    """Rename package index/manifest metadata without moving live panes."""
+    from lib import registry
+
+    record = resolve(ref)
+    agent_id = record["agent_id"]
+    root = Path(record["root"])
+    index = read_index()
+    address = normalize_address(address)
+    alias_value = (
+        runtime_boxes.validate_logical_segment(alias, label="alias")
+        if alias
+        else None
+    )
+    current_address = record.get("address") or _find_index_key(index.get("addresses", {}), agent_id)
+    current_alias = record.get("alias") or _find_index_key(index.get("aliases", {}), agent_id)
+    existing_id = index.get("addresses", {}).get(address)
+    if existing_id and existing_id != agent_id:
+        raise FileExistsError(f"agent address already exists: {address} -> {existing_id}")
+    if alias_value:
+        existing_alias_id = index.get("aliases", {}).get(alias_value)
+        if existing_alias_id and existing_alias_id != agent_id:
+            raise FileExistsError(f"agent alias already exists: {alias_value}")
+
+    bindings = _registry_rows_for_agent(sorted(registry.read_registry().items()), agent_id=agent_id, root=root)
+    requested_fleet = runtime_boxes.validate_logical_segment(fleet, label="fleet") if fleet else None
+    requested_seat = runtime_boxes.validate_logical_segment(seat, label="seat") if seat else None
+    for binding in bindings:
+        if requested_fleet and requested_fleet != binding.get("fleet"):
+            raise ValueError(
+                "package has live registry binding; use cut/spawn or adopt workflow before changing fleet default"
+            )
+        if requested_seat and requested_seat != binding.get("seat"):
+            raise ValueError(
+                "package has live registry binding; use same-seat default or cut/spawn before changing seat default"
+            )
+
+    manifest = _read_manifest(root)
+    if requested_fleet:
+        manifest["fleet"] = requested_fleet
+    if requested_seat:
+        manifest["seat"] = requested_seat
+    _atomic_write_json(manifest_path(root), manifest)
+
+    if current_address and current_address != address:
+        index.get("addresses", {}).pop(current_address, None)
+    if current_alias and current_alias != alias_value:
+        index.get("aliases", {}).pop(current_alias, None)
+    meta = dict(_index_agent_meta(index, agent_id))
+    meta.update({"root": str(root), "address": address})
+    if alias_value:
+        meta["alias"] = alias_value
+    else:
+        meta.pop("alias", None)
+    index.setdefault("agents", {})[agent_id] = meta
+    index.setdefault("addresses", {})[address] = agent_id
+    if alias_value:
+        index.setdefault("aliases", {})[alias_value] = agent_id
+    write_index(index)
+
+    updated_bindings = []
+    for binding in bindings:
+        updated = registry.upsert_agent({
+            "name": binding.get("seat"),
+            "fleet": binding.get("fleet"),
+            "agent_package_address": address,
+            "identity_label": address,
+        })
+        updated_bindings.append({
+            "ref": updated.get("seat_ref"),
+            "agent_package_address": updated.get("agent_package_address"),
+            "identity_label": updated.get("identity_label"),
+        })
+    enriched = _enrich_record(manifest, index=index, agent_id=agent_id, root=root)
+    return {
+        "ok": True,
+        "renamed": True,
+        "agent": enriched,
+        "previous": {"address": current_address, "alias": current_alias},
+        "bindings_updated": updated_bindings,
+    }
+
+
 def append_spawn_history(agent_id: str, event: dict[str, Any]) -> dict[str, Any]:
     # Compatibility no-op: package manifest.json is the spawn recipe only. Spawn
     # and session evidence lives in the registry/session ledger.
