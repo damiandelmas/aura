@@ -181,6 +181,8 @@ def main():
     p_agent_spawn.add_argument("--prompt", "-p", metavar="TEXT", help="Initial prompt")
     p_agent_spawn.add_argument("--resume-session", metavar="SESSION_ID",
                                help="Runtime-native session id to resume; use 'latest' for the latest registry-bound package session")
+    p_agent_spawn.add_argument("--fresh", action="store_true",
+                               help="Start a fresh package runtime, bypassing the manifest resume default")
     p_agent_spawn.add_argument("--model", metavar="MODEL", help="Model option passed through to runtime")
     p_agent_spawn.add_argument("--wait", "-w", action="store_true", help="Wait for runtime observation/readiness")
     p_agent_spawn.add_argument("--timeout", type=int, default=30, help="Timeout for --wait")

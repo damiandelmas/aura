@@ -254,6 +254,7 @@ def _spawn_args(args, *, profile: str | None, quick_agent: dict[str, object] | N
         knowledge=None,
         memory=None,
         resume_session=None,
+        fresh=True,
         at=None,
         slice=None,
         prompt=args.prompt,

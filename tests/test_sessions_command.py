@@ -108,6 +108,56 @@ def test_sessions_rows_mark_bound_omx_restore_ready(monkeypatch):
     assert row["restore_reason"] == "bound-session-id-and-runtime-resume-supported"
 
 
+def test_restore_plan_prefers_package_agent_spawn(monkeypatch, tmp_path):
+    from commands import sessions
+
+    package_root = tmp_path / "agents" / "i_pkg"
+    monkeypatch.setattr(
+        sessions.list_cmd,
+        "run",
+        lambda _args: [
+            {
+                "seat": "manager",
+                "fleet": "flexchat-global",
+                "runtime": "codex",
+                "terminal": "alive",
+                "runtime_session_id": "019e47f8-34d9-7a62-8527-7abbafae773d",
+                "session_id": "019e47f8-34d9-7a62-8527-7abbafae773d",
+                "runtime_session_binding": "bound",
+                "runtime_session_bind_method": "codex-hook",
+                "runtime_session_source": "codex-hook:session-start",
+                "cwd": "/home/axp/projects/flexgraph/chatbot",
+                "agent_package_id": "i_f259b2504cbe",
+                "agent_package_address": "flexchat:global:manager",
+                "agent_package_root": str(package_root),
+                "codex_package_root": str(package_root),
+                "codex_package_codex_home": str(package_root / ".codex"),
+            }
+        ],
+    )
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="restore-plan",
+        fleet=None,
+        live=True,
+        include_hidden=False,
+    ))
+
+    row = result["rows"][0]
+    assert row["restore_ready"] is True
+    assert row["restore_evidence_source"] == "package-local-runtime-state"
+    assert row["restore_evidence_rank"] == 100
+    assert row["restore_command_kind"] == "agent-spawn-resume"
+    assert row["agent_package_id"] == "i_f259b2504cbe"
+    assert row["restore_command"] == (
+        "aura agent spawn flexchat:global:manager "
+        "--fleet flexchat-global --seat manager "
+        "--cwd /home/axp/projects/flexgraph/chatbot "
+        "--resume-session 019e47f8-34d9-7a62-8527-7abbafae773d "
+        "--as-pane --wait"
+    )
+
+
 def test_sessions_fleets_counts_same_seat_name_per_fleet(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.setenv("AURA_FLEET", "fleet-a")

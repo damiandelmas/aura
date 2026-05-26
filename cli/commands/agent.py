@@ -17,23 +17,50 @@ def _profile_name(ref: str | None) -> str | None:
 
 def _resume_session(record: dict, args) -> str | None:
     requested = getattr(args, "resume_session", None)
+    fresh = bool(getattr(args, "fresh", False))
+    if fresh and requested:
+        raise ValueError("use either --fresh or --resume-session, not both")
+    if fresh:
+        return None
+    if not requested:
+        requested = (record.get("resume") or {}).get("default")
     if not requested:
         return None
     if str(requested).strip().lower() not in {"latest", "last"}:
         return requested
     from lib import registry
+    from lib import runtime_session
 
     agent_id = record.get("agent_id")
+    runtime = record.get("runtime")
     candidates = []
     for row in registry.read_registry().values():
         if row.get("agent_package_id") != agent_id:
             continue
+        if runtime and row.get("runtime") and row.get("runtime") != runtime:
+            continue
+        if not runtime_session.is_bound_session(row):
+            continue
         session_id = row.get("runtime_session_id") or row.get("session_id")
         if session_id:
-            candidates.append((row.get("runtime_session_updated_at_ms") or row.get("updated_at") or row.get("registered_at") or "", session_id))
+            candidates.append((_session_sort_key(row), session_id))
     if not candidates:
         raise FileNotFoundError(f"agent package has no latest runtime session in registry: {agent_id}")
-    return str(sorted(candidates, key=lambda item: str(item[0]))[-1][1])
+    return str(sorted(candidates, key=lambda item: item[0])[-1][1])
+
+
+def _session_sort_key(row: dict) -> tuple[int, float | str]:
+    value = row.get("runtime_session_updated_at_ms")
+    if value is not None:
+        try:
+            return (3, float(value))
+        except (TypeError, ValueError):
+            return (2, str(value))
+    for key in ("updated_at", "registered_at"):
+        value = row.get(key)
+        if value is not None:
+            return (1, str(value))
+    return (0, "")
 
 
 def _spawn_args(record: dict, args) -> argparse.Namespace:

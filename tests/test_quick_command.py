@@ -61,6 +61,7 @@ def test_quick_default_codex_creates_profile_and_delegates_package_spawn(monkeyp
     assert captured["runtime_profile"] == "codex/default"
     assert captured["boxed"] is True
     assert captured["identity_provider"] == "aura-agent"
+    assert captured["fresh"] is True
     assert captured["_agent_package"]["alias"] == "quick-codex"
     assert Path(captured["_agent_package"]["root"]).is_dir()
     assert captured["fleet"] == "quick-2026-05-14-1420"
@@ -97,6 +98,7 @@ def test_quick_default_omx_uses_package_body_and_runtime_profile(monkeypatch, tm
     assert captured["boxed"] is False
     assert captured["name"] == "omx-feed01"
     assert captured["identity_provider"] == "aura-agent"
+    assert captured["fresh"] is True
     assert captured["_agent_package"]["alias"] == "quick-omx"
     assert result["quick_agent_package_alias"] == "quick-omx"
     package_root = Path(captured["_agent_package"]["root"])

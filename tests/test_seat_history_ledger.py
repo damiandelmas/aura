@@ -137,9 +137,48 @@ def test_restore_plan_from_ledger_uses_latest_active_state(monkeypatch, tmp_path
     plan = session_ledger.restore_plan_from_rows(latest, runtimes.capability_map())
     rows = {f"{row['fleet']}:{row['seat']}": row for row in plan["rows"]}
     assert rows["new:engineer"]["restore_ready"] is True
-    assert "resume new-session" in rows["new:engineer"]["restore_command"]
+    assert "--resume-session new-session" in rows["new:engineer"]["restore_command"]
+    assert rows["new:engineer"]["restore_command_kind"] == "spawn-resume"
+    assert rows["new:engineer"]["restore_evidence_source"] == "session-ledger-projection"
     assert rows["new:dead"]["restore_ready"] is False
     assert rows["new:dead"]["restore_reason"] == "latest-seat-state-is-terminal"
+
+
+def test_restore_plan_from_ledger_preserves_package_restore_surface(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from lib import runtimes, session_ledger
+
+    package_root = tmp_path / "state" / "agents" / "i_pkg"
+    seat = {
+        "name": "pipeline",
+        "fleet": "flexchat-fitcert",
+        "runtime": "codex",
+        "runtime_session_id": "session-fitcert",
+        "runtime_session_binding": "bound",
+        "runtime_session_bind_method": "codex-hook",
+        "runtime_session_bind_source": "codex-hook:session-start",
+        "cwd": "/repo/fitcert",
+        "agent_package_id": "i_pkg",
+        "agent_package_address": "flexchat:fitcert:pipeline",
+        "agent_package_root": str(package_root),
+        "codex_package_root": str(package_root),
+        "codex_package_codex_home": str(package_root / ".codex"),
+    }
+    session_ledger.append_seat_event(event="seat_spawned", after=seat)
+
+    latest = session_ledger.project_latest_from_ledger()
+    plan = session_ledger.restore_plan_from_rows(latest, runtimes.capability_map())
+    row = plan["rows"][0]
+
+    assert row["agent_package_id"] == "i_pkg"
+    assert row["restore_evidence_source"] == "package-local-runtime-state"
+    assert row["restore_command_kind"] == "agent-spawn-resume"
+    assert row["restore_command"] == (
+        "aura agent spawn flexchat:fitcert:pipeline --fleet flexchat-fitcert "
+        "--seat pipeline --cwd /repo/fitcert --resume-session session-fitcert "
+        "--as-pane --wait"
+    )
 
 
 def test_sessions_seat_history_command_reads_target(monkeypatch, tmp_path):

@@ -120,6 +120,8 @@ def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
             fleet=None,
             seat=None,
             prompt=None,
+            resume_session=None,
+            fresh=True,
             model=None,
             wait=False,
             timeout=30,
@@ -129,6 +131,7 @@ def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert captured["runtime"] == "omx"
+    assert captured["resume_session"] is None
     assert captured["omx_profile"] is None
     assert captured["runtime_profile"] == "omx/aura-operator"
     assert captured["identity_provider"] == "aura-agent"
@@ -140,7 +143,7 @@ def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
     assert "spawn_history" not in body
 
 
-def test_agent_spawn_latest_resume_reads_package_runtime_session(monkeypatch, tmp_path):
+def test_agent_spawn_defaults_to_latest_valid_package_runtime_session(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
     from commands import agent as agent_cmd
@@ -164,7 +167,93 @@ def test_agent_spawn_latest_resume_reads_package_runtime_session(monkeypatch, tm
         "fleet": "flexgraph-chatbot",
         "runtime": "omx",
         "agent_package_id": created["agent"]["agent_id"],
+        "runtime_session_id": "newer-unbound",
+        "runtime_session_binding": "unbound",
+        "runtime_session_updated_at_ms": 9,
+    })
+    registry.upsert_agent({
+        "name": "pipeline-old",
+        "fleet": "flexgraph-chatbot",
+        "runtime": "omx",
+        "agent_package_id": created["agent"]["agent_id"],
         "runtime_session_id": "019e3334-6cf5-72cb-aafb-9e423bfb9f86",
+        "runtime_session_binding": "bound",
+        "runtime_session_bind_method": "codex-hook",
+        "runtime_session_bind_source": "codex-hook:session-start",
+        "runtime_session_updated_at_ms": 1,
+    })
+    registry.upsert_agent({
+        "name": "pipeline-wrong-runtime",
+        "fleet": "flexgraph-chatbot",
+        "runtime": "codex",
+        "agent_package_id": created["agent"]["agent_id"],
+        "runtime_session_id": "wrong-runtime",
+        "runtime_session_binding": "bound",
+        "runtime_session_bind_method": "codex-hook",
+        "runtime_session_bind_source": "codex-hook:session-start",
+        "runtime_session_updated_at_ms": 20,
+    })
+    captured = {}
+
+    def fake_spawn(args):
+        captured.update(vars(args))
+        return {
+            "ok": True,
+            "name": args.name,
+            "fleet": args.fleet,
+            "runtime": args.runtime,
+            "runtime_session_id": args.resume_session,
+            "runtime_capsule_ref": args._agent_package["root"],
+        }
+
+    monkeypatch.setattr(spawn, "run", fake_spawn)
+    result = agent_cmd.run(
+        argparse.Namespace(
+            agent_action="spawn",
+            ref="pipeline-conductor",
+            cwd=None,
+            fleet=None,
+            seat=None,
+            prompt=None,
+            resume_session=None,
+            fresh=False,
+            model=None,
+            wait=False,
+            timeout=30,
+            as_pane=True,
+        )
+    )
+
+    assert result["ok"] is True
+    assert captured["resume_session"] == "019e3334-6cf5-72cb-aafb-9e423bfb9f86"
+    assert captured["runtime"] == "omx"
+
+
+def test_agent_spawn_latest_resume_reads_package_runtime_session(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import agent as agent_cmd
+    from commands import spawn
+    from lib import agent_packages, registry
+
+    created = agent_packages.create(
+        address="flexgraph:chatbot:pipeline:conductor",
+        runtime="omx",
+        profile="omx/aura-operator",
+        cwd=str(tmp_path / "unit"),
+        fleet="flexgraph-chatbot",
+        seat="pipeline",
+        alias="pipeline-conductor",
+    )
+    registry.upsert_agent({
+        "name": "pipeline",
+        "fleet": "flexgraph-chatbot",
+        "runtime": "omx",
+        "agent_package_id": created["agent"]["agent_id"],
+        "runtime_session_id": "019e3334-6cf5-72cb-aafb-9e423bfb9f86",
+        "runtime_session_binding": "bound",
+        "runtime_session_bind_method": "codex-hook",
+        "runtime_session_bind_source": "codex-hook:session-start",
         "runtime_session_updated_at_ms": 1,
     })
     captured = {}
@@ -190,6 +279,7 @@ def test_agent_spawn_latest_resume_reads_package_runtime_session(monkeypatch, tm
             seat=None,
             prompt=None,
             resume_session="latest",
+            fresh=False,
             model=None,
             wait=False,
             timeout=30,
@@ -200,6 +290,146 @@ def test_agent_spawn_latest_resume_reads_package_runtime_session(monkeypatch, tm
     assert result["ok"] is True
     assert captured["resume_session"] == "019e3334-6cf5-72cb-aafb-9e423bfb9f86"
     assert captured["runtime"] == "omx"
+
+
+def test_agent_spawn_default_resume_requires_valid_package_session(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import agent as agent_cmd
+    from commands import spawn
+    from lib import agent_packages, registry
+
+    created = agent_packages.create(
+        address="flexgraph:chatbot:pipeline:conductor",
+        runtime="omx",
+        profile="omx/aura-operator",
+        cwd=str(tmp_path / "unit"),
+        fleet="flexgraph-chatbot",
+        seat="pipeline",
+        alias="pipeline-conductor",
+    )
+    registry.upsert_agent({
+        "name": "pipeline",
+        "fleet": "flexgraph-chatbot",
+        "runtime": "omx",
+        "agent_package_id": created["agent"]["agent_id"],
+        "runtime_session_id": "unbound-session",
+        "runtime_session_binding": "unbound",
+        "runtime_session_updated_at_ms": 1,
+    })
+
+    called = False
+
+    def fake_spawn(_args):
+        nonlocal called
+        called = True
+        return {"ok": True}
+
+    monkeypatch.setattr(spawn, "run", fake_spawn)
+    result = agent_cmd.run(
+        argparse.Namespace(
+            agent_action="spawn",
+            ref="pipeline-conductor",
+            cwd=None,
+            fleet=None,
+            seat=None,
+            prompt=None,
+            resume_session=None,
+            fresh=False,
+            model=None,
+            wait=False,
+            timeout=30,
+            as_pane=True,
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "agent-spawn-args-failed"
+    assert "no latest runtime session" in result["detail"]
+    assert called is False
+
+
+def test_agent_spawn_fresh_bypasses_manifest_resume_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import agent as agent_cmd
+    from commands import spawn
+    from lib import agent_packages
+
+    created = agent_packages.create(
+        address="flexgraph:chatbot:pipeline:conductor",
+        runtime="omx",
+        profile="omx/aura-operator",
+        cwd=str(tmp_path / "unit"),
+        fleet="flexgraph-chatbot",
+        seat="pipeline",
+        alias="pipeline-conductor",
+    )
+    captured = {}
+
+    def fake_spawn(args):
+        captured.update(vars(args))
+        return {"ok": True, "name": args.name, "fleet": args.fleet, "runtime": args.runtime}
+
+    monkeypatch.setattr(spawn, "run", fake_spawn)
+    result = agent_cmd.run(
+        argparse.Namespace(
+            agent_action="spawn",
+            ref="pipeline-conductor",
+            cwd=None,
+            fleet=None,
+            seat=None,
+            prompt=None,
+            resume_session=None,
+            fresh=True,
+            model=None,
+            wait=False,
+            timeout=30,
+            as_pane=True,
+        )
+    )
+
+    assert result["ok"] is True
+    assert captured["identity_id"] == created["agent"]["agent_id"]
+    assert captured["resume_session"] is None
+
+
+def test_agent_spawn_fresh_conflicts_with_resume_session(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import agent as agent_cmd
+    from lib import agent_packages
+
+    agent_packages.create(
+        address="flexgraph:chatbot:pipeline:conductor",
+        runtime="omx",
+        profile="omx/aura-operator",
+        cwd=str(tmp_path / "unit"),
+        fleet="flexgraph-chatbot",
+        seat="pipeline",
+        alias="pipeline-conductor",
+    )
+
+    result = agent_cmd.run(
+        argparse.Namespace(
+            agent_action="spawn",
+            ref="pipeline-conductor",
+            cwd=None,
+            fleet=None,
+            seat=None,
+            prompt=None,
+            resume_session="latest",
+            fresh=True,
+            model=None,
+            wait=False,
+            timeout=30,
+            as_pane=True,
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "agent-spawn-args-failed"
+    assert "use either --fresh or --resume-session" in result["detail"]
 
 
 def test_codex_prepare_box_supports_agent_package_layout(monkeypatch, tmp_path):

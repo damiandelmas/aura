@@ -87,6 +87,24 @@ SNAPSHOT_FIELDS = (
     "identity_id",
     "identity_label",
     "desks_identity_id",
+    "agent_package_id",
+    "agent_package_address",
+    "agent_package_alias",
+    "agent_package_root",
+    "codex_package_root",
+    "codex_package_codex_home",
+    "omx_package_root",
+    "omx_package_codex_home",
+    "omx_package_omx_root",
+    "omx_package_omx_state",
+    "omx_package_team_state_root",
+    "runtime_home",
+    "codex_box_root",
+    "codex_box_codex_home",
+    "omx_box_root",
+    "omx_box_codex_home",
+    "omx_box_omx_root",
+    "omx_box_team_state_root",
     "flex_project_manifest",
     "flex_project_root",
 )
@@ -381,6 +399,65 @@ def restore_status(row: dict[str, Any], capability: dict[str, Any] | None = None
     }
 
 
+def _package_restore_ref(row: dict[str, Any]) -> str | None:
+    return (
+        row.get("agent_package_address")
+        or row.get("agent_package_alias")
+        or row.get("agent_package_id")
+    )
+
+
+def restore_evidence(row: dict[str, Any]) -> dict[str, Any]:
+    """Rank the evidence source a restore command would rely on."""
+    package_root = (
+        row.get("agent_package_root")
+        or row.get("codex_package_root")
+        or row.get("omx_package_root")
+    )
+    if _package_restore_ref(row) and package_root:
+        return {
+            "restore_evidence_source": "package-local-runtime-state",
+            "restore_evidence_rank": 100,
+            "restore_command_kind": "agent-spawn-resume",
+        }
+    if _package_restore_ref(row):
+        return {
+            "restore_evidence_source": "package-registry-row-missing-root",
+            "restore_evidence_rank": 90,
+            "restore_command_kind": "agent-spawn-resume",
+            "restore_warning": "package-root-missing-from-restore-row",
+        }
+    if row.get("runtime_home") or row.get("codex_box_root") or row.get("omx_box_root"):
+        return {
+            "restore_evidence_source": "legacy-capsule-runtime-state",
+            "restore_evidence_rank": 70,
+            "restore_command_kind": "spawn-resume",
+        }
+    if row.get("terminal") == "alive" and row.get("runtime_session_binding") == "bound":
+        return {
+            "restore_evidence_source": "live-registry-binding",
+            "restore_evidence_rank": 60,
+            "restore_command_kind": "spawn-resume",
+        }
+    if row.get("latest_event") or row.get("latest_event_id"):
+        return {
+            "restore_evidence_source": "session-ledger-projection",
+            "restore_evidence_rank": 50,
+            "restore_command_kind": "spawn-resume",
+        }
+    if row.get("runtime_session_source"):
+        return {
+            "restore_evidence_source": "runtime-session-observation",
+            "restore_evidence_rank": 40,
+            "restore_command_kind": "spawn-resume",
+        }
+    return {
+        "restore_evidence_source": "unranked",
+        "restore_evidence_rank": 0,
+        "restore_command_kind": "none",
+    }
+
+
 def _shell_quote(value: Any) -> str:
     import shlex
 
@@ -399,24 +476,23 @@ def restore_command(row: dict[str, Any], capability: dict[str, Any] | None = Non
     session_id = row.get("session_id") or row.get("runtime_session_id")
     if not seat or not runtime or not session_id:
         return None
+    package_ref = _package_restore_ref(row)
+    if package_ref:
+        parts = ["aura", "agent", "spawn", _shell_quote(package_ref)]
+        if fleet:
+            parts.extend(["--fleet", _shell_quote(fleet)])
+        parts.extend(["--seat", _shell_quote(seat)])
+        if cwd:
+            parts.extend(["--cwd", _shell_quote(cwd)])
+        parts.extend(["--resume-session", _shell_quote(session_id), "--as-pane", "--wait"])
+        return " ".join(parts)
+
     parts = ["aura", "spawn", _shell_quote(seat), "--runtime", _shell_quote(runtime)]
     if fleet:
         parts.extend(["--fleet", _shell_quote(fleet)])
     if cwd:
         parts.extend(["--cwd", _shell_quote(cwd)])
-    resume_template = capability.get("resume_command")
-    if resume_template:
-        try:
-            from lib import runtimes
-
-            resume_command = runtimes.build_resume_command(runtime, str(session_id), cwd=cwd)
-        except Exception:
-            resume_command = resume_template.format(session_id=session_id, cwd_arg="")
-        parts.extend(["--command", _shell_quote(resume_command)])
-    elif runtime in ("claude", "claude-code"):
-        parts.extend(["--memory", _shell_quote(session_id)])
-    else:
-        return None
+    parts.extend(["--resume-session", _shell_quote(session_id), "--as-pane", "--wait"])
     return " ".join(parts)
 
 
@@ -427,6 +503,10 @@ def restore_plan_from_rows(rows: list[dict[str, Any]], capabilities: dict[str, d
         capability = capabilities.get(runtime or "", {})
         status = restore_status(row, capability)
         command = restore_command(row, capability)
+        evidence = restore_evidence(row)
+        warnings = list(row.get("warnings") or [])
+        if evidence.get("restore_warning") and evidence["restore_warning"] not in warnings:
+            warnings.append(evidence["restore_warning"])
         plan_rows.append({
             "seat": row.get("seat") or row.get("name"),
             "fleet": row.get("fleet"),
@@ -438,9 +518,12 @@ def restore_plan_from_rows(rows: list[dict[str, Any]], capabilities: dict[str, d
             "runtime_session_bind_source": row.get("runtime_session_bind_source"),
             "runtime_session_confidence": row.get("runtime_session_confidence"),
             "runtime_session_source": row.get("runtime_session_source"),
-            "cwd": row.get("cwd") or row.get("workdir"),
+            "cwd": row.get("runtime_session_cwd") or row.get("cwd") or row.get("workdir"),
             "restore_ready": status["restore_ready"],
             "restore_reason": status["restore_reason"],
+            "restore_evidence_source": evidence["restore_evidence_source"],
+            "restore_evidence_rank": evidence["restore_evidence_rank"],
+            "restore_command_kind": evidence["restore_command_kind"],
             "restore_command": command,
             "latest_event": row.get("latest_event"),
             "latest_event_id": row.get("latest_event_id"),
@@ -449,7 +532,12 @@ def restore_plan_from_rows(rows: list[dict[str, Any]], capabilities: dict[str, d
             "identity_id": row.get("identity_id") or row.get("desks_identity_id"),
             "identity_label": row.get("identity_label"),
             "desks_identity_id": row.get("desks_identity_id"),
-            "warnings": row.get("warnings") or [],
+            "agent_package_id": row.get("agent_package_id"),
+            "agent_package_address": row.get("agent_package_address"),
+            "agent_package_alias": row.get("agent_package_alias"),
+            "agent_package_root": row.get("agent_package_root"),
+            "runtime_home": row.get("runtime_home"),
+            "warnings": warnings,
         })
     ready = [row for row in plan_rows if row["restore_ready"]]
     review = [row for row in plan_rows if not row["restore_ready"]]
