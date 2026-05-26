@@ -687,7 +687,39 @@ def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, 
     assert result["runtime"] == "command"
     assert result["command"] == "python3 -q"
     assert result["cwd"] == str(tmp_path)
+    assert "spawn_preflight" not in result
     assert "trace_cell" not in result or result["trace_cell"] is None
+
+
+def test_spawn_terminal_runtime_returns_structured_invalid_cwd(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+    args = argparse.Namespace(
+        name="codex-seat",
+        runtime="codex",
+        resume_session=None,
+        fork_session=None,
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(tmp_path / "missing"),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is False
+    assert result["error"] == "cwd-invalid"
+    assert "cwd is not a directory" in result["detail"]
 
 
 def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_path):
@@ -764,6 +796,7 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
     assert "agent_map_included" not in result["prompt_delivery"]
     assert result["context_file"] == str(context_file)
     assert result["work_file"] == str(work_file)
+    assert result["spawn_preflight"]["warnings"] == ["custom-codex-command-may-remain-unbound"]
 
     log_path = workspace_state.workspace_session_log(unit)
     rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]

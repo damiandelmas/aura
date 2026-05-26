@@ -513,7 +513,47 @@ def test_spawn_codex_resume_session_builds_autonomous_resume_command(monkeypatch
     assert result["runtime_session_mode"] == "native-resume"
     assert result["isolation"] == "shared-native-thread"
     assert result["backend_ref"] == "unitfleet:outreach"
+    assert "spawn_preflight" not in result
     assert result["session_observation"]["status"] == "already-bound"
+
+
+def test_spawn_codex_custom_resume_command_requires_resume_session(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(*_args, **_kwargs):
+            raise AssertionError("preflight should refuse before create_window")
+
+    session_id = "019dd1ba-70ff-72c3-8ccd-739cccf4e3fc"
+    args = argparse.Namespace(
+        name="outreach",
+        runtime="codex",
+        resume_session=None,
+        fork_session=None,
+        launch_command=f"codex --cd {unit} resume {session_id}",
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is False
+    assert result["error"] == "spawn-preflight-failed"
+    assert result["spawn_preflight"]["errors"][0]["code"] == "manual-resume-command-without-resume-session"
 
 
 def test_spawn_codex_fork_session_records_parent_pending_child(monkeypatch, tmp_path):
@@ -1933,6 +1973,74 @@ def test_spawn_boxed_codex_writes_runtime_capsule_launch_manifest(monkeypatch, t
     assert body["name"] == "builder"
     assert body["runtime"] == "codex"
     assert body["env_roots"]["CODEX_HOME"] == str(capsule / "codex-home")
+
+
+def test_spawn_boxed_codex_refuses_conflicting_inline_codex_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+    from lib import codex as codex_lib
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+    capsule = tmp_path / "codex-capsule"
+    (capsule / "home").mkdir(parents=True)
+    (capsule / "codex-home").mkdir(parents=True)
+
+    class FakeBox:
+        root = capsule
+        codex_home = capsule / "codex-home"
+
+        def launch_env(self, source_cwd):
+            return {"HOME": str(capsule / "home"), "CODEX_HOME": str(self.codex_home)}
+
+        def metadata(self):
+            return {
+                "codex_isolation": "aura-seat-box",
+                "codex_box_root": str(self.root),
+                "codex_box_home": str(capsule / "home"),
+                "codex_box_codex_home": str(self.codex_home),
+            }
+
+    monkeypatch.setattr(codex_lib, "prepare_box", lambda **_kwargs: FakeBox())
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(*_args, **_kwargs):
+            raise AssertionError("preflight should refuse before create_window")
+
+    args = argparse.Namespace(
+        name="builder",
+        runtime="codex",
+        resume_session=None,
+        fork_session=None,
+        launch_command=f"CODEX_HOME={tmp_path / 'wrong-codex-home'} codex",
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(unit),
+        context=None,
+        boxed=True,
+        runtime_profile=None,
+        omx_profile=None,
+        manifest=None,
+        role_home=None,
+        identity_provider=None,
+        identity_id=None,
+        identity_label=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is False
+    assert result["error"] == "spawn-preflight-failed"
+    assert result["spawn_preflight"]["errors"][0]["code"] == "runtime-home-conflict"
+    assert result["spawn_preflight"]["errors"][0]["env"] == "CODEX_HOME"
 
 
 def test_spawn_boxed_omx_writes_runtime_capsule_launch_manifest(monkeypatch, tmp_path):

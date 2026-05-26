@@ -344,8 +344,12 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     runtime, spec = runtimes.resolve_runtime(requested_runtime)
     resume_session = getattr(args, 'resume_session', None)
     fork_session = getattr(args, 'fork_session', None)
-    launch_command = getattr(args, 'launch_command', None)
-    workdir_path = workspace_state.resolve_workdir(getattr(args, 'cwd', None))
+    custom_launch_command = getattr(args, 'launch_command', None)
+    launch_command = custom_launch_command
+    try:
+        workdir_path = workspace_state.resolve_workdir(getattr(args, 'cwd', None))
+    except ValueError as exc:
+        return result_fn({"ok": False, "error": "cwd-invalid", "detail": str(exc), "name": args.name})
     workdir = str(workdir_path)
     if resume_session and fork_session:
         return result_fn({"ok": False, "error": "use either --resume-session or --fork-session, not both", "name": args.name})
@@ -536,17 +540,20 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             **({"desks_runtime_profile_ref": desks_runtime_profile_ref} if desks_runtime_profile_ref else {}),
         }
     recorded_profile = profile if runtime == "hermes" else omx_profile if runtime == "omx" else codex_profile if runtime == "codex" else None
-    context_path = workspace_state.infer_context_file(
-        workdir_path,
-        spec,
-        getattr(args, 'context', None),
-    )
-    work_path = workspace_state.resolve_existing_file(
-        getattr(args, 'work', None),
-        workdir=workdir_path,
-        label="work",
-    )
-    prompt_text = workspace_state.read_work_prompt(work_path) or getattr(args, 'prompt', None)
+    try:
+        context_path = workspace_state.infer_context_file(
+            workdir_path,
+            spec,
+            getattr(args, 'context', None),
+        )
+        work_path = workspace_state.resolve_existing_file(
+            getattr(args, 'work', None),
+            workdir=workdir_path,
+            label="work",
+        )
+        prompt_text = workspace_state.read_work_prompt(work_path) or getattr(args, 'prompt', None)
+    except (OSError, ValueError) as exc:
+        return result_fn({"ok": False, "error": "launch-input-invalid", "detail": str(exc), "name": args.name})
     native_state_ref = workspace_state.infer_native_state_ref(workdir_path, spec)
     fleet = getattr(terminal, "SESSION_NAME", None) or registry.current_fleet(default="aura")
     launch_id = f"aura-launch-{uuid.uuid4().hex[:16]}"
@@ -685,6 +692,23 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 "cwd": workdir,
                 "fleet": fleet,
             })
+    spawn_preflight = _spawn_preflight(
+        runtime=runtime,
+        command=command,
+        custom_launch_command=custom_launch_command,
+        launch_env=launch_env,
+        resume_session=resume_session,
+        fork_session=fork_session,
+    )
+    if not spawn_preflight.get("ok", False):
+        return result_fn({
+            "ok": False,
+            "error": "spawn-preflight-failed",
+            "name": args.name,
+            "runtime": runtime,
+            "cwd": workdir,
+            "spawn_preflight": spawn_preflight,
+        })
     try:
         launch = terminal.create_window(
             args.name,
@@ -933,6 +957,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "status": "starting",
         "registered": True,
         **agent_package_meta,
+        **({"spawn_preflight": spawn_preflight} if spawn_preflight.get("warnings") else {}),
         "fleet": fleet,
         "trace_cell": registered.get("trace_cell"),
         "runtime_capsule_ref": registered.get("runtime_capsule_ref"),
@@ -1135,6 +1160,83 @@ def _should_send_codex_startup_handshake(*, runtime: str, resume_session: str | 
         return False
     value = os.environ.get("AURA_CODEX_STARTUP_HANDSHAKE", "0").strip().lower()
     return value not in {"0", "false", "no", "off"}
+
+
+def _spawn_preflight(
+    *,
+    runtime: str,
+    command: str,
+    custom_launch_command: str | None,
+    launch_env: dict,
+    resume_session: str | None,
+    fork_session: str | None,
+) -> dict:
+    del command
+    warnings: list[str] = []
+    errors: list[dict] = []
+    inline_env: dict[str, str] = {}
+    parse_warning = None
+
+    if runtime in {"codex", "omx"} and custom_launch_command:
+        try:
+            parts = shlex.split(custom_launch_command)
+        except ValueError as exc:
+            parts = []
+            parse_warning = f"custom-command-parse-warning: {exc}"
+            warnings.append("custom-command-parse-warning")
+        executable_index = 0
+        for index, part in enumerate(parts):
+            if "=" not in part or part.startswith("="):
+                executable_index = index
+                break
+            key, value = part.split("=", 1)
+            if not key or any(char in key for char in "/ \t"):
+                executable_index = index
+                break
+            inline_env[key] = value
+        else:
+            executable_index = len(parts)
+        argv = parts[executable_index:]
+        if _custom_command_is_manual_resume(runtime, argv) and not resume_session and not fork_session:
+            errors.append({
+                "code": "manual-resume-command-without-resume-session",
+                "detail": "Use --resume-session so Aura can bind the runtime session exactly.",
+            })
+        for key in ("CODEX_HOME", "OMX_ROOT", "OMX_TEAM_STATE_ROOT"):
+            if key not in inline_env or key not in launch_env:
+                continue
+            if str(inline_env[key]) != str(launch_env[key]):
+                errors.append({
+                    "code": "runtime-home-conflict",
+                    "env": key,
+                    "command_value": inline_env[key],
+                    "launch_env_value": str(launch_env[key]),
+                })
+        warning = f"custom-{runtime}-command-may-remain-unbound"
+        if warning not in warnings:
+            warnings.append(warning)
+
+    result = {
+        "ok": not errors,
+        "warnings": warnings,
+        "errors": errors,
+    }
+    if inline_env:
+        result["inline_env"] = inline_env
+    if parse_warning:
+        result["parse_warning"] = parse_warning
+    return result
+
+
+def _custom_command_is_manual_resume(runtime: str, argv: list[str]) -> bool:
+    if len(argv) < 3:
+        return False
+    executable = Path(argv[0]).name
+    if runtime == "codex" and executable == "codex":
+        return "resume" in argv[1:]
+    if runtime == "omx" and executable == "omx":
+        return "resume" in argv[1:]
+    return False
 
 
 def _startup_handshake_text(*, fleet: str, seat: str) -> str:
