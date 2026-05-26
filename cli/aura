@@ -738,6 +738,17 @@ def main():
 
     event_sub.add_parser("list", help="List event jobs")
 
+    p_event_update = event_sub.add_parser("update", help="Change an event job")
+    p_event_update.add_argument("ref", help="Job id or name")
+    p_event_update.add_argument("--name", help="New human-readable job name")
+    p_event_update.add_argument("--target", help="New target seat to wake")
+    p_event_update.add_argument("--as", dest="sender", help="New sender label")
+    p_event_update.add_argument("--every", type=float, help="New interval in seconds")
+    p_event_update.add_argument("--ticks", type=int, help="New number of ticks before completion")
+    p_event_update.add_argument("--clear-ticks", action="store_true", help="Make the event unbounded")
+    p_event_update.add_argument("--template", help="New message template")
+    p_event_update.add_argument("--start-delay", type=float, help="Reset next tick to this delay in seconds")
+
     p_event_pause = event_sub.add_parser("pause", help="Pause an event job")
     p_event_pause.add_argument("ref", help="Job id or name")
 
@@ -748,6 +759,9 @@ def main():
 
     p_event_stop = event_sub.add_parser("stop", help="Stop an event job")
     p_event_stop.add_argument("ref", help="Job id or name")
+
+    p_event_retire = event_sub.add_parser("retire", help="Retire an event job")
+    p_event_retire.add_argument("ref", help="Job id or name")
 
     p_event_run = event_sub.add_parser("run", help="Run one event tick now")
     p_event_run.add_argument("ref", help="Job id or name")

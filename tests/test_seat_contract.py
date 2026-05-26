@@ -3103,6 +3103,85 @@ def test_event_tick_skips_busy_target_without_consuming_tick(monkeypatch, tmp_pa
     assert saved["consecutive_errors"] == 0
 
 
+def test_event_update_mutates_interval_job_and_name_index(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
+
+    from commands import event
+    from lib import events
+
+    job = event._make_job(argparse.Namespace(
+        name="ops",
+        target="manager",
+        sender="operations",
+        every=180,
+        ticks=2,
+        template="tick {tick}/{ticks}",
+        run_id="unit-run",
+        start_delay=0,
+        no_daemon=True,
+    ))
+    events.save_state(job)
+    events.index_name("ops", job["job_id"])
+
+    result = event.run(argparse.Namespace(
+        event_action="update",
+        ref="ops",
+        name="ops-renamed",
+        target="lead",
+        sender="aura-event",
+        every=60,
+        ticks=None,
+        clear_ticks=True,
+        template="new tick {tick}",
+        start_delay=10,
+    ))
+
+    assert result["ok"] is True
+    assert result["changes"]["target"] == "lead"
+    assert result["changes"]["interval_seconds"] == 60.0
+    assert result["changes"]["ticks"] is None
+    saved = events.load_state(job["job_id"])
+    assert saved["name"] == "ops-renamed"
+    assert saved["target"] == "lead"
+    assert saved["sender"] == "aura-event"
+    assert saved["interval_seconds"] == 60.0
+    assert saved["ticks"] is None
+    assert saved["template"] == "new tick {tick}"
+    assert events.resolve_job_id("ops-renamed") == job["job_id"]
+    with pytest.raises(FileNotFoundError):
+        events.resolve_job_id("ops")
+
+
+def test_event_retire_stops_job_without_deleting_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
+
+    from commands import event
+    from lib import events
+
+    job = event._make_job(argparse.Namespace(
+        name="ops",
+        target="manager",
+        sender="operations",
+        every=180,
+        ticks=2,
+        template="tick {tick}/{ticks}",
+        run_id="unit-run",
+        start_delay=0,
+        no_daemon=True,
+    ))
+    events.save_state(job)
+    events.index_name("ops", job["job_id"])
+
+    result = event.run(argparse.Namespace(event_action="retire", ref="ops"))
+
+    assert result["ok"] is True
+    saved = events.load_state(job["job_id"])
+    assert saved["status"] == "retired"
+    assert saved["next_tick_at"] is None
+    assert saved["running_at"] is None
+    assert events.resolve_job_id("ops") == job["job_id"]
+
+
 def test_event_target_blocker_detects_active_composer(monkeypatch):
     from commands import event
 

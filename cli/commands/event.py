@@ -60,6 +60,47 @@ def _make_job(args) -> dict:
     }
 
 
+def _update_job(job: dict, args) -> tuple[dict, dict]:
+    changes: dict = {}
+    old_name = job.get("name")
+    if getattr(args, "name", None) is not None:
+        job["name"] = args.name
+        changes["name"] = args.name
+    if getattr(args, "target", None) is not None:
+        job["target"] = args.target
+        changes["target"] = args.target
+    if getattr(args, "sender", None) is not None:
+        job["sender"] = args.sender
+        changes["sender"] = args.sender
+    if getattr(args, "template", None) is not None:
+        job["template"] = args.template
+        changes["template"] = args.template
+    if getattr(args, "every", None) is not None:
+        interval = float(args.every)
+        if interval <= 0:
+            raise ValueError("--every must be > 0 seconds")
+        job["interval_seconds"] = interval
+        changes["interval_seconds"] = interval
+    if getattr(args, "ticks", None) is not None:
+        ticks = int(args.ticks)
+        if ticks <= 0:
+            raise ValueError("--ticks must be > 0")
+        job["ticks"] = ticks
+        changes["ticks"] = ticks
+    if getattr(args, "clear_ticks", False):
+        job["ticks"] = None
+        changes["ticks"] = None
+    if getattr(args, "start_delay", None) is not None:
+        job["next_tick_at"] = events.now_epoch() + float(args.start_delay)
+        changes["next_tick_at"] = job["next_tick_at"]
+    events.save_state(job)
+    if old_name and old_name != job.get("name"):
+        events.remove_name(str(old_name))
+    if job.get("name"):
+        events.index_name(str(job["name"]), job["job_id"])
+    return job, changes
+
+
 def _spawn_daemon(job_id: str) -> dict:
     log_dir = events.job_dir(job_id)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -346,6 +387,15 @@ def run(args):
         return {"ok": True, "job": events.load_state(job_id)}
     if action == "list":
         return {"ok": True, "jobs": events.iter_jobs()}
+    if action == "update":
+        job_id = events.resolve_job_id(args.ref)
+        job = events.load_state(job_id)
+        try:
+            job, changes = _update_job(job, args)
+        except ValueError as exc:
+            return {"ok": False, "error": "event-update-invalid", "detail": str(exc)}
+        events.append_event(job_id, {"action": "updated", "changes": changes})
+        return {"ok": True, "job": job, "changes": changes}
     if action == "pause":
         job_id = events.resolve_job_id(args.ref)
         job = events.load_state(job_id)
@@ -376,6 +426,18 @@ def run(args):
             job["daemon_stop"] = stopped
         events.save_state(job)
         events.append_event(job_id, {"action": "stopped", "daemon": stopped})
+        return {"ok": True, "job": job}
+    if action == "retire":
+        job_id = events.resolve_job_id(args.ref)
+        job = events.load_state(job_id)
+        stopped = _stop_daemon(job)
+        job["status"] = "retired"
+        job["next_tick_at"] = None
+        job["running_at"] = None
+        if stopped:
+            job["daemon_stop"] = stopped
+        events.save_state(job)
+        events.append_event(job_id, {"action": "retired", "daemon": stopped})
         return {"ok": True, "job": job}
     if action == "run":
         job_id = events.resolve_job_id(args.ref)

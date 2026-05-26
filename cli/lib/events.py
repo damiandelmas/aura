@@ -100,6 +100,15 @@ def index_name(name: str, job_id: str) -> None:
     atomic_write_json(name_path(name), {"schema": "aura.event.name.v1", "name": name, "job_id": job_id})
 
 
+def remove_name(name: str) -> bool:
+    path = name_path(name)
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def resolve_job_id(ref: str) -> str:
     direct = state_path(ref)
     if direct.exists():
