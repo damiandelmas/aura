@@ -19,6 +19,42 @@ def _run_id() -> str:
     return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
 
+def _iso_from_epoch(value) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(value)))
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _job_summary(job: dict) -> dict:
+    return {
+        "job_id": job.get("job_id"),
+        "name": job.get("name"),
+        "kind": job.get("kind"),
+        "status": job.get("status"),
+        "owner": job.get("sender"),
+        "sender": job.get("sender"),
+        "target": job.get("target"),
+        "schedule": {
+            "kind": job.get("kind"),
+            "interval_seconds": job.get("interval_seconds"),
+            "ticks": job.get("ticks"),
+            "tick": job.get("tick"),
+        },
+        "last_run_at": job.get("last_tick_at"),
+        "next_run_at": _iso_from_epoch(job.get("next_tick_at")),
+        "next_tick_at": job.get("next_tick_at"),
+        "running_at": job.get("running_at"),
+        "failure": {
+            "last_error": job.get("last_error"),
+            "consecutive_errors": int(job.get("consecutive_errors") or 0),
+        },
+        "daemon": job.get("daemon"),
+    }
+
+
 def _aura_bin() -> str:
     return os.environ.get("AURA_BIN") or str((Path(__file__).resolve().parents[1] / "aura"))
 
@@ -384,9 +420,11 @@ def run(args):
         return _daemon(args.ref)
     if action == "status":
         job_id = events.resolve_job_id(args.ref)
-        return {"ok": True, "job": events.load_state(job_id)}
+        job = events.load_state(job_id)
+        return {"ok": True, "job": job, "summary": _job_summary(job)}
     if action == "list":
-        return {"ok": True, "jobs": events.iter_jobs()}
+        jobs = events.iter_jobs()
+        return {"ok": True, "jobs": jobs, "job_summaries": [_job_summary(job) for job in jobs]}
     if action == "update":
         job_id = events.resolve_job_id(args.ref)
         job = events.load_state(job_id)

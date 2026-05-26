@@ -3182,6 +3182,45 @@ def test_event_retire_stops_job_without_deleting_state(monkeypatch, tmp_path):
     assert events.resolve_job_id("ops") == job["job_id"]
 
 
+def test_event_status_and_list_include_operator_summary(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
+
+    from commands import event
+    from lib import events
+
+    job = event._make_job(argparse.Namespace(
+        name="ops",
+        target="manager",
+        sender="operations",
+        every=180,
+        ticks=2,
+        template="tick {tick}/{ticks}",
+        run_id="unit-run",
+        start_delay=0,
+        no_daemon=True,
+    ))
+    job["last_tick_at"] = "2026-05-26T10:40:00+00:00"
+    job["last_error"] = "simulated failure"
+    job["consecutive_errors"] = 2
+    events.save_state(job)
+    events.index_name("ops", job["job_id"])
+
+    status = event.run(argparse.Namespace(event_action="status", ref="ops"))
+    listed = event.run(argparse.Namespace(event_action="list"))
+
+    assert status["ok"] is True
+    assert status["summary"]["owner"] == "operations"
+    assert status["summary"]["target"] == "manager"
+    assert status["summary"]["schedule"]["interval_seconds"] == 180.0
+    assert status["summary"]["last_run_at"] == "2026-05-26T10:40:00+00:00"
+    assert status["summary"]["next_run_at"].endswith("Z")
+    assert status["summary"]["failure"] == {
+        "last_error": "simulated failure",
+        "consecutive_errors": 2,
+    }
+    assert listed["job_summaries"][0]["job_id"] == job["job_id"]
+
+
 def test_event_target_blocker_detects_active_composer(monkeypatch):
     from commands import event
 
