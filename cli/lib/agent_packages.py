@@ -409,6 +409,114 @@ def clone(
     }
 
 
+def _copy_required_dir(source: str | None, target: Path, *, label: str) -> None:
+    if not source:
+        raise FileNotFoundError(f"seat is missing {label}")
+    source_path = Path(str(source)).expanduser().resolve()
+    if not source_path.is_dir():
+        raise FileNotFoundError(f"seat {label} does not exist: {source_path}")
+    shutil.copytree(source_path, target)
+
+
+def promote_seat(
+    target: str,
+    *,
+    address: str,
+    alias: str | None = None,
+) -> dict[str, Any]:
+    """Promote one live registry seat into a durable package body."""
+    from lib import registry
+
+    row = registry.get_agent(target)
+    if not row:
+        raise FileNotFoundError(f"seat not found: {target}")
+    if row.get("agent_package_id"):
+        raise FileExistsError(f"seat already has package binding: {row.get('agent_package_id')}")
+    runtime = normalize_runtime(str(row.get("runtime") or ""))
+    address = normalize_address(address)
+    alias_value = (
+        runtime_boxes.validate_logical_segment(alias, label="alias")
+        if alias
+        else None
+    )
+    index = read_index()
+    if address in index.get("addresses", {}):
+        raise FileExistsError(f"agent address already exists: {address} -> {index['addresses'][address]}")
+    if alias_value and alias_value in index.get("aliases", {}):
+        raise FileExistsError(f"agent alias already exists: {alias_value}")
+
+    agent_id = new_agent_id()
+    root = package_root(agent_id)
+    try:
+        root.mkdir(parents=True)
+        if runtime == "codex":
+            _copy_required_dir(
+                row.get("codex_package_codex_home") or row.get("codex_box_codex_home") or row.get("native_state_ref"),
+                root / ".codex",
+                label="codex home",
+            )
+        elif runtime == "omx":
+            _copy_required_dir(
+                row.get("omx_package_codex_home") or row.get("omx_box_codex_home"),
+                root / ".codex",
+                label="codex home",
+            )
+            _copy_required_dir(
+                row.get("omx_package_omx_state") or row.get("omx_box_omx_state") or row.get("native_state_ref"),
+                root / ".omx",
+                label="omx state",
+            )
+        manifest = {
+            "schema": AGENT_SCHEMA,
+            "runtime": runtime,
+            "cwd": str(Path(row.get("cwd") or row.get("runtime_process_cwd") or Path.cwd()).expanduser().resolve()),
+            "argv": _spawn_argv(runtime),
+            "env": _spawn_env(runtime),
+            "resume": {"default": "latest"},
+            "fleet": row.get("fleet"),
+            "seat": row.get("name") or row.get("seat"),
+            **({"profile": row.get("runtime_profile")} if row.get("runtime_profile") else {}),
+        }
+        _atomic_write_json(manifest_path(root), manifest)
+        index.setdefault("agents", {})[agent_id] = {
+            "root": str(root),
+            "address": address,
+            **({"alias": alias_value} if alias_value else {}),
+            "promoted_from": registry.seat_ref(row.get("fleet"), row.get("name") or row.get("seat")),
+        }
+        index.setdefault("addresses", {})[address] = agent_id
+        if alias_value:
+            index.setdefault("aliases", {})[alias_value] = agent_id
+        write_index(index)
+    except Exception:
+        if root.exists():
+            shutil.rmtree(root)
+        raise
+
+    updated = registry.upsert_agent({
+        "name": row.get("name") or row.get("seat"),
+        "fleet": row.get("fleet"),
+        "agent_package_id": agent_id,
+        "agent_package_address": address,
+        "agent_package_root": str(root),
+        "identity_provider": "aura-agent",
+        "identity_id": agent_id,
+        "identity_label": address,
+    })
+    return {
+        "ok": True,
+        "promoted": True,
+        "source": registry.seat_ref(row.get("fleet"), row.get("name") or row.get("seat")),
+        "agent": _enrich_record(manifest, index=index, agent_id=agent_id, root=root),
+        "registry": {
+            "seat_ref": updated.get("seat_ref"),
+            "agent_package_id": updated.get("agent_package_id"),
+            "agent_package_root": updated.get("agent_package_root"),
+            "runtime_process_still_uses_original_home": True,
+        },
+    }
+
+
 def append_spawn_history(agent_id: str, event: dict[str, Any]) -> dict[str, Any]:
     # Compatibility no-op: package manifest.json is the spawn recipe only. Spawn
     # and session evidence lives in the registry/session ledger.

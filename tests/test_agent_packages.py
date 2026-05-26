@@ -194,6 +194,47 @@ def test_agent_clone_preserves_package_body_and_updates_manifest(monkeypatch, tm
     assert agent_packages.resolve("ops-manager")["agent_id"] == source["agent_id"]
 
 
+def test_agent_promote_seat_copies_runtime_home_and_binds_registry(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from lib import agent_packages, registry
+
+    codex_home = tmp_path / "seat-box" / "codex-home"
+    (codex_home / "skills" / "local-skill").mkdir(parents=True)
+    (codex_home / "skills" / "local-skill" / "SKILL.md").write_text("skill\n", encoding="utf-8")
+    registry.upsert_agent({
+        "name": "manager",
+        "fleet": "flexgraph-chatbot",
+        "runtime": "codex",
+        "cwd": str(tmp_path / "unit"),
+        "codex_box_codex_home": str(codex_home),
+        "runtime_session_id": "019e3334-6cf5-72cb-aafb-9e423bfb9f86",
+        "runtime_session_binding": "bound",
+    })
+
+    promoted = agent_packages.promote_seat(
+        "flexgraph-chatbot:manager",
+        address="flexgraph:chatbot:ops:manager",
+        alias="ops-manager",
+    )
+    root = Path(promoted["agent"]["root"])
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    record = registry.get_agent("flexgraph-chatbot:manager")
+
+    assert promoted["ok"] is True
+    assert manifest["runtime"] == "codex"
+    assert manifest["cwd"] == str((tmp_path / "unit").resolve())
+    assert manifest["fleet"] == "flexgraph-chatbot"
+    assert manifest["seat"] == "manager"
+    assert (root / ".codex" / "skills" / "local-skill" / "SKILL.md").read_text(encoding="utf-8") == "skill\n"
+    assert record["agent_package_id"] == promoted["agent"]["agent_id"]
+    assert record["agent_package_address"] == "flexgraph:chatbot:ops:manager"
+    assert record["agent_package_root"] == str(root)
+    assert record["codex_box_codex_home"] == str(codex_home)
+    assert promoted["registry"]["runtime_process_still_uses_original_home"] is True
+    assert agent_packages.resolve("ops-manager")["agent_id"] == promoted["agent"]["agent_id"]
+
+
 def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 

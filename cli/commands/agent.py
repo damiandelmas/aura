@@ -146,6 +146,15 @@ def run(args):
             )
         except Exception as exc:
             return {"ok": False, "error": "agent-clone-failed", "detail": str(exc), "ref": args.ref}
+    if action == "promote-seat":
+        try:
+            return agent_packages.promote_seat(
+                args.target,
+                address=args.address,
+                alias=args.alias,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": "agent-promote-seat-failed", "detail": str(exc), "target": args.target}
     if action == "inspect":
         try:
             return agent_packages.inspect(args.ref)
