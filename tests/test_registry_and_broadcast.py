@@ -41,6 +41,35 @@ def test_registry_round_trip_and_fleet_filter(tmp_path, monkeypatch):
     assert registry.list_agents("other") == []
 
 
+def test_registry_normalizes_core_refs_at_write_boundary(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "worker",
+        "fleet": "fleet",
+        "runtime": "codex",
+        "status": "IDLE",
+        "pane_ref": "%42",
+        "backend_ref": "fleet:%42",
+        "session_id": "session-1",
+        "launch_id": "aura-launch-1",
+    })
+
+    agent = registry.get_agent("fleet:worker")
+    assert agent["seat"] == "worker"
+    assert agent["seat_ref"] == "fleet:worker"
+    assert agent["target"] == "fleet:worker"
+    assert agent["status"] == "idle"
+    assert agent["pane_ref"] == "tmux:fleet:%42"
+    assert agent["backend_ref"] == "tmux:fleet:%42"
+    assert agent["runtime_ref"] == "codex"
+    assert agent["runtime_session_id"] == "session-1"
+    assert agent["session_id"] == "session-1"
+    assert agent["aura_launch_id"] == "aura-launch-1"
+    assert agent["launch_ref"] == "aura-launch-1"
+
+
 def test_registry_strips_transient_projection_and_prompt_fields(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     from lib import registry

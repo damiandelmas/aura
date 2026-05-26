@@ -91,8 +91,71 @@ def _physical_fleet_from_ref(value: str | None) -> str | None:
     return None
 
 
+def _canonical_status(value: Any, default: str | None = None) -> str | None:
+    if value is None:
+        return default
+    normalized = str(value).strip().lower().replace(" ", "_").replace("-", "_")
+    if not normalized:
+        return default
+    aliases = {
+        "killed": "dead",
+        "terminated": "dead",
+        "cut": "dead",
+        "swept": "swept_removed",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _canonical_tmux_pane_ref(value: Any, *, fleet: str) -> Any:
+    if not value:
+        return value
+    subject = str(value).strip()
+    if not subject:
+        return value
+    if subject.startswith("tmux:"):
+        return subject
+    if subject.startswith("%"):
+        return f"tmux:{fleet}:{subject}"
+    if ":" in subject:
+        maybe_fleet, maybe_pane = subject.split(":", 1)
+        if maybe_fleet and maybe_pane.startswith("%"):
+            return f"tmux:{maybe_fleet}:{maybe_pane}"
+    return subject
+
+
+def normalize_agent_record(record: dict[str, Any], *, fleet: str | None = None, name: str | None = None) -> dict[str, Any]:
+    """Normalize persisted registry fields without probing live terminal state."""
+    normalized = dict(record)
+    final_name = name or normalized.get("name") or normalized.get("seat")
+    final_fleet = fleet or normalized.get("fleet") or current_fleet()
+    if final_name:
+        normalized["name"] = final_name
+        normalized["seat"] = normalized.get("seat") or final_name
+        normalized["fleet"] = final_fleet
+        normalized["seat_ref"] = _key(final_fleet, final_name)
+        normalized["target"] = normalized.get("target") or normalized["seat_ref"]
+    if normalized.get("status") is not None:
+        normalized["status"] = _canonical_status(normalized.get("status"))
+    for key in ("pane_ref", "backend_ref"):
+        if normalized.get(key):
+            normalized[key] = _canonical_tmux_pane_ref(normalized.get(key), fleet=final_fleet)
+    runtime = normalized.get("runtime")
+    if runtime and not normalized.get("runtime_ref"):
+        normalized["runtime_ref"] = runtime
+    session_id = normalized.get("runtime_session_id") or normalized.get("session_id")
+    if session_id:
+        normalized["runtime_session_id"] = normalized.get("runtime_session_id") or session_id
+        normalized["session_id"] = normalized.get("session_id") or session_id
+    launch_id = normalized.get("aura_launch_id") or normalized.get("launch_id") or normalized.get("launch_ref")
+    if launch_id:
+        normalized["aura_launch_id"] = normalized.get("aura_launch_id") or launch_id
+        normalized["launch_id"] = normalized.get("launch_id") or launch_id
+        normalized["launch_ref"] = normalized.get("launch_ref") or launch_id
+    return normalized
+
+
 def _with_logical_physical_fields(record: dict[str, Any], *, fleet: str, name: str) -> dict[str, Any]:
-    enriched = dict(record)
+    enriched = normalize_agent_record(record, fleet=fleet, name=name)
     enriched.setdefault("logical_fleet", fleet)
     enriched.setdefault("logical_name", name)
     enriched.setdefault("logical_ref", _key(fleet, name))
@@ -221,7 +284,7 @@ def update_agent_record(
             "fleet": updated.get("fleet") or fleet or current_fleet(),
             "last_seen": updated.get("last_seen") or now_iso(),
         }
-        updated["seat_ref"] = _key(updated.get("fleet"), updated.get("name"))
+        updated = _with_logical_physical_fields(updated, fleet=updated.get("fleet"), name=updated.get("name"))
         updated = _without_transient_fields(updated)
         data[updated["seat_ref"]] = updated
         if updated["seat_ref"] != key:
@@ -488,6 +551,7 @@ def rehome_agent(
         record["rehome_at"] = now_iso()
         record["last_seen"] = now_iso()
         record.setdefault("physical_fleet", existing.get("backend_ref", "").split(":", 1)[0] if existing.get("backend_ref") else existing.get("fleet"))
+        record = _with_logical_physical_fields(record, fleet=target_fleet, name=target_name)
         record = _without_transient_fields(record)
 
         if target_ref != source_ref:
