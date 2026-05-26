@@ -511,6 +511,9 @@ def test_seat_rehome_move_terminal_refuses_destination_collision(tmp_path, monke
         return {}
 
     monkeypatch.setattr(seat, "_discover_pane", fake_discover)
+    monkeypatch.setattr(seat, "_list_tmux_panes", lambda: [
+        {"session": "flex-desks", "window_index": "7", "window_name": "developer", "pane_id": "%770", "pane_pid": 770},
+    ])
 
     def fake_run_tmux(args):
         if args[:3] == ["display-message", "-p", "-t"]:

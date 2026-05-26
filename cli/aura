@@ -378,6 +378,14 @@ def main():
                               help="Include hidden/internal seats")
     p_seat_sweep.add_argument("--confirm", action="store_true",
                               help="Remove stale registry records; default is dry-run")
+    p_seat_order = seat_sub.add_parser(
+        "order",
+        help="Restore relative tmux window order for existing seats in one fleet",
+    )
+    p_seat_order.add_argument("fleet", help="Fleet/tmux session to reorder")
+    p_seat_order.add_argument("seats", nargs="+", help="Exact tmux window names in desired order")
+    p_seat_order.add_argument("--dry-run", action="store_true",
+                              help="Show planned swaps without changing tmux")
     p_seat_audit = seat_sub.add_parser(
         "audit",
         help="Read-only audit of current seat projection risks",

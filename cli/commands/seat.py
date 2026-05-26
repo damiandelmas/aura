@@ -207,19 +207,127 @@ def _tmux_target_info(target: str | None) -> dict | None:
 
 
 def _destination_collision(*, fleet: str, name: str, source_pane_id: str) -> dict | None:
-    existing = _tmux_target_info(f"{fleet}:{name}")
-    if not existing:
+    matches = [
+        pane for pane in _list_tmux_panes()
+        if pane.get("session") == fleet and pane.get("window_name") == name
+    ]
+    if not matches:
         return None
-    if existing.get("pane_id") == source_pane_id:
+    if len(matches) == 1 and matches[0].get("pane_id") == source_pane_id:
         return None
     return {
         "ok": False,
         "error": f"target tmux window already exists: {fleet}:{name}",
         "reason": "target-window-exists",
         "target": f"{fleet}:{name}",
-        "existing": existing,
+        "existing": matches[0] if len(matches) == 1 else None,
+        "matches": matches,
         "source_pane_id": source_pane_id,
         "hint": "move or rename the existing window first, or rehome with --index to an explicit free window slot",
+    }
+
+
+def _fleet_windows_by_exact_name(fleet: str) -> dict[str, list[dict]]:
+    windows: dict[str, dict] = {}
+    for pane in _list_tmux_panes():
+        if pane.get("session") != fleet:
+            continue
+        window_index = pane.get("window_index")
+        if window_index is None or window_index in windows:
+            continue
+        windows[str(window_index)] = pane
+    grouped: dict[str, list[dict]] = {}
+    for pane in windows.values():
+        grouped.setdefault(str(pane.get("window_name") or ""), []).append(pane)
+    return grouped
+
+
+def _order(args) -> dict:
+    fleet = getattr(args, "fleet", None)
+    seats = list(getattr(args, "seats", None) or [])
+    if not fleet:
+        return {"ok": False, "error": "fleet-required"}
+    if not seats:
+        return {"ok": False, "error": "seats-required"}
+
+    grouped = _fleet_windows_by_exact_name(fleet)
+    selected = []
+    missing = []
+    ambiguous = []
+    for seat in seats:
+        matches = grouped.get(seat) or []
+        if not matches:
+            missing.append(seat)
+            continue
+        if len(matches) > 1:
+            ambiguous.append({
+                "seat": seat,
+                "matches": [
+                    {
+                        "window_index": pane.get("window_index"),
+                        "pane_id": pane.get("pane_id"),
+                    }
+                    for pane in matches
+                ],
+            })
+            continue
+        selected.append(matches[0])
+    if missing or ambiguous:
+        return {
+            "ok": False,
+            "error": "fleet-order-unresolved",
+            "fleet": fleet,
+            "missing": missing,
+            "ambiguous": ambiguous,
+            "detail": "all requested seats must match exactly one tmux window name",
+        }
+
+    slots = sorted(int(pane["window_index"]) for pane in selected)
+    plan = [
+        {
+            "seat": seat,
+            "from_index": str(selected[index].get("window_index")),
+            "to_index": str(slots[index]),
+            "pane_id": selected[index].get("pane_id"),
+        }
+        for index, seat in enumerate(seats)
+    ]
+    if getattr(args, "dry_run", False):
+        return {
+            "ok": True,
+            "schema": "aura.seat_order.v1",
+            "dry_run": True,
+            "fleet": fleet,
+            "plan": plan,
+        }
+
+    swaps = []
+    for desired in plan:
+        grouped = _fleet_windows_by_exact_name(fleet)
+        current_matches = grouped.get(desired["seat"]) or []
+        if len(current_matches) != 1:
+            return {
+                "ok": False,
+                "error": "fleet-order-changed-during-apply",
+                "fleet": fleet,
+                "seat": desired["seat"],
+            }
+        current_index = str(current_matches[0].get("window_index"))
+        target_index = str(desired["to_index"])
+        if current_index == target_index:
+            continue
+        swap = _run_tmux(["swap-window", "-s", f"{fleet}:{current_index}", "-t", f"{fleet}:{target_index}"])
+        if swap.returncode != 0:
+            return {"ok": False, "error": swap.stderr.strip() or "tmux swap-window failed", "fleet": fleet, "plan": plan, "swaps": swaps}
+        swaps.append({"seat": desired["seat"], "from_index": current_index, "to_index": target_index})
+    return {
+        "ok": True,
+        "schema": "aura.seat_order.v1",
+        "dry_run": False,
+        "fleet": fleet,
+        "plan": plan,
+        "swaps": swaps,
+        "swapped_count": len(swaps),
     }
 
 
@@ -2253,6 +2361,8 @@ def run(args):
         return _quarantine(args, registry, terminal)
     if action == "register-orphan":
         return _register_orphan(args, registry)
+    if action == "order":
+        return _order(args)
     if action == "tag":
         return _tag(args, registry)
     if action == "inject-flex":

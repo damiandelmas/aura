@@ -234,6 +234,67 @@ def test_seat_adopt_accepts_documented_tmux_pane_ref_and_records_unbound(monkeyp
     assert any(call[:2] == ["rename-window", "-t"] for call in calls)
 
 
+def test_adopt_collision_check_uses_exact_window_name_not_fuzzy_tmux_target(monkeypatch, aura_state):
+    from commands import seat as seat_cmd
+
+    monkeypatch.setattr(seat_cmd, "_list_tmux_panes", lambda: [
+        _pane(window_name="research-20", pane_id="%999"),
+    ])
+
+    result = seat_cmd._destination_collision(
+        fleet="runway-engineering",
+        name="research-2",
+        source_pane_id="%191",
+    )
+
+    assert result is None
+
+
+def test_seat_order_swaps_existing_windows_by_exact_name(monkeypatch, aura_state):
+    from commands import seat as seat_cmd
+
+    windows = {
+        "1": _pane(window_name="general-manager", pane_id="%101"),
+        "2": _pane(window_name="floor-manager", pane_id="%102"),
+        "3": _pane(window_name="pipeline", pane_id="%103"),
+    }
+    calls = []
+
+    def fake_list():
+        return [{**pane, "window_index": index} for index, pane in windows.items()]
+
+    def fake_run_tmux(args):
+        calls.append(args)
+        if args[:1] == ["swap-window"]:
+            source = args[args.index("-s") + 1].split(":", 1)[1]
+            target = args[args.index("-t") + 1].split(":", 1)[1]
+            windows[source], windows[target] = windows[target], windows[source]
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(seat_cmd, "_list_tmux_panes", fake_list)
+    monkeypatch.setattr(seat_cmd, "_run_tmux", fake_run_tmux)
+
+    result = seat_cmd._order(argparse.Namespace(
+        seat_action="order",
+        fleet="runway-engineering",
+        seats=["pipeline", "general-manager", "floor-manager"],
+        dry_run=False,
+    ))
+
+    assert result["ok"] is True
+    assert result["swapped_count"] == 2
+    assert [windows[str(index)]["window_name"] for index in (1, 2, 3)] == [
+        "pipeline",
+        "general-manager",
+        "floor-manager",
+    ]
+    assert calls == [
+        ["swap-window", "-s", "runway-engineering:3", "-t", "runway-engineering:1"],
+        ["swap-window", "-s", "runway-engineering:3", "-t", "runway-engineering:2"],
+    ]
+
+
 def test_seat_adopt_preserves_exact_runtime_binding(monkeypatch, aura_state):
     from commands import seat as seat_cmd
     from lib import registry
