@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from commands import check, list as list_cmd
-from lib import seat_schema, state, terminal_posture
+from lib import diagnostic_cache, seat_schema, state, terminal_posture
 
 
 def _now() -> str:
@@ -113,6 +113,7 @@ def sample(args) -> dict:
         "fleet": check_result.get("fleet"),
         "runtime": check_result.get("runtime"),
         "at": now,
+        "capture_state": diagnostic_cache.capture_state(check_result),
         "source": {
             "capture_lines": lines,
             "mechanical_status": check_result.get("status", "unknown"),
@@ -130,6 +131,12 @@ def sample(args) -> dict:
         "explanation": posture.get("explanation", ""),
         "reused": False,
     }
+    record.update(diagnostic_cache.freshness_metadata(
+        cache_key=f"posture:{seat}",
+        at=now,
+        ttl_seconds=diagnostic_cache.posture_ttl_seconds(),
+        checked_at=now,
+    ))
     if not check_result.get("ok"):
         record["error"] = check_result.get("error")
 

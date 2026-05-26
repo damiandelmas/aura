@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from commands import check
-from lib import local_llm, seat_schema, sense_contracts, state, terminal_perception, terminal_semantic_sense
+from lib import diagnostic_cache, local_llm, seat_schema, sense_contracts, state, terminal_perception, terminal_semantic_sense
 
 
 def _state_from_output(output: str, mechanical_status: str, terminal: str) -> tuple[str, float, list[str], str]:
@@ -175,6 +175,7 @@ def run(args):
         "fleet": check_result.get("fleet"),
         "runtime": check_result.get("runtime"),
         "at": now,
+        "capture_state": diagnostic_cache.capture_state(check_result),
         "source": {
             "capture_lines": lines,
             "mechanical_status": mechanical_status,
@@ -194,6 +195,12 @@ def run(args):
         "evidence": perception.get("evidence", []),
         "next_action": perception.get("next_action"),
     }
+    record.update(diagnostic_cache.freshness_metadata(
+        cache_key=f"sense:{args.name}",
+        at=now,
+        ttl_seconds=diagnostic_cache.sense_ttl_seconds(),
+        checked_at=now,
+    ))
     if sense_metadata.get("llm_error"):
         record["source"]["llm_error"] = sense_metadata["llm_error"]
         if sense_metadata.get("mode") == "llm":

@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -671,6 +672,34 @@ def test_seat_cut_routes_through_cut_command(monkeypatch):
     assert result["seat"] == "fleet:worker"
 
 
+def test_cut_records_diagnostic_cache_invalidation(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / ".aura" / "registry" / "seats.json"))
+
+    from commands import cut
+    from lib import registry
+
+    before = {
+        "name": "worker",
+        "fleet": "fleet",
+        "runtime": "codex",
+        "seat_ref": "fleet:worker",
+        "terminal_ref": "fleet:worker",
+    }
+    result = {"ok": True, "name": "fleet:worker", "force": True, "terminal": "killed"}
+
+    cut._record_stop(result, before, "fleet:worker")
+
+    path = tmp_path / ".aura" / "seats" / "fleet:worker" / "diagnostics" / "cache-invalidations.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["target"] == "fleet:worker"
+    assert rows[-1]["reason"] == "seat-cut"
+    assert rows[-1]["source_command"] == "aura seat cut"
+    assert rows[-1]["cache_owner"] == "aura"
+    assert rows[-1]["caches"] == ["posture", "sense", "watch"]
+    assert result["diagnostic_cache_invalidation"]["target"] == "fleet:worker"
+
+
 def test_seat_sweep_dry_run_lists_stale_registered_seats(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     from commands import seat
@@ -854,6 +883,10 @@ def test_seat_sweep_confirm_removes_stale_registered_seats(tmp_path, monkeypatch
     assert result["dry_run"] is False
     assert result["removed"] == ["fleet:stale"]
     assert registry.get_agent("stale", fleet="fleet") is None
+    invalidation_path = tmp_path / ".aura" / "seats" / "fleet:stale" / "diagnostics" / "cache-invalidations.jsonl"
+    invalidation = json.loads(invalidation_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert invalidation["reason"] == "seat-swept-removed"
+    assert invalidation["source_command"] == "aura seat sweep"
     rows = session_ledger.seat_history_for_target("fleet:stale")
     assert rows[-1]["event"] == "seat_swept_removed"
     assert rows[-1]["after"]["status"] == "swept_removed"
@@ -899,6 +932,10 @@ def test_seat_archive_removes_non_live_row_and_writes_terminal_history(tmp_path,
     assert result["ok"] is True
     assert result["removed_current_row"] is True
     assert result["historical"] is True
+    assert result["diagnostic_cache_invalidation"]["reason"] == "seat-archived"
+    invalidation_path = tmp_path / ".aura" / "seats" / "fleet:old-worker" / "diagnostics" / "cache-invalidations.jsonl"
+    invalidation = json.loads(invalidation_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert invalidation["source_command"] == "aura seat archive"
     assert registry.get_agent("old-worker", fleet="fleet") is None
 
     rows = session_ledger.seat_history_for_target("fleet:old-worker")
@@ -984,6 +1021,10 @@ def test_seat_quarantine_hides_non_live_row_without_removing_registry(tmp_path, 
     assert row["status"] == "quarantined"
     assert row["restore_suppressed"] is True
     assert row["terminal_state"] == "terminal"
+    assert result["diagnostic_cache_invalidation"]["reason"] == "seat-quarantined"
+    invalidation_path = tmp_path / ".aura" / "seats" / "fleet:old-worker" / "diagnostics" / "cache-invalidations.jsonl"
+    invalidation = json.loads(invalidation_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert invalidation["source_command"] == "aura seat quarantine"
 
     rows = session_ledger.seat_history_for_target("fleet:old-worker")
     assert rows[-1]["event"] == "seat_quarantined"

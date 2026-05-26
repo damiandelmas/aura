@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from commands import check, list as list_cmd, sense
-from lib import seat_schema, state
+from lib import diagnostic_cache, seat_schema, state
 
 
 def _now() -> str:
@@ -97,15 +97,27 @@ def sample(args) -> dict:
     run_sense = bool(getattr(args, "sense", False)) and not getattr(args, "no_sense", False)
     if run_sense:
         previous_sense = previous.get("sense") if previous else None
+        previous_sense_freshness = None
+        if previous_sense:
+            previous_sense_freshness = diagnostic_cache.freshness_metadata(
+                cache_key=f"sense:{seat}",
+                at=previous_sense.get("at"),
+                ttl_seconds=diagnostic_cache.sense_ttl_seconds(),
+                checked_at=now,
+            )
         if (
             not output_changed
             and previous_sense
+            and previous_sense_freshness
+            and previous_sense_freshness.get("freshness") == "fresh"
             and not getattr(args, "fresh_sense", False)
         ):
             sense_record = dict(previous_sense)
+            sense_record.update(previous_sense_freshness)
             sense_record["unchanged"] = True
             sense_record["reused"] = True
             sense_record["reused_at"] = now
+            sense_record["reused_age_seconds"] = previous_sense_freshness.get("age_seconds")
             sense_record["reused_from_watch_id"] = previous.get("watch_id")
             sense_reused = True
         else:

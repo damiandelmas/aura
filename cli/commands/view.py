@@ -241,6 +241,7 @@ def _run_self(*, include_hidden: bool) -> dict:
         return {
             "ok": False,
             "schema": "aura.view.self.v1",
+            "view_scope": "self",
             "current": context,
             "error": resolved.get("error"),
             "source": resolved.get("source"),
@@ -250,6 +251,7 @@ def _run_self(*, include_hidden: bool) -> dict:
     return {
         "ok": True,
         "schema": "aura.view.self.v1",
+        "view_scope": "self",
         "source": resolved.get("source"),
         "self": _compact_status(resolved["row"]),
     }
@@ -261,6 +263,8 @@ def _run_fleets(*, include_hidden: bool) -> dict:
         return {
             "ok": False,
             "schema": "aura.view.fleets.v1",
+            "view_scope": "live",
+            "scope": "live",
             "error": "tmux-mirror-unavailable",
             "detail": mirror.get("error") or "tmux mirror unavailable",
             "fleets": [],
@@ -278,6 +282,8 @@ def _run_fleets(*, include_hidden: bool) -> dict:
     return {
         "ok": True,
         "schema": "aura.view.fleets.v1",
+        "view_scope": "live",
+        "scope": "live",
         "fleets": [
             {"fleet": fleet, "seats": counts[fleet]}
             for fleet in sorted(counts)
@@ -308,6 +314,8 @@ def _run_fleet(*, include_hidden: bool, fleet_name: str | None = None) -> dict:
     return {
         "ok": bool(fleet),
         "schema": "aura.view.fleet.v1",
+        "view_scope": "fleet",
+        "scope_source": "context" if fleet else "global",
         "fleet": fleet,
         "self": _compact_status(self_row) if self_row else None,
         "source": resolved.get("source"),
@@ -323,6 +331,7 @@ def _run_roster(*, include_hidden: bool) -> dict:
     return {
         "ok": True,
         "schema": "aura.view.roster.v1",
+        "view_scope": "live",
         "scope": "live",
         "counts": {"fleets": len(fleets), "seats": len(live_rows), "historical_seats": len(rows)},
         "fleets": fleets,
@@ -384,6 +393,7 @@ def _run_placement(*, include_hidden: bool, placement_name: str | None = None) -
             return {
                 "ok": False,
                 "schema": "aura.view.placement.v1",
+                "view_scope": "placement",
                 "error": "placement-not-found",
                 "placement": placement_name,
             }
@@ -393,6 +403,7 @@ def _run_placement(*, include_hidden: bool, placement_name: str | None = None) -
             return {
                 "ok": False,
                 "schema": "aura.view.placement.v1",
+                "view_scope": "placement",
                 "error": "placement-not-resolved",
                 "source": resolved.get("source"),
                 "hint": "Provide a placement name, e.g. aura view placement <name>.",
@@ -401,6 +412,7 @@ def _run_placement(*, include_hidden: bool, placement_name: str | None = None) -
             return {
                 "ok": False,
                 "schema": "aura.view.placement.v1",
+                "view_scope": "placement",
                 "error": "placement-ambiguous",
                 "placements": [p.get("name") or p.get("placement_id") for p in self_placements],
                 "hint": "Provide one placement name, e.g. aura view placement <name>.",
@@ -412,6 +424,7 @@ def _run_placement(*, include_hidden: bool, placement_name: str | None = None) -
             return {
                 "ok": False,
                 "schema": "aura.view.placement.v1",
+                "view_scope": "placement",
                 "error": "placement-not-found",
                 "placement": placement_name,
             }
@@ -440,6 +453,7 @@ def _run_placement(*, include_hidden: bool, placement_name: str | None = None) -
     return {
         "ok": True,
         "schema": "aura.view.placement.v1",
+        "view_scope": "placement",
         "source": source,
         "placement": _placement_summary(record),
         "self": _compact_status(self_row) if self_row else None,
@@ -454,7 +468,10 @@ def _run_placement(*, include_hidden: bool, placement_name: str | None = None) -
 
 
 def _run_physical(*, include_hidden: bool) -> dict:
-    return tmux_mirror.view_physical(include_hidden=include_hidden)
+    result = tmux_mirror.view_physical(include_hidden=include_hidden)
+    if isinstance(result, dict):
+        result.setdefault("view_scope", "physical")
+    return result
 
 
 def _run_historical(*, include_hidden: bool) -> dict:
@@ -463,6 +480,7 @@ def _run_historical(*, include_hidden: bool) -> dict:
     return {
         "ok": True,
         "schema": "aura.view.historical.v1",
+        "view_scope": "historical",
         "counts": {"fleets": len(fleets), "seats": len(rows)},
         "fleets": fleets,
         "seats": [_compact_status(row) for row in rows],
@@ -498,6 +516,14 @@ def _infer_scope(context: dict, explicit: str | None = None) -> dict:
     if context.get("fleet"):
         return {"kind": "fleet", "name": context["fleet"], "fleet": context["fleet"]}
     return {"kind": "global", "name": "global"}
+
+
+def _scope_source(context: dict, explicit: str | None, scope: dict) -> str:
+    if explicit:
+        return "explicit"
+    if scope.get("kind") == "global":
+        return "global"
+    return "context"
 
 
 def _matches_scope(record: dict, scope: dict) -> bool:
@@ -593,7 +619,9 @@ def run(args):
 
     limit = int(getattr(args, "limit", None) or 10)
     context = reports.infer_context()
-    scope = _infer_scope(context, getattr(args, "scope", None))
+    explicit_scope = getattr(args, "scope", None)
+    scope = _infer_scope(context, explicit_scope)
+    scope_source = _scope_source(context, explicit_scope, scope)
 
     agents = [
         agent
@@ -661,6 +689,8 @@ def run(args):
     return {
         "ok": True,
         "schema": "aura.view.v1",
+        "view_scope": "scoped",
+        "scope_source": scope_source,
         "scope": scope,
         "current": context,
         "counts": {

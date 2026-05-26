@@ -3338,6 +3338,7 @@ def test_sense_uses_watch_stability_for_stuck_state(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_FLEET", "unitfleet")
     monkeypatch.setenv("AURA_SENSE_MODE", "heuristic")
+    monkeypatch.setenv("AURA_SENSE_TTL_SECONDS", "11")
 
     from commands import check, sense
     from lib import registry, state
@@ -3365,6 +3366,13 @@ def test_sense_uses_watch_stability_for_stuck_state(monkeypatch, tmp_path):
     record = sense.run(argparse.Namespace(name="busyseat", lines=40, question=None, features=None))
 
     assert record["state"] == "stuck"
+    assert record["capture_state"] == "live"
+    assert record["freshness"] == "fresh"
+    assert record["stale"] is False
+    assert record["ttl_seconds"] == 11
+    assert record["cache_owner"] == "aura"
+    assert record["cache_key"] == "sense:busyseat"
+    assert record["freshness_checked_at"] == record["at"]
     assert record["next_action"] == "inspect"
     assert record["source"]["watch"]["stable_count"] == 3
     assert any("stable for 3" in item for item in record["evidence"])
@@ -3572,6 +3580,7 @@ def test_watch_reuses_previous_sense_when_output_unchanged(monkeypatch, tmp_path
             "sense_id": f"sense-{len(calls)}",
             "seat": args.name,
             "name": args.name,
+            "at": watch._now(),
             "state": "ready",
             "confidence": 0.9,
             "next_action": "send",
@@ -3604,6 +3613,9 @@ def test_watch_reuses_previous_sense_when_output_unchanged(monkeypatch, tmp_path
     assert second["stable_count"] == 1
     assert second["sense_reused"] is True
     assert second["sense"]["sense_id"] == "sense-1"
+    assert second["sense"]["freshness"] == "fresh"
+    assert second["sense"]["stale"] is False
+    assert second["sense"]["reused_age_seconds"] is not None
     assert second["sense"]["unchanged"] is True
     assert second["sense"]["reused_from_watch_id"] == first["watch_id"]
 
@@ -3611,6 +3623,72 @@ def test_watch_reuses_previous_sense_when_output_unchanged(monkeypatch, tmp_path
     third = watch.sample(args)
     assert len(calls) == 2
     assert third["sense_reused"] is False
+
+
+def test_watch_runs_fresh_sense_when_previous_reuse_is_stale(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_SENSE_TTL_SECONDS", "1")
+
+    from commands import check, sense, watch
+    from lib import registry
+
+    registry.upsert_agent({"name": "staleseat", "fleet": "unitfleet", "runtime": "command", "registered": True})
+    monkeypatch.setattr(check, "run", lambda args: {
+        "ok": True,
+        "name": "staleseat",
+        "fleet": "unitfleet",
+        "runtime": "command",
+        "status": "alive",
+        "terminal": "alive",
+        "terminal_ref": "tmux:unitfleet:staleseat",
+        "output": ["READY staleseat"],
+    })
+
+    calls = []
+
+    def fake_sense_run(args):
+        calls.append(args.name)
+        return {
+            "ok": True,
+            "schema": "aura.sense.v1",
+            "type": "sense",
+            "sense_id": f"sense-{len(calls)}",
+            "seat": args.name,
+            "name": args.name,
+            "at": "1970-01-01T00:00:00+00:00" if len(calls) == 1 else watch._now(),
+            "state": "ready",
+            "confidence": 0.9,
+            "next_action": "send",
+            "summary": "ready",
+            "evidence": ["READY staleseat"],
+        }
+
+    monkeypatch.setattr(sense, "run", fake_sense_run)
+    args = argparse.Namespace(
+        name="staleseat",
+        lines=40,
+        question=None,
+        features=None,
+        no_sense=False,
+        sense=True,
+        fresh_sense=False,
+        sense_mode="llm",
+        model="local-test",
+        llm_timeout=1,
+        ollama_host="http://ollama.test",
+        contract=None,
+    )
+
+    first = watch.sample(args)
+    second = watch.sample(args)
+
+    assert first["sense_reused"] is False
+    assert second["output_changed"] is False
+    assert second["sense_reused"] is False
+    assert second["sense"]["sense_id"] == "sense-2"
+    assert len(calls) == 2
 
 
 def test_single_seat_watch_iterations_are_bounded(monkeypatch, tmp_path):
@@ -3638,6 +3716,7 @@ def test_single_seat_watch_iterations_are_bounded(monkeypatch, tmp_path):
         "type": "sense",
         "seat": args.name,
         "name": args.name,
+        "at": watch._now(),
         "state": "ready",
         "confidence": 0.9,
         "next_action": "send",

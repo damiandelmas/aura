@@ -2083,6 +2083,17 @@ def _sweep(args, registry, terminal) -> dict:
                 pass
             if registry.remove_agent(row["seat"], fleet=row.get("fleet")):
                 removed.append(row["seat_ref"])
+                try:
+                    from lib import diagnostic_cache
+
+                    diagnostic_cache.invalidate(
+                        row["seat_ref"],
+                        reason="seat-swept-removed",
+                        source_command="aura seat sweep",
+                        evidence={"sweep_reason": row.get("reason")},
+                    )
+                except Exception:
+                    pass
 
     return {
         "ok": True,
@@ -2245,6 +2256,19 @@ def _archive(args, registry, terminal) -> dict:
 
     fleet_name, seat_name = registry.split_ref(target)
     removed = registry.remove_agent(seat_name, fleet=fleet_name)
+    invalidation = None
+    if removed:
+        try:
+            from lib import diagnostic_cache
+
+            invalidation = diagnostic_cache.invalidate(
+                target,
+                reason="seat-archived",
+                source_command="aura seat archive",
+                evidence={"archive_reason": reason},
+            )
+        except Exception:
+            invalidation = None
     return {
         "ok": bool(removed),
         "action": "archive",
@@ -2254,6 +2278,7 @@ def _archive(args, registry, terminal) -> dict:
         "event_id": (event or {}).get("event_id"),
         "reason": reason,
         "historical": True,
+        "diagnostic_cache_invalidation": invalidation,
     }
 
 
@@ -2314,6 +2339,17 @@ def _quarantine(args, registry, terminal) -> dict:
         event = None
 
     updated = registry.replace_agent_record(after)
+    try:
+        from lib import diagnostic_cache
+
+        invalidation = diagnostic_cache.invalidate(
+            target,
+            reason="seat-quarantined",
+            source_command="aura seat quarantine",
+            evidence={"quarantine_reason": reason},
+        )
+    except Exception:
+        invalidation = None
     return {
         "ok": True,
         "action": "quarantine",
@@ -2323,6 +2359,7 @@ def _quarantine(args, registry, terminal) -> dict:
         "reason": reason,
         "record": updated,
         "hidden_from_live_views": True,
+        "diagnostic_cache_invalidation": invalidation,
     }
 
 

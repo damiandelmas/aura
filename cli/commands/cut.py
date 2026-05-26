@@ -109,6 +109,7 @@ def _record_stop(result: dict, reg_agent: dict | None, terminal_target: str) -> 
     try:
         from lib import session_ledger
         from lib import registry
+        from lib import diagnostic_cache
 
         after = None
         if reg_agent:
@@ -146,6 +147,22 @@ def _record_stop(result: dict, reg_agent: dict | None, terminal_target: str) -> 
                 "terminal_target_checks": result.get("terminal_target_checks"),
             },
             source_command="aura seat cut",
+        )
+        target = result.get("name")
+        if reg_agent:
+            target = (
+                reg_agent.get("seat_ref")
+                or registry.seat_ref(reg_agent.get("fleet"), reg_agent.get("name") or result.get("name"))
+            )
+        result["diagnostic_cache_invalidation"] = diagnostic_cache.invalidate(
+            target,
+            reason="seat-cut",
+            source_command="aura seat cut",
+            evidence={
+                "terminal_target": terminal_target,
+                "terminal": result.get("terminal"),
+                "note": result.get("note"),
+            },
         )
     except Exception:
         pass

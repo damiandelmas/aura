@@ -42,6 +42,7 @@ def test_posture_sample_writes_unknown_on_first_snapshot(monkeypatch, tmp_path):
     from commands import posture
 
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_POSTURE_TTL_SECONDS", "7")
 
     monkeypatch.setattr(posture.check, "run", lambda args: {
         "ok": True,
@@ -57,6 +58,13 @@ def test_posture_sample_writes_unknown_on_first_snapshot(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert result["state"] == "unknown"
+    assert result["capture_state"] == "live"
+    assert result["freshness"] == "fresh"
+    assert result["stale"] is False
+    assert result["ttl_seconds"] == 7
+    assert result["cache_owner"] == "aura"
+    assert result["cache_key"] == "posture:unit-fleet:engineer"
+    assert result["freshness_checked_at"] == result["at"]
     assert result["source"]["previous_output_hash"] is None
     assert result["source"]["provider"] == "snapshot_delta"
 

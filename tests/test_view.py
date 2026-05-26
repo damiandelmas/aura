@@ -60,6 +60,8 @@ def test_view_infers_product_scope_from_current_role(monkeypatch, tmp_path):
     result = view.run(argparse.Namespace(scope=None, limit=10, include_hidden=False))
 
     assert result["ok"] is True
+    assert result["view_scope"] == "scoped"
+    assert result["scope_source"] == "context"
     assert result["scope"] == {"kind": "unit", "name": "flex:engine", "product": "flex", "unit": "engine"}
     assert result["counts"]["colleagues"] == 2
     assert {row["seat"] for row in result["colleagues"]} == {"leader-engine", "specialist-testing"}
@@ -83,6 +85,8 @@ def test_view_can_scope_to_one_fleet(monkeypatch, tmp_path):
 
     result = view.run(argparse.Namespace(scope="fleet:flex-workers", limit=10, include_hidden=False))
 
+    assert result["view_scope"] == "scoped"
+    assert result["scope_source"] == "explicit"
     assert result["scope"] == {"kind": "fleet", "name": "flex-workers", "fleet": "flex-workers"}
     assert [row["seat"] for row in result["colleagues"]] == ["worker"]
 
@@ -222,6 +226,7 @@ def test_view_self_returns_current_managed_seat(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert result["schema"] == "aura.view.self.v1"
+    assert result["view_scope"] == "self"
     assert result["self"]["target"] == "runway-engineering:lead-engineer"
     assert result["self"]["runtime_session_id"] == "session-self"
     assert result["self"]["identity"]["id"] == "r_self"
@@ -257,6 +262,8 @@ def test_view_fleets_returns_live_fleet_index(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert result["schema"] == "aura.view.fleets.v1"
+    assert result["view_scope"] == "live"
+    assert result["scope"] == "live"
     assert result["fleets"] == [
         {"fleet": "runway-engineering", "seats": 2},
         {"fleet": "runway-research", "seats": 1},
@@ -279,6 +286,8 @@ def test_view_fleets_reports_tmux_mirror_failure(monkeypatch, tmp_path):
     assert result == {
         "ok": False,
         "schema": "aura.view.fleets.v1",
+        "view_scope": "live",
+        "scope": "live",
         "error": "tmux-mirror-unavailable",
         "detail": "no server running",
         "fleets": [],
@@ -303,6 +312,8 @@ def test_view_fleet_returns_same_fleet_rows(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert result["schema"] == "aura.view.fleet.v1"
+    assert result["view_scope"] == "fleet"
+    assert result["scope_source"] == "context"
     assert result["fleet"] == "runway-engineering"
     assert {row["target"] for row in result["seats"]} == {
         "runway-engineering:lead-engineer",
@@ -387,6 +398,7 @@ def test_view_roster_returns_live_rows_by_default(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert result["schema"] == "aura.view.roster.v1"
+    assert result["view_scope"] == "live"
     assert result["scope"] == "live"
     assert result["counts"] == {"fleets": 2, "seats": 2, "historical_seats": 3}
     assert result["fleets"] == ["runway-engineering", "runway-research"]
@@ -410,6 +422,7 @@ def test_view_historical_returns_all_managed_rows(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert result["schema"] == "aura.view.historical.v1"
+    assert result["view_scope"] == "historical"
     assert result["counts"] == {"fleets": 2, "seats": 2}
     assert {row["target"] for row in result["seats"]} == {
         "runway-engineering:lead-engineer",
@@ -438,6 +451,7 @@ def test_view_self_rejects_stale_env_match(monkeypatch, tmp_path):
 
     assert result["ok"] is False
     assert result["schema"] == "aura.view.self.v1"
+    assert result["view_scope"] == "self"
     assert result["error"] == "self-not-live"
     assert result["matches"] == ["runway-engineering:stale"]
 
@@ -456,6 +470,7 @@ def test_view_live_alias_preserves_live_roster(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert result["schema"] == "aura.view.live.v1"
+    assert result["view_scope"] == "live"
     assert result["alias_of"] == "roster"
     assert [row["target"] for row in result["seats"]] == ["runway-engineering:lead"]
 
@@ -485,6 +500,7 @@ def test_view_placement_returns_live_members_and_hides_stale(monkeypatch, tmp_pa
 
     assert result["ok"] is True
     assert result["schema"] == "aura.view.placement.v1"
+    assert result["view_scope"] == "placement"
     assert result["placement"]["name"] == "factory-quality"
     assert result["counts"] == {"members": 3, "seats": 1, "hidden_non_live_members": 2, "missing_members": 1}
     assert [row["target"] for row in result["seats"]] == ["flexgraph-chatbot:pipeline"]
