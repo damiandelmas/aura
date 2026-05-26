@@ -1953,12 +1953,21 @@ def _sweep(args, registry, terminal) -> dict:
     if getattr(args, "confirm", False):
         for row in stale:
             before = registry.get_agent(row["seat"], fleet=row.get("fleet"))
+            after = {
+                **(before or row),
+                "status": "swept_removed",
+                "terminal_state": "terminal",
+                "restore_suppressed": True,
+                "swept_removed_at": registry.now_iso(),
+                "sweep_reason": row.get("reason"),
+            }
             try:
                 from lib import session_ledger
 
                 session_ledger.append_seat_event(
                     event="seat_swept_removed",
                     before=before or row,
+                    after=after,
                     evidence=row,
                     source_command="aura seat sweep",
                 )

@@ -31,3 +31,37 @@ def test_cut_force_marks_fleet_qualified_missing_terminal_dead(monkeypatch, tmp_
 
     assert result["ok"] is True
     assert registry.get_agent("manager", fleet="fleet")["status"] == "dead"
+
+
+def test_cut_falls_back_from_stale_pane_ref_to_live_terminal_ref(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+
+    from commands import cut
+    from lib import mesh
+    from lib import registry, terminal
+
+    registry.upsert_agent({
+        "name": "manager",
+        "fleet": "fleet",
+        "runtime": "codex",
+        "pane_ref": "tmux:fleet:%stale",
+        "terminal_ref": "tmux:fleet:%live",
+        "status": "idle",
+    })
+
+    killed = []
+    monkeypatch.setattr(terminal, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal, "target_exists", lambda target: target == "tmux:fleet:%live")
+    monkeypatch.setattr(terminal, "kill_window", lambda target: killed.append(target) or {"ok": True})
+    monkeypatch.setattr(mesh, "unregister", lambda name: {"ok": True, "name": name})
+
+    result = cut.run(argparse.Namespace(name="fleet:manager", force=True))
+
+    assert result["ok"] is True
+    assert result["terminal"] == "killed"
+    assert result["terminal_target"] == "tmux:fleet:%live"
+    assert killed == ["tmux:fleet:%live"]
+    assert result["terminal_target_checks"] == [
+        {"target": "tmux:fleet:%stale", "exists": False},
+        {"target": "tmux:fleet:%live", "exists": True},
+    ]

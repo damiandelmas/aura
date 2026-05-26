@@ -792,7 +792,7 @@ def test_seat_sweep_missing_active_seat_is_suspect_not_stale(tmp_path, monkeypat
 def test_seat_sweep_confirm_removes_stale_registered_seats(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     from commands import seat
-    from lib import registry
+    from lib import registry, session_ledger
 
     registry.upsert_agent({
         "name": "stale",
@@ -822,6 +822,12 @@ def test_seat_sweep_confirm_removes_stale_registered_seats(tmp_path, monkeypatch
     assert result["dry_run"] is False
     assert result["removed"] == ["fleet:stale"]
     assert registry.get_agent("stale", fleet="fleet") is None
+    rows = session_ledger.seat_history_for_target("fleet:stale")
+    assert rows[-1]["event"] == "seat_swept_removed"
+    assert rows[-1]["after"]["status"] == "swept_removed"
+    latest = session_ledger.project_latest_from_ledger(fleet="fleet")
+    assert latest[0]["restore_suppressed"] is True
+    assert latest[0]["terminal_state"] == "terminal"
 
 
 def test_seat_archive_removes_non_live_row_and_writes_terminal_history(tmp_path, monkeypatch):

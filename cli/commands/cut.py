@@ -3,6 +3,37 @@
 import time
 
 
+def _candidate_targets(reg_agent: dict | None, requested: str) -> list[str]:
+    targets = []
+    for key in ("pane_ref", "terminal_ref", "backend_ref"):
+        value = (reg_agent or {}).get(key)
+        if value and value not in targets:
+            targets.append(value)
+    if requested and requested not in targets and (not reg_agent or not targets):
+        targets.append(requested)
+    return targets
+
+
+def _target_exists(terminal, target: str, requested: str) -> bool:
+    if hasattr(terminal, "target_exists"):
+        exists = terminal.target_exists(target)
+        if exists or target != requested:
+            return exists
+    return terminal.window_exists(target)
+
+
+def _select_terminal_target(terminal, reg_agent: dict | None, requested: str) -> tuple[str, bool, list[dict]]:
+    candidates = _candidate_targets(reg_agent, requested)
+    checks = []
+    for target in candidates:
+        exists = _target_exists(terminal, target, requested)
+        checks.append({"target": target, "exists": exists})
+        if exists:
+            return target, True, checks
+    target = candidates[0] if candidates else requested
+    return target, False, checks
+
+
 def run(args):
     """Cut agent (graceful or forced stop)."""
     from lib import mesh, registry, terminal, runtimes
@@ -17,16 +48,9 @@ def run(args):
     agent_name = agent_name or args.name
     if (reg_agent or {}).get("fleet") and hasattr(terminal, "configure_session"):
         terminal.configure_session(reg_agent.get("fleet"))
-    terminal_target = (reg_agent or {}).get("pane_ref") or (reg_agent or {}).get("terminal_ref") or args.name
-
-    def _target_exists(target: str) -> bool:
-        if hasattr(terminal, "target_exists"):
-            exists = terminal.target_exists(target)
-            if exists or target != args.name:
-                return exists
-        return terminal.window_exists(target)
-
-    target_exists = _target_exists(terminal_target)
+    requested = str(args.name)
+    terminal_target, target_exists, target_checks = _select_terminal_target(terminal, reg_agent, requested)
+    terminal_candidates = [check["target"] for check in target_checks]
 
     runtime = (reg_agent or {}).get("runtime")
     graceful_exit = runtimes.graceful_exit(runtime)
@@ -40,7 +64,8 @@ def run(args):
         # Mesh unregister is best-effort; tmux remains the source of process truth.
         mesh.unregister(args.name)
 
-    target_exists = _target_exists(terminal_target)
+    terminal_target, target_exists, target_checks = _select_terminal_target(terminal, reg_agent, requested)
+    terminal_candidates = [check["target"] for check in target_checks]
     if target_exists:
         terminal.kill_window(terminal_target)
         registry.mark_status(agent_name, "dead", fleet=agent_fleet)
@@ -52,6 +77,9 @@ def run(args):
             "graceful_attempted": graceful_attempted,
             "graceful_exit": graceful_exit if graceful_attempted else None,
             "terminal": "killed",
+            "terminal_target": terminal_target,
+            "terminal_target_candidates": terminal_candidates,
+            "terminal_target_checks": target_checks,
         }
         _record_stop(result, reg_agent, terminal_target)
         return result
@@ -69,6 +97,9 @@ def run(args):
         "graceful_attempted": graceful_attempted,
         "graceful_exit": graceful_exit if graceful_attempted else None,
         "note": "window not found",
+        "terminal_target": terminal_target,
+        "terminal_target_candidates": terminal_candidates,
+        "terminal_target_checks": target_checks,
     }
     _record_stop(result, reg_agent, terminal_target)
     return result
@@ -111,6 +142,8 @@ def _record_stop(result: dict, reg_agent: dict | None, terminal_target: str) -> 
                 "graceful_exit": result.get("graceful_exit"),
                 "terminal": result.get("terminal"),
                 "note": result.get("note"),
+                "terminal_target_candidates": result.get("terminal_target_candidates"),
+                "terminal_target_checks": result.get("terminal_target_checks"),
             },
             source_command="aura seat cut",
         )
