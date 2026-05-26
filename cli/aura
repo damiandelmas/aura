@@ -170,6 +170,7 @@ def main():
     p_agent_create.add_argument("--alias", metavar="NAME", help="Short package alias")
     p_agent_inspect = agent_sub.add_parser("inspect", help="Inspect a package-native agent")
     p_agent_inspect.add_argument("ref", help="Agent id, address, or alias")
+    agent_sub.add_parser("census", help="Classify package bodies against registry bindings")
     p_agent_history = agent_sub.add_parser("history", help="Project package-native agent history from Aura registry state")
     p_agent_history.add_argument("ref", help="Agent id, address, or alias")
     p_agent_history.add_argument("--write", action="store_true", help="Write the derived projection to <agent-root>/aura.json")

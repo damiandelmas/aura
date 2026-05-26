@@ -129,6 +129,11 @@ def run(args):
             return agent_packages.inspect(args.ref)
         except Exception as exc:
             return {"ok": False, "error": "agent-inspect-failed", "detail": str(exc), "ref": args.ref}
+    if action == "census":
+        try:
+            return agent_packages.census()
+        except Exception as exc:
+            return {"ok": False, "error": "agent-census-failed", "detail": str(exc)}
     if action == "history":
         try:
             if getattr(args, "write", False):

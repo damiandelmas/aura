@@ -327,3 +327,157 @@ def inspect(ref: str) -> dict[str, Any]:
         "missing_files": {key: value for key, value in files.items() if not Path(value).exists()},
         "sizes": sizes,
     }
+
+
+def _agent_ids_from_index(index: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    agents = index.get("agents", {})
+    if isinstance(agents, dict):
+        ids.update(str(agent_id) for agent_id in agents)
+    for key in ("addresses", "aliases"):
+        mapping = index.get(key, {})
+        if isinstance(mapping, dict):
+            ids.update(str(agent_id) for agent_id in mapping.values() if str(agent_id).startswith("i_"))
+    return ids
+
+
+def _agent_ids_from_dirs() -> set[str]:
+    root = agents_root()
+    if not root.exists():
+        return set()
+    return {path.name for path in root.iterdir() if path.is_dir() and path.name.startswith("i_")}
+
+
+def _agent_ids_from_registry_rows(rows: list[tuple[str, dict[str, Any]]]) -> set[str]:
+    ids: set[str] = set()
+    for _ref, row in rows:
+        agent_id = row.get("agent_package_id") or row.get("identity_id")
+        if agent_id and str(agent_id).startswith("i_"):
+            ids.add(str(agent_id))
+    return ids
+
+
+def _root_for_census(index: dict[str, Any], agent_id: str) -> Path:
+    meta = _index_agent_meta(index, agent_id)
+    if meta.get("root"):
+        return Path(str(meta["root"])).expanduser().resolve()
+    return package_root(agent_id)
+
+
+def _manifest_status(root: Path) -> tuple[dict[str, Any] | None, list[str], str | None]:
+    if not root.exists():
+        return None, ["missing-package-root"], None
+    path = manifest_path(root)
+    legacy_path = legacy_agent_path(root)
+    used_path: Path | None = None
+    if path.exists():
+        used_path = path
+    elif legacy_path.exists():
+        used_path = legacy_path
+    if not used_path:
+        return None, ["missing-manifest"], None
+    try:
+        payload = json.loads(used_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None, ["invalid-manifest-json"], str(used_path)
+    if not isinstance(payload, dict):
+        return None, ["invalid-manifest-json"], str(used_path)
+    return payload, [], str(used_path)
+
+
+def _runtime_root_findings(root: Path, manifest: dict[str, Any] | None) -> list[str]:
+    if manifest is None:
+        return []
+    runtime = str(manifest.get("runtime") or "")
+    findings: list[str] = []
+    if runtime in {"codex", "omx"} and not (root / ".codex").is_dir():
+        findings.append("missing-runtime-root:.codex")
+    if runtime == "omx" and not (root / ".omx").is_dir():
+        findings.append("missing-runtime-root:.omx")
+    return findings
+
+
+def _registry_rows_for_agent(
+    rows: list[tuple[str, dict[str, Any]]],
+    *,
+    agent_id: str,
+    root: Path,
+) -> list[dict[str, Any]]:
+    root_text = str(root)
+    matched: list[dict[str, Any]] = []
+    for ref, row in rows:
+        row_agent_id = row.get("agent_package_id") or row.get("identity_id")
+        row_root = row.get("agent_package_root") or row.get("runtime_capsule_ref")
+        if row_agent_id == agent_id or (row_root and str(row_root) == root_text):
+            matched.append({
+                "ref": ref,
+                "fleet": row.get("fleet"),
+                "seat": row.get("name") or row.get("seat"),
+                "runtime": row.get("runtime"),
+                "runtime_session_id": row.get("runtime_session_id") or row.get("session_id"),
+                "runtime_session_binding": row.get("runtime_session_binding"),
+                "pane_ref": row.get("pane_ref"),
+                "status": row.get("status"),
+                "liveness": row.get("liveness"),
+            })
+    return matched
+
+
+def _classification(*, root: Path, manifest: dict[str, Any] | None, findings: list[str], bindings: list[dict[str, Any]]) -> str:
+    if "missing-package-root" in findings:
+        return "registry-ghost" if bindings else "indexed-missing-package"
+    if manifest is None:
+        return "package-broken"
+    if len(bindings) > 1:
+        return "durable-package-duplicate-bindings"
+    if bindings:
+        return "durable-package-bound"
+    return "durable-package-unbound"
+
+
+def census() -> dict[str, Any]:
+    """Classify durable package bodies against live registry references."""
+    from lib import registry
+
+    index = read_index()
+    registry_rows = sorted(registry.read_registry().items())
+    agent_ids = (
+        _agent_ids_from_index(index)
+        | _agent_ids_from_dirs()
+        | _agent_ids_from_registry_rows(registry_rows)
+    )
+    packages: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    for agent_id in sorted(agent_ids):
+        root = _root_for_census(index, agent_id)
+        manifest, findings, manifest_file = _manifest_status(root)
+        findings.extend(_runtime_root_findings(root, manifest))
+        bindings = _registry_rows_for_agent(registry_rows, agent_id=agent_id, root=root)
+        if len(bindings) > 1:
+            findings.append("duplicate-live-seat-for-package")
+        classification = _classification(root=root, manifest=manifest, findings=findings, bindings=bindings)
+        counts[classification] = counts.get(classification, 0) + 1
+        meta = _index_agent_meta(index, agent_id)
+        packages.append({
+            "agent_id": agent_id,
+            "classification": classification,
+            "root": str(root),
+            "indexed": agent_id in _agent_ids_from_index(index),
+            "address": meta.get("address") or (manifest or {}).get("address") or _find_index_key(index.get("addresses", {}), agent_id),
+            "alias": meta.get("alias") or (manifest or {}).get("alias") or _find_index_key(index.get("aliases", {}), agent_id),
+            "manifest": manifest_file,
+            "runtime": (manifest or {}).get("runtime"),
+            "cwd": (manifest or {}).get("cwd"),
+            "fleet": (manifest or {}).get("fleet"),
+            "seat": (manifest or {}).get("seat"),
+            "bindings": bindings,
+            "findings": findings,
+        })
+    return {
+        "ok": True,
+        "schema": "aura.agent_package.census.v1",
+        "agents_root": str(agents_root()),
+        "index": str(index_path()),
+        "counts": counts,
+        "packages": packages,
+    }

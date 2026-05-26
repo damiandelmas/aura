@@ -611,3 +611,93 @@ def test_agent_index_corruption_fails_loudly(monkeypatch, tmp_path):
         assert "invalid agent package index" in str(exc)
     else:
         raise AssertionError("corrupt index should not silently reset")
+
+
+def test_agent_census_classifies_package_bodies_and_registry_ghosts(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from lib import agent_packages, registry
+
+    bound = agent_packages.create(
+        address="flexgraph:chatbot:ops:manager",
+        runtime="codex",
+        profile="worker",
+        cwd=str(tmp_path / "unit"),
+        fleet="flexgraph-chatbot",
+        seat="manager",
+        alias=None,
+    )["agent"]
+    unbound = agent_packages.create(
+        address="flexgraph:chatbot:ops:observer",
+        runtime="codex",
+        profile="worker",
+        cwd=str(tmp_path / "unit"),
+        fleet="flexgraph-chatbot",
+        seat="observer",
+        alias=None,
+    )["agent"]
+    registry.upsert_agent({
+        "name": "manager",
+        "fleet": "flexgraph-chatbot",
+        "runtime": "codex",
+        "agent_package_id": bound["agent_id"],
+        "agent_package_root": bound["root"],
+        "runtime_session_id": "019e3334-6cf5-72cb-aafb-9e423bfb9f86",
+        "runtime_session_binding": "bound",
+    })
+    registry.upsert_agent({
+        "name": "ghost",
+        "fleet": "flexgraph-chatbot",
+        "runtime": "codex",
+        "agent_package_id": "i_missingghost",
+        "runtime_session_id": "019e3334-6cf5-72cb-aafb-9e423bfb9f87",
+        "runtime_session_binding": "bound",
+    })
+
+    result = agent_packages.census()
+    by_id = {row["agent_id"]: row for row in result["packages"]}
+
+    assert result["ok"] is True
+    assert by_id[bound["agent_id"]]["classification"] == "durable-package-bound"
+    assert by_id[bound["agent_id"]]["bindings"][0]["ref"] == "flexgraph-chatbot:manager"
+    assert by_id[unbound["agent_id"]]["classification"] == "durable-package-unbound"
+    assert by_id["i_missingghost"]["classification"] == "registry-ghost"
+    assert "missing-package-root" in by_id["i_missingghost"]["findings"]
+    assert result["counts"]["durable-package-bound"] == 1
+    assert result["counts"]["durable-package-unbound"] == 1
+    assert result["counts"]["registry-ghost"] == 1
+
+
+def test_agent_census_reports_duplicate_live_bindings(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from lib import agent_packages, registry
+
+    agent = agent_packages.create(
+        address="flexgraph:chatbot:ops:manager",
+        runtime="codex",
+        profile="worker",
+        cwd=str(tmp_path / "unit"),
+        fleet="flexgraph-chatbot",
+        seat="manager",
+        alias=None,
+    )["agent"]
+    for name, session_id in [("manager", "s1"), ("manager-copy", "s2")]:
+        registry.upsert_agent({
+            "name": name,
+            "fleet": "flexgraph-chatbot",
+            "runtime": "codex",
+            "agent_package_id": agent["agent_id"],
+            "agent_package_root": agent["root"],
+            "runtime_session_id": session_id,
+            "runtime_session_binding": "bound",
+        })
+
+    package = agent_packages.census()["packages"][0]
+
+    assert package["classification"] == "durable-package-duplicate-bindings"
+    assert package["findings"] == ["duplicate-live-seat-for-package"]
+    assert [binding["ref"] for binding in package["bindings"]] == [
+        "flexgraph-chatbot:manager",
+        "flexgraph-chatbot:manager-copy",
+    ]
