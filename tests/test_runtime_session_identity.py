@@ -45,6 +45,12 @@ def test_runtime_session_discovers_codex_thread_from_resume_argv(monkeypatch):
     assert runtime_session.merge({"name": "engineer"}, result)["session_id"] == "019dd2b7-8919-75d2-b472-7c778a93da92"
 
 
+def test_runtime_session_footer_capture_is_bound_source():
+    from lib import runtime_session
+
+    assert runtime_session.binding_method_for_source("codex-footer:capture") == "footer-capture"
+
+
 def test_runtime_session_discovers_codex_fork_source_from_argv(monkeypatch):
     from lib import runtime_session
 

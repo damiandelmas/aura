@@ -27,6 +27,7 @@ BOUND_SESSION_SOURCES = {
     "codex-jsonl:nonce": "nonce-jsonl",
     "codex-hook:session-start": "codex-hook",
     "codex-hook:user-prompt-submit": "codex-hook",
+    "codex-footer:capture": "footer-capture",
 }
 
 

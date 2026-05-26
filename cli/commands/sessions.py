@@ -34,6 +34,10 @@ def run(args):
         return _bind_hook(args)
     if getattr(args, "sessions_action", None) == "bind-nonce":
         return _bind_nonce(args)
+    if getattr(args, "sessions_action", None) == "footer":
+        return _footer_candidate(args)
+    if getattr(args, "sessions_action", None) == "bind-footer":
+        return _bind_footer(args)
     if getattr(args, "sessions_action", None) == "restore-plan":
         return _restore_plan(args)
     if getattr(args, "sessions_action", None) == "fleets":
@@ -538,6 +542,163 @@ def _target_fleet_seat(target: str | None) -> tuple[str | None, str | None]:
         agent = registry.get_agent(target)
         return (agent or {}).get("fleet") or registry.current_fleet(), target
     return _current_tmux_target()
+
+
+FOOTER_KEYWORDS = ("session", "thread", "ctx", "context", "codex")
+
+
+def _footer_candidate(args) -> dict:
+    target_arg = getattr(args, "target", None)
+    if not target_arg:
+        return {"ok": False, "error": "footer requires --target"}
+    fleet, seat = _target_fleet_seat(target_arg)
+    if not fleet or not seat:
+        return {"ok": False, "error": "could not resolve target; pass --target fleet:seat"}
+
+    from lib import registry, runtime_session, terminal
+
+    previous = registry.get_agent(seat, fleet=fleet)
+    if not previous:
+        return {"ok": False, "error": "target-seat-not-registered", "target": f"{fleet}:{seat}"}
+
+    terminal_target = previous.get("pane_ref") or previous.get("terminal_ref") or f"{fleet}:{seat}"
+    lines_count = max(int(getattr(args, "lines", None) or 80), 1)
+    try:
+        capture = terminal.capture_output(terminal_target, lines_count) or []
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": "footer-capture-failed",
+            "target": f"{fleet}:{seat}",
+            "terminal_target": terminal_target,
+            "detail": str(exc),
+        }
+    candidates, source_scope = _footer_candidates_from_lines(capture, runtime_session.UUID_RE)
+    registry_session_id = previous.get("runtime_session_id") or previous.get("session_id")
+    unique_ids = [candidate["session_id"] for candidate in candidates]
+    result = {
+        "ok": True,
+        "target": f"{fleet}:{seat}",
+        "fleet": fleet,
+        "seat": seat,
+        "terminal_target": terminal_target,
+        "line_count": len(capture),
+        "source_scope": source_scope,
+        "candidate_count": len(unique_ids),
+        "candidates": candidates,
+        "ambiguous": len(unique_ids) > 1,
+        "registry_session_id": registry_session_id,
+    }
+    if len(unique_ids) == 1:
+        result["candidate"] = candidates[0]
+        result["stale_registry_session"] = bool(registry_session_id and registry_session_id != unique_ids[0])
+    else:
+        result["stale_registry_session"] = False
+    return result
+
+
+def _footer_candidates_from_lines(lines: list[str], uuid_re) -> tuple[list[dict], str]:
+    indexed = list(enumerate(lines))
+    keyword_lines = [
+        item for item in indexed
+        if any(keyword in str(item[1]).lower() for keyword in FOOTER_KEYWORDS)
+    ]
+    source_scope = "footer-keyword"
+    scan = keyword_lines
+    if not scan:
+        scan = indexed
+        source_scope = "capture-fallback"
+    seen = set()
+    candidates = []
+    for index, line in reversed(scan):
+        for match in uuid_re.finditer(str(line)):
+            session_id = match.group(0)
+            if session_id in seen:
+                continue
+            seen.add(session_id)
+            candidates.append({
+                "session_id": session_id,
+                "line_index": index,
+                "line_preview": str(line).strip()[:200],
+                "source_scope": source_scope,
+            })
+    return candidates, source_scope
+
+
+def _bind_footer(args) -> dict:
+    if not getattr(args, "target", None):
+        return {"ok": False, "error": "bind-footer requires --target"}
+    footer = _footer_candidate(args)
+    if not footer.get("ok"):
+        return footer
+    if footer.get("ambiguous"):
+        return {**footer, "ok": False, "error": "footer-session-ambiguous"}
+    candidate = footer.get("candidate")
+    if not candidate:
+        return {**footer, "ok": False, "error": "footer-session-not-found"}
+
+    from lib import registry
+
+    fleet = footer["fleet"]
+    seat = footer["seat"]
+    previous = registry.get_agent(seat, fleet=fleet)
+    if not previous:
+        return {"ok": False, "error": "target-seat-not-registered", "target": footer["target"]}
+    expected_instance = getattr(args, "seat_instance_id", None)
+    actual_instance = previous.get("seat_instance_id")
+    if expected_instance and actual_instance and expected_instance != actual_instance:
+        return {
+            "ok": False,
+            "error": "seat-instance-mismatch",
+            "target": footer["target"],
+            "expected_seat_instance_id": expected_instance,
+            "actual_seat_instance_id": actual_instance,
+        }
+    previous_session_id = previous.get("runtime_session_id") or previous.get("session_id")
+    evidence = {
+        "reason": "codex-footer-capture",
+        "target": footer["target"],
+        "terminal_target": footer["terminal_target"],
+        "session_id": candidate["session_id"],
+        "source_scope": candidate.get("source_scope") or footer.get("source_scope"),
+        "line_index": candidate.get("line_index"),
+        "line_preview": candidate.get("line_preview"),
+        "line_count": footer.get("line_count"),
+        "seat_instance_id": actual_instance,
+    }
+    if previous_session_id and previous_session_id != candidate["session_id"]:
+        evidence["stale_previous_session_id"] = previous_session_id
+        evidence["stale_previous_session_source"] = previous.get("runtime_session_source")
+    plan = {
+        "ok": True,
+        "target": footer["target"],
+        "session_id": candidate["session_id"],
+        "runtime_session_id": candidate["session_id"],
+        "runtime_session_source": "codex-footer:capture",
+        "runtime_session_confidence": "exact",
+        "dry_run": bool(getattr(args, "dry_run", False)),
+        "evidence": evidence,
+    }
+    if plan["dry_run"]:
+        return plan
+    result = _bind_registry_session(
+        fleet=fleet,
+        seat=seat,
+        previous=previous,
+        session_id=candidate["session_id"],
+        source="codex-footer:capture",
+        confidence="exact",
+        evidence=evidence,
+        cwd=previous.get("runtime_session_cwd") or previous.get("cwd") or previous.get("workdir"),
+        event="session_bound_footer",
+        extra={
+            "target": footer["target"],
+            "terminal_target": footer["terminal_target"],
+            "stale_previous_session_id": evidence.get("stale_previous_session_id"),
+            "stale_previous_session_source": evidence.get("stale_previous_session_source"),
+        },
+    )
+    return result
 
 
 def _bind_nonce(args) -> dict:

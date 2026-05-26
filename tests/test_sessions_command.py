@@ -12,6 +12,30 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "cli"))
 
 
+def test_sessions_parser_accepts_footer_actions(monkeypatch):
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader("aura_cli_parser", str(ROOT / "cli" / "aura"))
+    spec = importlib.util.spec_from_loader("aura_cli_parser", loader)
+    aura_cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(aura_cli)
+
+    for action in ("footer", "bind-footer"):
+        captured = {}
+        monkeypatch.setattr(aura_cli.sessions_cmd, "run", lambda args: captured.update(vars(args)) or {"ok": True})
+        monkeypatch.setattr(aura_cli, "output", lambda _result: None)
+        old_argv = sys.argv
+        try:
+            sys.argv = ["aura", "sessions", action, "--target", "unitfleet:engineer"]
+            aura_cli.main()
+        finally:
+            sys.argv = old_argv
+        assert captured["command"] == "sessions"
+        assert captured["sessions_action"] == action
+        assert captured["target"] == "unitfleet:engineer"
+
+
 def test_sessions_rows_emit_fleet_seat_and_target(monkeypatch):
     from commands import sessions
 
@@ -413,6 +437,205 @@ def test_bind_nonce_searches_runtime_capsule_codex_home(monkeypatch, tmp_path):
     body = json.loads((capsule / "runtime-session.json").read_text(encoding="utf-8"))
     assert body["runtime_session_id"] == "session-capsule"
     assert body["jsonl"] == str(jsonl)
+
+
+def test_sessions_footer_reports_pane_candidate_without_mutating(monkeypatch, tmp_path):
+    from commands import sessions
+    from lib import registry, terminal
+
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    registry.upsert_agent({
+        "name": "engineer",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "registered": True,
+        "pane_ref": "tmux:unitfleet:%44",
+        "runtime_session_id": "old-session",
+        "runtime_session_source": "argv:codex-resume",
+    })
+    captured = {}
+
+    def capture_output(target, lines=80):
+        captured["target"] = target
+        captured["lines"] = lines
+        return [
+            "work output",
+            "codex session 019e1111-2222-7333-8444-555555555555",
+        ]
+
+    monkeypatch.setattr(terminal, "capture_output", capture_output)
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="footer",
+        target="unitfleet:engineer",
+        runtime=None,
+        lines=40,
+    ))
+
+    assert result["ok"] is True
+    assert captured == {"target": "tmux:unitfleet:%44", "lines": 40}
+    assert result["candidate"]["session_id"] == "019e1111-2222-7333-8444-555555555555"
+    assert result["source_scope"] == "footer-keyword"
+    assert result["stale_registry_session"] is True
+    assert registry.get_agent("engineer", fleet="unitfleet")["runtime_session_id"] == "old-session"
+
+
+def test_sessions_bind_footer_dry_run_does_not_mutate(monkeypatch, tmp_path):
+    from commands import sessions
+    from lib import registry, terminal
+
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    registry.upsert_agent({
+        "name": "engineer",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "registered": True,
+        "pane_ref": "tmux:unitfleet:%44",
+        "runtime_session_binding": "unbound",
+    })
+    monkeypatch.setattr(
+        terminal,
+        "capture_output",
+        lambda target, lines=80: ["ctx 019e1111-2222-7333-8444-555555555555"],
+    )
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="bind-footer",
+        target="unitfleet:engineer",
+        runtime=None,
+        seat_instance_id=None,
+        dry_run=True,
+        lines=80,
+    ))
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert result["runtime_session_source"] == "codex-footer:capture"
+    assert registry.get_agent("engineer", fleet="unitfleet").get("runtime_session_id") is None
+
+
+def test_sessions_bind_footer_updates_stale_session(monkeypatch, tmp_path):
+    from commands import sessions
+    from lib import registry, terminal
+
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    registry.upsert_agent({
+        "name": "engineer",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "registered": True,
+        "pane_ref": "tmux:unitfleet:%44",
+        "cwd": str(tmp_path),
+        "seat_instance_id": "si_footer",
+        "runtime_session_id": "old-session",
+        "runtime_session_source": "argv:codex-resume",
+        "runtime_session_binding": "bound",
+    })
+    monkeypatch.setattr(
+        terminal,
+        "capture_output",
+        lambda target, lines=80: ["Codex thread 019e1111-2222-7333-8444-555555555555"],
+    )
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="bind-footer",
+        target="unitfleet:engineer",
+        runtime=None,
+        seat_instance_id="si_footer",
+        dry_run=False,
+        lines=80,
+    ))
+
+    assert result["ok"] is True
+    assert result["runtime_session_id"] == "019e1111-2222-7333-8444-555555555555"
+    assert result["runtime_session_source"] == "codex-footer:capture"
+    assert result["runtime_session_bind_method"] == "footer-capture"
+    assert result["stale_previous_session_id"] == "old-session"
+    row = registry.get_agent("engineer", fleet="unitfleet")
+    assert row["runtime_session_id"] == "019e1111-2222-7333-8444-555555555555"
+    assert row["runtime_session_bind_method"] == "footer-capture"
+
+
+def test_sessions_bind_footer_refuses_unregistered_target(monkeypatch, tmp_path):
+    from commands import sessions
+
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="bind-footer",
+        target="unitfleet:missing",
+        runtime=None,
+        seat_instance_id=None,
+        dry_run=False,
+        lines=80,
+    ))
+
+    assert result["ok"] is False
+    assert result["error"] == "target-seat-not-registered"
+
+
+def test_sessions_bind_footer_refuses_seat_instance_mismatch(monkeypatch, tmp_path):
+    from commands import sessions
+    from lib import registry, terminal
+
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    registry.upsert_agent({
+        "name": "engineer",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "registered": True,
+        "seat_instance_id": "si_actual",
+    })
+    monkeypatch.setattr(
+        terminal,
+        "capture_output",
+        lambda target, lines=80: ["session 019e1111-2222-7333-8444-555555555555"],
+    )
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="bind-footer",
+        target="unitfleet:engineer",
+        runtime=None,
+        seat_instance_id="si_wrong",
+        dry_run=False,
+        lines=80,
+    ))
+
+    assert result["ok"] is False
+    assert result["error"] == "seat-instance-mismatch"
+
+
+def test_sessions_bind_footer_refuses_ambiguous_candidates(monkeypatch, tmp_path):
+    from commands import sessions
+    from lib import registry, terminal
+
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    registry.upsert_agent({
+        "name": "engineer",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "registered": True,
+    })
+    monkeypatch.setattr(
+        terminal,
+        "capture_output",
+        lambda target, lines=80: [
+            "session 019e1111-2222-7333-8444-555555555555",
+            "thread 019e6666-7777-7888-8999-aaaaaaaaaaaa",
+        ],
+    )
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="bind-footer",
+        target="unitfleet:engineer",
+        runtime=None,
+        seat_instance_id=None,
+        dry_run=False,
+        lines=80,
+    ))
+
+    assert result["ok"] is False
+    assert result["error"] == "footer-session-ambiguous"
 
 
 def test_codex_bind_hook_script_binds_capsule_session_quietly(monkeypatch, tmp_path):

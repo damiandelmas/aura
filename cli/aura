@@ -659,7 +659,7 @@ def main():
     p_sessions.add_argument(
         "sessions_action",
         nargs="?",
-        choices=["latest", "all", "restore-plan", "self", "bind-current", "bind-hook", "bind-nonce", "seat-history", "fleets", "fleet-history"],
+        choices=["latest", "all", "restore-plan", "self", "bind-current", "bind-hook", "bind-nonce", "footer", "bind-footer", "seat-history", "fleets", "fleet-history"],
                             help="Optional sessions action")
     p_sessions.add_argument("nonce", nargs="?",
                             help="For bind-nonce, unique marker written into the target Codex session; for seat-history, target seat ref")
@@ -681,6 +681,8 @@ def main():
                             help="For --from-ledger restore-plan, collapse to the latest known row per seat")
     p_sessions.add_argument("--limit", type=int,
                             help="For all/seat-history, limit rows")
+    p_sessions.add_argument("--lines", type=int, default=80,
+                            help="For footer/bind-footer, number of target pane lines to inspect")
     p_sessions.add_argument("--no-follow-aliases", action="store_true",
                             help="For seat-history, do not follow rehome/alias chains")
     p_sessions.add_argument("--runtime", choices=["codex", "claude-code", "claude", "hermes", "omx", "opencode", "openclaw", "shell", "command"],
