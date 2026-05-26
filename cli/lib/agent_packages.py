@@ -834,7 +834,7 @@ def _classification(*, root: Path, manifest: dict[str, Any] | None, findings: li
 
 def census() -> dict[str, Any]:
     """Classify durable package bodies against live registry references."""
-    from lib import registry
+    from lib import registry, runtime_hygiene
 
     index = read_index()
     registry_rows = sorted(registry.read_registry().items())
@@ -849,6 +849,10 @@ def census() -> dict[str, Any]:
         root = _root_for_census(index, agent_id)
         manifest, findings, manifest_file = _manifest_status(root)
         findings.extend(_runtime_root_findings(root, manifest))
+        hygiene_findings = runtime_hygiene.package_runtime_findings(root, manifest)
+        for finding in runtime_hygiene.severe_findings(hygiene_findings):
+            if finding["code"] not in findings:
+                findings.append(finding["code"])
         bindings = _registry_rows_for_agent(registry_rows, agent_id=agent_id, root=root)
         if len(bindings) > 1:
             findings.append("duplicate-live-seat-for-package")
@@ -869,12 +873,16 @@ def census() -> dict[str, Any]:
             "seat": (manifest or {}).get("seat"),
             "bindings": bindings,
             "findings": findings,
+            "runtime_hygiene": hygiene_findings,
         })
     return {
         "ok": True,
         "schema": "aura.agent_package.census.v1",
         "agents_root": str(agents_root()),
         "index": str(index_path()),
+        "global_storage": {
+            "codex": runtime_hygiene.codex_global_storage_pressure(),
+        },
         "counts": counts,
         "packages": packages,
     }

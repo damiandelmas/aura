@@ -554,6 +554,16 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         prompt_text = workspace_state.read_work_prompt(work_path) or getattr(args, 'prompt', None)
     except (OSError, ValueError) as exc:
         return result_fn({"ok": False, "error": "launch-input-invalid", "detail": str(exc), "name": args.name})
+    if runtime == "hermes" and prompt_text and not _hermes_startup_prompt_allowed():
+        return result_fn({
+            "ok": False,
+            "error": "hermes-startup-prompt-disabled",
+            "detail": "Hermes does not support safe native startup prompt delivery; spawn Hermes without a startup payload and send work after readiness, or set AURA_HERMES_ALLOW_STARTUP_PROMPT=1.",
+            "name": args.name,
+            "runtime": runtime,
+            "prompt_requested": True,
+            "work_file": str(work_path) if work_path else None,
+        })
     native_state_ref = workspace_state.infer_native_state_ref(workdir_path, spec)
     fleet = getattr(terminal, "SESSION_NAME", None) or registry.current_fleet(default="aura")
     launch_id = f"aura-launch-{uuid.uuid4().hex[:16]}"
@@ -699,6 +709,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         launch_env=launch_env,
         resume_session=resume_session,
         fork_session=fork_session,
+        agent_package_root=agent_package.get("root"),
     )
     if not spawn_preflight.get("ok", False):
         return result_fn({
@@ -1209,6 +1220,7 @@ def _spawn_preflight(
     launch_env: dict,
     resume_session: str | None,
     fork_session: str | None,
+    agent_package_root: str | None = None,
 ) -> dict:
     del command
     warnings: list[str] = []
@@ -1255,6 +1267,26 @@ def _spawn_preflight(
         if warning not in warnings:
             warnings.append(warning)
 
+    package_runtime_hygiene = []
+    if agent_package_root:
+        try:
+            from lib import runtime_hygiene
+
+            package_runtime_hygiene = runtime_hygiene.package_runtime_findings(
+                agent_package_root,
+                runtime=runtime,
+            )
+            for finding in runtime_hygiene.severe_findings(package_runtime_hygiene):
+                errors.append({
+                    "code": "package-runtime-home-contamination",
+                    "finding": finding,
+                })
+        except Exception as exc:
+            errors.append({
+                "code": "package-runtime-hygiene-check-failed",
+                "detail": str(exc),
+            })
+
     result = {
         "ok": not errors,
         "warnings": warnings,
@@ -1264,7 +1296,13 @@ def _spawn_preflight(
         result["inline_env"] = inline_env
     if parse_warning:
         result["parse_warning"] = parse_warning
+    if package_runtime_hygiene:
+        result["package_runtime_hygiene"] = package_runtime_hygiene
     return result
+
+
+def _hermes_startup_prompt_allowed() -> bool:
+    return os.environ.get("AURA_HERMES_ALLOW_STARTUP_PROMPT", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _custom_command_is_manual_resume(runtime: str, argv: list[str]) -> bool:
