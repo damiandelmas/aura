@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -349,6 +350,62 @@ def adopt_root(
         "adopted": True,
         "runtime": runtime,
         "agent": _enrich_record(record, index=index, agent_id=package_id, root=root_path),
+    }
+
+
+def clone(
+    ref: str,
+    *,
+    address: str,
+    alias: str | None = None,
+    cwd: str | None = None,
+    fleet: str | None = None,
+    seat: str | None = None,
+) -> dict[str, Any]:
+    """Clone an indexed package body to a new package id and address."""
+    source = resolve(ref)
+    source_root = Path(source["root"])
+    if not source_root.exists():
+        raise FileNotFoundError(f"source package root does not exist: {source_root}")
+    address = normalize_address(address)
+    alias_value = (
+        runtime_boxes.validate_logical_segment(alias, label="alias")
+        if alias
+        else None
+    )
+    index = read_index()
+    if address in index.get("addresses", {}):
+        raise FileExistsError(f"agent address already exists: {address} -> {index['addresses'][address]}")
+    if alias_value and alias_value in index.get("aliases", {}):
+        raise FileExistsError(f"agent alias already exists: {alias_value}")
+
+    target_id = new_agent_id()
+    target_root = package_root(target_id)
+    shutil.copytree(source_root, target_root)
+    manifest = _read_manifest(target_root)
+    if cwd:
+        manifest["cwd"] = str(Path(cwd).expanduser().resolve())
+    if fleet:
+        manifest["fleet"] = runtime_boxes.validate_logical_segment(fleet, label="fleet")
+    if seat:
+        manifest["seat"] = runtime_boxes.validate_logical_segment(seat, label="seat")
+    _atomic_write_json(manifest_path(target_root), manifest)
+
+    index.setdefault("agents", {})[target_id] = {
+        "root": str(target_root),
+        "address": address,
+        **({"alias": alias_value} if alias_value else {}),
+        "cloned_from": source["agent_id"],
+    }
+    index.setdefault("addresses", {})[address] = target_id
+    if alias_value:
+        index.setdefault("aliases", {})[alias_value] = target_id
+    write_index(index)
+    return {
+        "ok": True,
+        "source_agent_id": source["agent_id"],
+        "source_root": str(source_root),
+        "agent": _enrich_record(manifest, index=index, agent_id=target_id, root=target_root),
     }
 
 

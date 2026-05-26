@@ -134,6 +134,18 @@ def run(args):
             )
         except Exception as exc:
             return {"ok": False, "error": "agent-adopt-root-failed", "detail": str(exc)}
+    if action == "clone":
+        try:
+            return agent_packages.clone(
+                args.ref,
+                address=args.address,
+                alias=args.alias,
+                cwd=args.cwd,
+                fleet=args.fleet,
+                seat=args.seat,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": "agent-clone-failed", "detail": str(exc), "ref": args.ref}
     if action == "inspect":
         try:
             return agent_packages.inspect(args.ref)

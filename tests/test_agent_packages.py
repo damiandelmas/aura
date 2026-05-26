@@ -152,6 +152,48 @@ def test_agent_adopt_root_refuses_broken_body(monkeypatch, tmp_path):
     assert agent_packages.read_index()["agents"] == {}
 
 
+def test_agent_clone_preserves_package_body_and_updates_manifest(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from lib import agent_packages
+
+    source = agent_packages.create(
+        address="flexgraph:chatbot:ops:manager",
+        runtime="omx",
+        profile="omx/aura-operator",
+        cwd=str(tmp_path / "source-unit"),
+        fleet="flexgraph-chatbot",
+        seat="manager",
+        alias="ops-manager",
+    )["agent"]
+    source_root = Path(source["root"])
+    (source_root / ".codex" / "skills" / "local-skill").mkdir(parents=True)
+    (source_root / ".codex" / "skills" / "local-skill" / "SKILL.md").write_text("skill\n", encoding="utf-8")
+    (source_root / ".omx" / "state" / "runtime.json").write_text('{"ok":true}\n', encoding="utf-8")
+    (source_root / "aura.json").write_text('{"schema":"aura.agent_history.v1"}\n', encoding="utf-8")
+
+    cloned = agent_packages.clone(
+        "ops-manager",
+        address="flexgraph:chatbot:ops:manager-clone",
+        alias="ops-manager-clone",
+        cwd=str(tmp_path / "clone-unit"),
+        fleet="flexgraph-clone",
+        seat="manager-clone",
+    )["agent"]
+    clone_root = Path(cloned["root"])
+    clone_manifest = json.loads((clone_root / "manifest.json").read_text(encoding="utf-8"))
+
+    assert cloned["agent_id"] != source["agent_id"]
+    assert clone_manifest["cwd"] == str((tmp_path / "clone-unit").resolve())
+    assert clone_manifest["fleet"] == "flexgraph-clone"
+    assert clone_manifest["seat"] == "manager-clone"
+    assert (clone_root / ".codex" / "skills" / "local-skill" / "SKILL.md").read_text(encoding="utf-8") == "skill\n"
+    assert (clone_root / ".omx" / "state" / "runtime.json").is_file()
+    assert (clone_root / "aura.json").is_file()
+    assert agent_packages.resolve("ops-manager-clone")["agent_id"] == cloned["agent_id"]
+    assert agent_packages.resolve("ops-manager")["agent_id"] == source["agent_id"]
+
+
 def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
