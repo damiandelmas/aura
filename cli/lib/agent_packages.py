@@ -299,6 +299,59 @@ def create(
     return {"ok": True, "agent": _enrich_record(record, index=index, agent_id=agent_id, root=root)}
 
 
+def adopt_root(
+    *,
+    root: str,
+    address: str,
+    alias: str | None = None,
+    agent_id: str | None = None,
+) -> dict[str, Any]:
+    """Add an existing package body to the package index without copying it."""
+    root_path = Path(root).expanduser().resolve()
+    if not root_path.exists():
+        raise FileNotFoundError(f"agent package root does not exist: {root_path}")
+    record = _read_manifest(root_path)
+    runtime = normalize_runtime(str(record.get("runtime") or ""))
+    missing_runtime_roots = _runtime_root_findings(root_path, record)
+    if missing_runtime_roots:
+        raise FileNotFoundError(
+            f"agent package missing runtime roots: {', '.join(missing_runtime_roots)}"
+        )
+    address = normalize_address(address)
+    alias_value = (
+        runtime_boxes.validate_logical_segment(alias, label="alias")
+        if alias
+        else None
+    )
+    package_id = str(agent_id or root_path.name)
+    package_root(package_id)
+
+    index = read_index()
+    if package_id in index.get("agents", {}):
+        raise FileExistsError(f"agent package already indexed: {package_id}")
+    existing_id = index.get("addresses", {}).get(address)
+    if existing_id:
+        raise FileExistsError(f"agent address already exists: {address} -> {existing_id}")
+    if alias_value and alias_value in index.get("aliases", {}):
+        raise FileExistsError(f"agent alias already exists: {alias_value}")
+
+    index.setdefault("agents", {})[package_id] = {
+        "root": str(root_path),
+        "address": address,
+        **({"alias": alias_value} if alias_value else {}),
+    }
+    index.setdefault("addresses", {})[address] = package_id
+    if alias_value:
+        index.setdefault("aliases", {})[alias_value] = package_id
+    write_index(index)
+    return {
+        "ok": True,
+        "adopted": True,
+        "runtime": runtime,
+        "agent": _enrich_record(record, index=index, agent_id=package_id, root=root_path),
+    }
+
+
 def append_spawn_history(agent_id: str, event: dict[str, Any]) -> dict[str, Any]:
     # Compatibility no-op: package manifest.json is the spawn recipe only. Spawn
     # and session evidence lives in the registry/session ledger.

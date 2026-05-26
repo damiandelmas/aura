@@ -124,6 +124,16 @@ def run(args):
             )
         except Exception as exc:
             return {"ok": False, "error": "agent-create-failed", "detail": str(exc)}
+    if action == "adopt-root":
+        try:
+            return agent_packages.adopt_root(
+                root=args.root,
+                address=args.address,
+                alias=args.alias,
+                agent_id=args.agent_id,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": "agent-adopt-root-failed", "detail": str(exc)}
     if action == "inspect":
         try:
             return agent_packages.inspect(args.ref)

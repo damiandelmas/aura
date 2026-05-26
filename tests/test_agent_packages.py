@@ -82,6 +82,76 @@ def test_agent_inspect_resolves_address_and_alias(monkeypatch, tmp_path):
     assert not (root / ".omx").exists()
 
 
+def test_agent_adopt_root_indexes_existing_package_body(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from lib import agent_packages
+
+    root = tmp_path / "state" / "agents" / "i_existing"
+    (root / ".codex").mkdir(parents=True)
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": "aura.agent_manifest.v1",
+                "runtime": "codex",
+                "cwd": str(tmp_path / "unit"),
+                "fleet": "flexgraph-chatbot",
+                "seat": "manager",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    adopted = agent_packages.adopt_root(
+        root=str(root),
+        address="flexgraph:chatbot:ops:manager",
+        alias="ops-manager",
+    )
+    resolved = agent_packages.resolve("ops-manager")
+    census = agent_packages.census()
+
+    assert adopted["ok"] is True
+    assert adopted["agent"]["agent_id"] == "i_existing"
+    assert resolved["root"] == str(root.resolve())
+    assert census["packages"][0]["indexed"] is True
+    assert census["packages"][0]["classification"] == "durable-package-unbound"
+
+
+def test_agent_adopt_root_refuses_broken_body(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from lib import agent_packages
+
+    root = tmp_path / "state" / "agents" / "i_broken"
+    root.mkdir(parents=True)
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": "aura.agent_manifest.v1",
+                "runtime": "codex",
+                "cwd": str(tmp_path / "unit"),
+                "fleet": "flexgraph-chatbot",
+                "seat": "manager",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    try:
+        agent_packages.adopt_root(
+            root=str(root),
+            address="flexgraph:chatbot:ops:broken",
+        )
+    except FileNotFoundError as exc:
+        assert "missing-runtime-root:.codex" in str(exc)
+    else:
+        raise AssertionError("broken package body should not be indexed")
+
+    assert agent_packages.read_index()["agents"] == {}
+
+
 def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
