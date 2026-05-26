@@ -324,6 +324,37 @@ def test_agent_rename_refuses_live_fleet_default_drift(monkeypatch, tmp_path):
     assert agent_packages.resolve("ops-manager")["agent_id"] == agent["agent_id"]
 
 
+def test_agent_hooks_audit_and_repair_package_codex_hooks(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from lib import agent_packages
+
+    agent_packages.create(
+        address="flexgraph:chatbot:ops:manager",
+        runtime="codex",
+        profile="worker",
+        cwd=str(tmp_path / "unit"),
+        fleet="flexgraph-chatbot",
+        seat="manager",
+        alias="ops-manager",
+    )
+
+    before = agent_packages.hooks("ops-manager")
+    repaired = agent_packages.hooks("ops-manager", repair=True)
+    after = agent_packages.hooks("ops-manager")
+
+    assert before["packages"][0]["ok"] is False
+    assert set(before["packages"][0]["findings"]) == {
+        "missing-hook:session_start",
+        "missing-hook:keeper_stop",
+        "missing-hook:keeper_precompact",
+    }
+    assert repaired["packages"][0]["ok"] is True
+    assert repaired["packages"][0]["repair"]["ok"] is True
+    assert after["packages"][0]["ok"] is True
+    assert after["packages"][0]["findings"] == []
+
+
 def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 

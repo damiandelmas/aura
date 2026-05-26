@@ -166,6 +166,11 @@ def run(args):
             )
         except Exception as exc:
             return {"ok": False, "error": "agent-rename-failed", "detail": str(exc), "ref": args.ref}
+    if action == "hooks":
+        try:
+            return agent_packages.hooks(args.ref, repair=args.repair)
+        except Exception as exc:
+            return {"ok": False, "error": "agent-hooks-failed", "detail": str(exc), "ref": args.ref}
     if action == "inspect":
         try:
             return agent_packages.inspect(args.ref)

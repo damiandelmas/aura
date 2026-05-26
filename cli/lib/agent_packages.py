@@ -607,6 +607,95 @@ def rename(
     }
 
 
+def _hook_presence(codex_home: Path) -> tuple[list[str], dict[str, bool]]:
+    hooks_path = codex_home / "hooks.json"
+    missing: list[str] = []
+    presence = {
+        "session_start": False,
+        "keeper_stop": False,
+        "keeper_precompact": False,
+    }
+    try:
+        config = json.loads(hooks_path.read_text(encoding="utf-8")) if hooks_path.exists() else {}
+    except Exception:
+        config = {}
+    hooks = config.get("hooks") if isinstance(config, dict) else None
+    if not isinstance(hooks, dict):
+        hooks = {}
+    for event_name, key, needle in [
+        ("SessionStart", "session_start", "codex_bind_hook.py"),
+        ("Stop", "keeper_stop", "aura_keeper_hook.py Stop"),
+        ("PreCompact", "keeper_precompact", "aura_keeper_hook.py PreCompact"),
+    ]:
+        entries = hooks.get(event_name)
+        if not isinstance(entries, list):
+            entries = []
+        presence[key] = any(
+            isinstance(entry, dict)
+            and any(
+                isinstance(hook, dict)
+                and hook.get("type") == "command"
+                and needle in str(hook.get("command") or "")
+                for hook in (entry.get("hooks") if isinstance(entry.get("hooks"), list) else [])
+            )
+            for entry in entries
+        )
+        if not presence[key]:
+            missing.append(key)
+    return missing, presence
+
+
+def _hook_records(ref: str | None) -> list[dict[str, Any]]:
+    if ref:
+        return [resolve(ref)]
+    records: list[dict[str, Any]] = []
+    for row in census()["packages"]:
+        if row.get("runtime") not in SUPPORTED_RUNTIMES:
+            continue
+        if "missing-package-root" in row.get("findings", []) or "missing-manifest" in row.get("findings", []):
+            continue
+        records.append(row)
+    return records
+
+
+def hooks(ref: str | None = None, *, repair: bool = False) -> dict[str, Any]:
+    """Audit or repair package-local Codex hook wiring."""
+    from lib import codex
+
+    rows = []
+    for record in _hook_records(ref):
+        root = Path(record["root"])
+        codex_home = root / ".codex"
+        repaired = None
+        findings: list[str] = []
+        if not codex_home.is_dir():
+            findings.append("missing-runtime-root:.codex")
+        elif repair:
+            repaired = codex.install_aura_package_hooks(codex_home)
+        missing, presence = _hook_presence(codex_home)
+        findings.extend(f"missing-hook:{key}" for key in missing)
+        rows.append({
+            "agent_id": record.get("agent_id"),
+            "address": record.get("address"),
+            "alias": record.get("alias"),
+            "root": str(root),
+            "runtime": record.get("runtime"),
+            "codex_home": str(codex_home),
+            "ok": not findings,
+            "presence": presence,
+            "findings": findings,
+            **({"repair": repaired} if repaired else {}),
+        })
+    return {
+        "ok": True,
+        "schema": "aura.agent_package.hooks.v1",
+        "repair": repair,
+        "packages": rows,
+        "count": len(rows),
+        "needs_repair": sum(1 for row in rows if row.get("findings")),
+    }
+
+
 def append_spawn_history(agent_id: str, event: dict[str, Any]) -> dict[str, Any]:
     # Compatibility no-op: package manifest.json is the spawn recipe only. Spawn
     # and session evidence lives in the registry/session ledger.
