@@ -139,7 +139,7 @@ def test_restore_plan_from_ledger_uses_latest_active_state(monkeypatch, tmp_path
     assert rows["new:engineer"]["restore_ready"] is True
     assert "--resume-session new-session" in rows["new:engineer"]["restore_command"]
     assert rows["new:engineer"]["restore_command_kind"] == "spawn-resume"
-    assert rows["new:engineer"]["restore_evidence_source"] == "session-ledger-projection"
+    assert rows["new:engineer"]["restore_evidence_source"] == "launch-history-codex-jsonl"
     assert rows["new:dead"]["restore_ready"] is False
     assert rows["new:dead"]["restore_reason"] == "latest-seat-state-is-terminal"
 

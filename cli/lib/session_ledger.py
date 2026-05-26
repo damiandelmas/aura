@@ -427,6 +427,12 @@ def restore_evidence(row: dict[str, Any]) -> dict[str, Any]:
             "restore_command_kind": "agent-spawn-resume",
             "restore_warning": "package-root-missing-from-restore-row",
         }
+    if row.get("restore_launch_history_recovered") or row.get("runtime_session_source") == "codex-jsonl:nonce":
+        return {
+            "restore_evidence_source": "launch-history-codex-jsonl",
+            "restore_evidence_rank": 80,
+            "restore_command_kind": "spawn-resume",
+        }
     if row.get("runtime_home") or row.get("codex_box_root") or row.get("omx_box_root"):
         return {
             "restore_evidence_source": "legacy-capsule-runtime-state",
@@ -518,12 +524,16 @@ def restore_plan_from_rows(rows: list[dict[str, Any]], capabilities: dict[str, d
             "runtime_session_bind_source": row.get("runtime_session_bind_source"),
             "runtime_session_confidence": row.get("runtime_session_confidence"),
             "runtime_session_source": row.get("runtime_session_source"),
+            "runtime_session_evidence": row.get("runtime_session_evidence"),
+            "runtime_session_jsonl": row.get("runtime_session_jsonl") or row.get("jsonl"),
+            "runtime_session_timestamp": row.get("runtime_session_timestamp"),
             "cwd": row.get("runtime_session_cwd") or row.get("cwd") or row.get("workdir"),
             "restore_ready": status["restore_ready"],
             "restore_reason": status["restore_reason"],
             "restore_evidence_source": evidence["restore_evidence_source"],
             "restore_evidence_rank": evidence["restore_evidence_rank"],
             "restore_command_kind": evidence["restore_command_kind"],
+            "restore_launch_history_error": row.get("restore_launch_history_error"),
             "restore_command": command,
             "latest_event": row.get("latest_event"),
             "latest_event_id": row.get("latest_event_id"),

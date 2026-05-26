@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -156,6 +157,168 @@ def test_restore_plan_prefers_package_agent_spawn(monkeypatch, tmp_path):
         "--resume-session 019e47f8-34d9-7a62-8527-7abbafae773d "
         "--as-pane --wait"
     )
+
+
+def test_restore_plan_recovers_launch_history_from_capsule_jsonl(monkeypatch, tmp_path):
+    from commands import sessions
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    nonce = "aura-launch-restore-history-test"
+    capsule = tmp_path / "capsule"
+    codex_home = capsule / "codex-home"
+    jsonl = codex_home / "sessions" / "2026" / "05" / "26" / "restore.jsonl"
+    jsonl.parent.mkdir(parents=True)
+    jsonl.write_text(
+        json.dumps({
+            "type": "session_meta",
+            "payload": {
+                "id": "session-recovered",
+                "cwd": "/repo/fitcert",
+                "timestamp": "2026-05-26T09:58:00Z",
+                "aura_launch_id": nonce,
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sessions.list_cmd,
+        "run",
+        lambda _args: [
+            {
+                "seat": "pipeline",
+                "fleet": "flexchat-fitcert",
+                "runtime": "codex",
+                "terminal": "dead",
+                "runtime_session_binding": "unbound",
+                "cwd": "/repo/fitcert",
+                "aura_launch_id": nonce,
+                "codex_box_root": str(capsule),
+                "codex_box_codex_home": str(codex_home),
+            }
+        ],
+    )
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="restore-plan",
+        fleet=None,
+        live=False,
+        include_hidden=True,
+        from_ledger=False,
+        latest_per_seat=False,
+    ))
+
+    row = result["rows"][0]
+    assert row["restore_ready"] is True
+    assert row["session_id"] == "session-recovered"
+    assert row["runtime_session_source"] == "codex-jsonl:nonce"
+    assert row["runtime_session_bind_method"] == "nonce-jsonl"
+    assert row["restore_evidence_source"] == "launch-history-codex-jsonl"
+    assert row["restore_evidence_rank"] == 80
+    assert row["runtime_session_jsonl"] == str(jsonl)
+    assert row["runtime_session_evidence"]["nonce"] == nonce
+    assert row["restore_command"] == (
+        "aura spawn pipeline --runtime codex --fleet flexchat-fitcert "
+        "--cwd /repo/fitcert --resume-session session-recovered --as-pane --wait"
+    )
+
+
+def test_restore_plan_package_evidence_wins_after_launch_history_recovery(monkeypatch, tmp_path):
+    from commands import sessions
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    nonce = "aura-launch-package-history-test"
+    package_root = tmp_path / "agents" / "i_pkg"
+    codex_home = package_root / ".codex"
+    jsonl = codex_home / "sessions" / "2026" / "05" / "26" / "package.jsonl"
+    jsonl.parent.mkdir(parents=True)
+    jsonl.write_text(
+        json.dumps({
+            "type": "session_meta",
+            "payload": {
+                "id": "session-package-recovered",
+                "cwd": "/repo/fitcert",
+                "timestamp": "2026-05-26T10:04:00Z",
+            },
+        }) + f"\n{{\"type\":\"event\",\"message\":\"{nonce}\"}}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sessions.list_cmd,
+        "run",
+        lambda _args: [
+            {
+                "seat": "pipeline",
+                "fleet": "flexchat-fitcert",
+                "runtime": "codex",
+                "terminal": "dead",
+                "runtime_session_binding": "unbound",
+                "cwd": "/repo/fitcert",
+                "aura_launch_id": nonce,
+                "agent_package_id": "i_pkg",
+                "agent_package_address": "flexchat:fitcert:pipeline",
+                "agent_package_root": str(package_root),
+                "codex_package_root": str(package_root),
+                "codex_package_codex_home": str(codex_home),
+            }
+        ],
+    )
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="restore-plan",
+        fleet=None,
+        live=False,
+        include_hidden=True,
+        from_ledger=False,
+        latest_per_seat=False,
+    ))
+
+    row = result["rows"][0]
+    assert row["restore_ready"] is True
+    assert row["session_id"] == "session-package-recovered"
+    assert row["restore_evidence_source"] == "package-local-runtime-state"
+    assert row["restore_evidence_rank"] == 100
+    assert row["restore_command_kind"] == "agent-spawn-resume"
+    assert row["restore_command"] == (
+        "aura agent spawn flexchat:fitcert:pipeline --fleet flexchat-fitcert "
+        "--seat pipeline --cwd /repo/fitcert "
+        "--resume-session session-package-recovered --as-pane --wait"
+    )
+
+
+def test_restore_plan_warns_when_launch_history_missing(monkeypatch, tmp_path):
+    from commands import sessions
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        sessions.list_cmd,
+        "run",
+        lambda _args: [
+            {
+                "seat": "pipeline",
+                "fleet": "flexchat-fitcert",
+                "runtime": "codex",
+                "terminal": "dead",
+                "runtime_session_binding": "unbound",
+                "cwd": "/repo/fitcert",
+                "aura_launch_id": "aura-launch-missing-history-test",
+            }
+        ],
+    )
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="restore-plan",
+        fleet=None,
+        live=False,
+        include_hidden=True,
+        from_ledger=False,
+        latest_per_seat=False,
+    ))
+
+    row = result["rows"][0]
+    assert row["restore_ready"] is False
+    assert row["restore_reason"] == "missing-session-id"
+    assert "launch-history-session-not-found" in row["warnings"]
+    assert row["restore_launch_history_error"] == "codex sessions directory not found"
 
 
 def test_sessions_fleets_counts_same_seat_name_per_fleet(monkeypatch, tmp_path):

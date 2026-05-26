@@ -240,10 +240,11 @@ def _fleets(args) -> dict:
 
 
 def _restore_plan(args):
-    from lib import runtimes, session_ledger
+    from lib import runtime_session, runtimes, session_ledger
 
     if getattr(args, "from_ledger", False):
         rows = session_ledger.project_latest_from_ledger(fleet=getattr(args, "fleet", None))
+        rows = _enrich_restore_rows_from_launch_history(rows, runtime_session=runtime_session)
         plan = session_ledger.restore_plan_from_rows(rows, runtimes.capability_map())
         plan["source"] = "ledger"
         plan["latest_per_seat"] = bool(getattr(args, "latest_per_seat", False))
@@ -255,10 +256,72 @@ def _restore_plan(args):
         live=getattr(args, "live", False),
         include_hidden=getattr(args, "include_hidden", False),
     ))
-    return session_ledger.restore_plan_from_rows(
+    rows = _enrich_restore_rows_from_launch_history(
         rows_result.get("rows", []),
+        runtime_session=runtime_session,
+    )
+    return session_ledger.restore_plan_from_rows(
+        rows,
         runtimes.capability_map(),
     )
+
+
+def _enrich_restore_rows_from_launch_history(rows: list[dict], *, runtime_session) -> list[dict]:
+    enriched = []
+    for row in rows:
+        enriched.append(_enrich_restore_row_from_launch_history(row, runtime_session=runtime_session))
+    return enriched
+
+
+def _enrich_restore_row_from_launch_history(row: dict, *, runtime_session) -> dict:
+    runtime = str(row.get("runtime") or "").strip().lower()
+    launch_id = row.get("aura_launch_id")
+    if runtime not in {"codex", "omx"} or not launch_id:
+        return row
+    if runtime_session.is_bound_session(row):
+        return row
+
+    expected_cwd = row.get("runtime_session_cwd") or row.get("cwd") or row.get("workdir")
+    found = _codex_session_from_nonce(
+        str(launch_id),
+        expected_cwd=expected_cwd,
+        record=row,
+    )
+    if not found.get("ok"):
+        warnings = list(row.get("warnings") or [])
+        warning = "launch-history-session-not-found"
+        if warning not in warnings:
+            warnings.append(warning)
+        return {
+            **row,
+            "warnings": warnings,
+            "restore_launch_history_error": found.get("error"),
+        }
+
+    session_id = found.get("session_id") or found.get("runtime_session_id")
+    if not session_id:
+        return row
+    evidence = {
+        "reason": "launch-history-codex-jsonl",
+        "nonce": launch_id,
+        "jsonl": found.get("jsonl"),
+        "matches": found.get("matches"),
+    }
+    return {
+        **row,
+        "session_id": session_id,
+        "runtime_session_id": session_id,
+        "runtime_session_source": "codex-jsonl:nonce",
+        "runtime_session_binding": "bound",
+        "runtime_session_bind_method": "nonce-jsonl",
+        "runtime_session_bind_source": "codex-jsonl:nonce",
+        "runtime_session_confidence": "exact",
+        "runtime_session_evidence": {key: value for key, value in evidence.items() if value is not None},
+        "runtime_session_cwd": found.get("cwd") or expected_cwd,
+        "runtime_session_jsonl": found.get("jsonl"),
+        "runtime_session_timestamp": found.get("timestamp"),
+        "restore_launch_history_recovered": True,
+    }
 
 
 def _seat_history(args) -> dict:
@@ -338,6 +401,7 @@ def _codex_session_from_nonce(
         roots.extend(runtime_capsules.capsule_codex_session_roots(record))
     except Exception:
         pass
+    roots.extend(_package_codex_session_roots(record))
     roots.append(Path.home() / ".codex" / "sessions")
 
     seen = set()
@@ -414,6 +478,20 @@ def _codex_session_from_nonce(
     selected = candidates[0]
     selected.update({"nonce": nonce, "matches": len(paths)})
     return {"ok": True, **selected}
+
+
+def _package_codex_session_roots(record: dict | None) -> list[Path]:
+    if not record:
+        return []
+    roots = []
+    for key in ("codex_package_codex_home", "omx_package_codex_home"):
+        value = record.get(key)
+        if value:
+            roots.append(Path(str(value)).expanduser() / "sessions")
+    package_root = record.get("agent_package_root") or record.get("codex_package_root") or record.get("omx_package_root")
+    if package_root:
+        roots.append(Path(str(package_root)).expanduser() / ".codex" / "sessions")
+    return roots
 
 
 def _tmux_fleet_seat(target: str | None = None) -> tuple[str | None, str | None]:
