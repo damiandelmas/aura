@@ -57,6 +57,73 @@ def _physical_fleet_from_ref(value: str | None) -> str | None:
     return None
 
 
+def _compact_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in {
+            "logical_ref": _logical_ref(record),
+            "fleet": record.get("fleet"),
+            "seat": record.get("seat") or record.get("name"),
+            "runtime": record.get("runtime"),
+            "runtime_session_id": record.get("runtime_session_id") or record.get("session_id"),
+            "pane_ref": record.get("pane_ref"),
+            "status": record.get("status"),
+            "managed_state": record.get("managed_state"),
+            "seat_instance_id": record.get("seat_instance_id"),
+        }.items()
+        if value is not None
+    }
+
+
+def _duplicate_groups(records: list[dict[str, Any]], key_fn) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        key = key_fn(record)
+        if key:
+            grouped.setdefault(str(key), []).append(record)
+    return [
+        {"key": key, "records": [_compact_record(record) for record in rows]}
+        for key, rows in sorted(grouped.items())
+        if len(rows) > 1
+    ]
+
+
+def audit_records(records: list[dict[str, Any]], missing_managed: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return read-only topology hygiene findings for registry rows."""
+    duplicate_sessions = _duplicate_groups(
+        records,
+        lambda row: row.get("runtime_session_id") or row.get("session_id"),
+    )
+    duplicate_pane_refs = _duplicate_groups(records, lambda row: row.get("pane_ref"))
+    drift = []
+    for record in records:
+        physical_fleet = record.get("physical_fleet") or _physical_fleet_from_ref(record.get("pane_ref"))
+        logical_fleet = record.get("fleet")
+        if physical_fleet and logical_fleet and physical_fleet != logical_fleet:
+            drift.append({
+                **_compact_record(record),
+                "logical_fleet": logical_fleet,
+                "physical_fleet": physical_fleet,
+            })
+    stale_rows = [
+        row for row in missing_managed
+        if row.get("status") not in {"stopped", "terminal"}
+        and row.get("managed_state") != "stopped"
+    ]
+    return {
+        "duplicate_runtime_sessions": duplicate_sessions,
+        "duplicate_pane_refs": duplicate_pane_refs,
+        "logical_physical_drift": drift,
+        "stale_rows": stale_rows,
+        "counts": {
+            "duplicate_runtime_sessions": len(duplicate_sessions),
+            "duplicate_pane_refs": len(duplicate_pane_refs),
+            "logical_physical_drift": len(drift),
+            "stale_rows": len(stale_rows),
+        },
+    }
+
+
 def parse_panes(output: str) -> list[dict[str, Any]]:
     """Parse `tmux list-panes -a` output produced by this module's format."""
     panes: list[dict[str, Any]] = []
@@ -168,6 +235,7 @@ def join_managed(panes: list[dict[str, Any]], records: list[dict[str, Any]]) -> 
         },
         "panes": joined,
         "missing_managed": stale,
+        "audits": audit_records(records, stale),
     }
 
 

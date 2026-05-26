@@ -58,6 +58,55 @@ def test_join_managed_marks_managed_unmanaged_and_missing():
     assert result["missing_managed"][0]["logical_ref"] == "logical:stale"
 
 
+def test_join_managed_reports_topology_hygiene_audits():
+    from lib import tmux_mirror
+
+    panes = tmux_mirror.parse_panes(
+        "physical\t@1\t1\tworker\t%12\t0\t1234\t/tmp/project\tcodex\t1\n"
+    )
+    records = [
+        {
+            "fleet": "logical",
+            "name": "worker",
+            "runtime": "codex",
+            "pane_ref": "tmux:physical:%12",
+            "runtime_session_id": "same-session",
+            "seat_instance_id": "si_1",
+            "status": "idle",
+        },
+        {
+            "fleet": "logical",
+            "name": "duplicate",
+            "runtime": "codex",
+            "pane_ref": "tmux:physical:%12",
+            "runtime_session_id": "same-session",
+            "seat_instance_id": "si_2",
+            "status": "idle",
+        },
+        {
+            "fleet": "logical",
+            "name": "stale",
+            "runtime": "codex",
+            "pane_ref": "tmux:physical:%99",
+            "runtime_session_id": "stale-session",
+            "seat_instance_id": "si_3",
+            "status": "idle",
+        },
+    ]
+
+    audits = tmux_mirror.join_managed(panes, records)["audits"]
+
+    assert audits["counts"] == {
+        "duplicate_runtime_sessions": 1,
+        "duplicate_pane_refs": 1,
+        "logical_physical_drift": 3,
+        "stale_rows": 1,
+    }
+    assert audits["duplicate_runtime_sessions"][0]["key"] == "same-session"
+    assert audits["duplicate_pane_refs"][0]["key"] == "tmux:physical:%12"
+    assert audits["stale_rows"][0]["logical_ref"] == "logical:stale"
+
+
 def test_view_physical_uses_fake_tmux_and_registry(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     from lib import registry
