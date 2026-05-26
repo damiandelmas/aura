@@ -2140,6 +2140,75 @@ def _archive(args, registry, terminal) -> dict:
     }
 
 
+def _quarantine(args, registry, terminal) -> dict:
+    target = getattr(args, "target", None) or ""
+    if not target or target.count(":") != 1 or target.startswith(":") or target.endswith(":"):
+        return {"ok": False, "error": "empty-target",
+                "detail": "target must be FLEET:SEAT"}
+
+    record = registry.get_agent(target)
+    if not record:
+        return {"ok": False, "error": "seat not found", "target": target}
+
+    fleet = record.get("fleet")
+    if fleet and hasattr(terminal, "configure_session"):
+        terminal.configure_session(fleet)
+    targets = _seat_targets(record)
+    alive_targets = [ref for ref in targets if _target_exists(terminal, ref)]
+    pane_exists = _pane_exists_anywhere(record.get("pane_ref"))
+    if (alive_targets or pane_exists) and not getattr(args, "force", False):
+        return {
+            "ok": False,
+            "error": "seat-appears-live",
+            "target": target,
+            "alive_targets": alive_targets,
+            "pane_exists_anywhere": pane_exists,
+            "detail": "refusing to quarantine a row while its terminal appears live; pass --force only after manual verification",
+        }
+
+    now = registry.now_iso()
+    reason = getattr(args, "reason", None) or "stale-current-projection-quarantine"
+    after = {
+        **record,
+        "status": "quarantined",
+        "quarantined_at": now,
+        "quarantine_reason": reason,
+        "terminal_state": "terminal",
+        "restore_suppressed": True,
+    }
+    try:
+        from lib import session_ledger
+
+        event = session_ledger.append_seat_event(
+            event="seat_quarantined",
+            before=record,
+            after=after,
+            evidence={
+                "source_command": "aura seat quarantine",
+                "reason": reason,
+                "checked_targets": targets,
+                "alive_targets": alive_targets,
+                "pane_exists_anywhere": pane_exists,
+                "force": bool(getattr(args, "force", False)),
+            },
+            source_command="aura seat quarantine",
+        )
+    except Exception:
+        event = None
+
+    updated = registry.replace_agent_record(after)
+    return {
+        "ok": True,
+        "action": "quarantine",
+        "target": target,
+        "event": "seat_quarantined",
+        "event_id": (event or {}).get("event_id"),
+        "reason": reason,
+        "record": updated,
+        "hidden_from_live_views": True,
+    }
+
+
 def run(args):
     from lib import registry
 
@@ -2169,6 +2238,10 @@ def run(args):
         from lib import terminal
 
         return _archive(args, registry, terminal)
+    if action == "quarantine":
+        from lib import terminal
+
+        return _quarantine(args, registry, terminal)
     if action == "register-orphan":
         return _register_orphan(args, registry)
     if action == "tag":

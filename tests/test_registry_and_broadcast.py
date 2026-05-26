@@ -906,6 +906,87 @@ def test_seat_archive_refuses_live_row_without_force(tmp_path, monkeypatch):
     assert registry.get_agent("worker", fleet="fleet") is not None
 
 
+def test_seat_quarantine_hides_non_live_row_without_removing_registry(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import seat
+    from lib import registry, session_ledger
+
+    registry.upsert_agent({
+        "name": "old-worker",
+        "seat": "old-worker",
+        "fleet": "fleet",
+        "runtime": "codex",
+        "status": "idle",
+        "pane_ref": "tmux:fleet:%77",
+        "runtime_session_id": "sess-1",
+        "runtime_session_binding": "bound",
+    })
+
+    class FakeTerminal:
+        @staticmethod
+        def configure_session(fleet):
+            return fleet
+
+        @staticmethod
+        def target_exists(target):
+            return False
+
+    monkeypatch.setattr(seat, "_pane_exists_anywhere", lambda pane_ref: False)
+
+    result = seat._quarantine(argparse.Namespace(
+        seat_action="quarantine",
+        target="fleet:old-worker",
+        reason="test-quarantine",
+        force=False,
+    ), registry, FakeTerminal)
+
+    assert result["ok"] is True
+    assert result["hidden_from_live_views"] is True
+    row = registry.get_agent("old-worker", fleet="fleet")
+    assert row["status"] == "quarantined"
+    assert row["restore_suppressed"] is True
+    assert row["terminal_state"] == "terminal"
+
+    rows = session_ledger.seat_history_for_target("fleet:old-worker")
+    assert rows[-1]["event"] == "seat_quarantined"
+    assert rows[-1]["after"]["status"] == "quarantined"
+
+
+def test_seat_quarantine_refuses_live_row_without_force(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import seat
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "worker",
+        "fleet": "fleet",
+        "runtime": "codex",
+        "pane_ref": "tmux:fleet:%77",
+    })
+
+    class FakeTerminal:
+        @staticmethod
+        def configure_session(fleet):
+            return fleet
+
+        @staticmethod
+        def target_exists(target):
+            return target == "tmux:fleet:%77"
+
+    monkeypatch.setattr(seat, "_pane_exists_anywhere", lambda pane_ref: True)
+
+    result = seat._quarantine(argparse.Namespace(
+        seat_action="quarantine",
+        target="fleet:worker",
+        reason=None,
+        force=False,
+    ), registry, FakeTerminal)
+
+    assert result["ok"] is False
+    assert result["error"] == "seat-appears-live"
+    assert registry.get_agent("worker", fleet="fleet") is not None
+
+
 def test_send_blocks_hidden_targets_without_operator_override(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.delenv("AURA_SEAT", raising=False)

@@ -393,6 +393,14 @@ def main():
     p_seat_archive.add_argument("--reason", help="Reason stored in the seat_archived ledger event")
     p_seat_archive.add_argument("--force", action="store_true",
                                 help="Archive even if terminal probes still see a live target")
+    p_seat_quarantine = seat_sub.add_parser(
+        "quarantine",
+        help="Mark one non-live current row non-routable while preserving registry evidence",
+    )
+    p_seat_quarantine.add_argument("target", help="Seat ref, usually fleet:seat")
+    p_seat_quarantine.add_argument("--reason", help="Reason stored in the seat_quarantined ledger event")
+    p_seat_quarantine.add_argument("--force", action="store_true",
+                                   help="Quarantine even if terminal probes still see a live target")
     p_seat_flex = seat_sub.add_parser("inject-flex", help="Idempotently inject Flex project retrieval guidance into a live seat")
     p_seat_flex.add_argument("target", help="Seat ref, usually fleet:seat")
     p_seat_flex.add_argument("--force", action="store_true",
