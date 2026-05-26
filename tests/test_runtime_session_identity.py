@@ -521,6 +521,9 @@ def test_spawn_codex_resume_session_builds_autonomous_resume_command(monkeypatch
     assert result["backend_ref"] == "unitfleet:outreach"
     assert "spawn_preflight" not in result
     assert result["session_observation"]["status"] == "already-bound"
+    assert result["ready"] is True
+    assert result["ready_reason"] == "runtime-session-bound"
+    assert result["runtime_session_ready"] is True
 
 
 def test_spawn_codex_custom_resume_command_requires_resume_session(monkeypatch, tmp_path):
@@ -994,6 +997,9 @@ def test_spawn_codex_native_prompt_skips_retry_before_session_observation(monkey
     assert keys == []
     assert sent == []
     assert "runtime_session_id" not in result
+    assert result["ready"] is False
+    assert result["ready_reason"] == "no-high-confidence-session-evidence"
+    assert result["runtime_session_ready"] is False
 
 
 def test_spawn_codex_startup_handshake_waits_for_hook_bound_registry(monkeypatch, tmp_path):
@@ -1061,6 +1067,7 @@ def test_spawn_codex_startup_handshake_waits_for_hook_bound_registry(monkeypatch
     assert result["startup_readiness"]["ready"] is True
     assert result["ready"] is True
     assert result["ready_reason"] == "hook-bound"
+    assert result["runtime_session_ready"] is True
     assert result["runtime_session_id"] == "codex-hook-thread"
     assert result["session_observation"]["status"] == "already-bound"
 
@@ -1133,10 +1140,14 @@ def test_spawn_auto_observes_codex_session_by_launch_id(monkeypatch, tmp_path):
     assert "runtime_session_id" not in result
     assert result["session_observation"]["status"] == "pending"
     assert result["session_observation"]["last_runtime_session_binding"] == "unbound"
+    assert result["ready"] is False
+    assert result["ready_reason"] == "no-high-confidence-session-evidence"
+    assert result["runtime_session_ready"] is False
 
     agent = registry.get_agent("builder", fleet="unitfleet")
     assert "session_id" not in agent
     assert "runtime_session_id" not in agent
+    assert agent["runtime_session_ready"] is False
 
     rows = session_ledger.iter_records()
     assert not any(row.get("event") == "session_observed_after_spawn" and row.get("runtime_session_id") == "codex-thread-launch" for row in rows)
@@ -1258,6 +1269,8 @@ def test_spawn_auto_observes_omx_session_by_launch_nonce(monkeypatch, tmp_path):
     }
     assert result["runtime_session_id"] == "thread-omx-nonce"
     assert result["session_observation"]["runtime_session_source"] == "codex-jsonl:nonce"
+    assert result["ready"] is True
+    assert result["runtime_session_ready"] is True
     assert "runtime_capsule_session" not in result
 
     agent = registry.get_agent("pipeline", fleet="unitfleet")
@@ -1312,9 +1325,13 @@ def test_spawn_session_observation_pending_without_high_confidence(monkeypatch, 
     assert result["session_observation"]["status"] == "pending"
     assert result["session_observation"]["reason"] == "no-high-confidence-session-evidence"
     assert "runtime_session_id" not in result
+    assert result["ready"] is False
+    assert result["ready_reason"] == "no-high-confidence-session-evidence"
+    assert result["runtime_session_ready"] is False
 
     agent = registry.get_agent("builder", fleet="unitfleet")
     assert "runtime_session_id" not in agent
+    assert agent["runtime_session_ready"] is False
 
 
 def test_list_merges_runtime_session_id_from_pane(monkeypatch, tmp_path):

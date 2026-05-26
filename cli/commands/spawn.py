@@ -1151,8 +1151,47 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                         })
                 except Exception as exc:
                     result["runtime_capsule_session_warning"] = str(exc)
+        readiness = _runtime_session_readiness(runtime=runtime, observation=session_observation)
+        if readiness:
+            result["runtime_session_ready"] = readiness["runtime_session_ready"]
+            result["runtime_session_ready_reason"] = readiness["runtime_session_ready_reason"]
+            if "ready" not in result or (readiness["ready"] and not result.get("ready")):
+                result["ready"] = readiness["ready"]
+                result["ready_reason"] = readiness["ready_reason"]
+            try:
+                current = registry.get_agent(args.name, fleet=fleet) or registered
+                registry.upsert_agent({
+                    **current,
+                    "name": args.name,
+                    "fleet": fleet,
+                    "runtime_session_ready": readiness["runtime_session_ready"],
+                    "runtime_session_ready_reason": readiness["runtime_session_ready_reason"],
+                })
+            except Exception:
+                pass
     _record_workspace_spawn(workdir_path, result, runtime=runtime)
     return result_fn({k: v for k, v in result.items() if v is not None})
+
+
+def _runtime_session_readiness(*, runtime: str, observation: dict | None) -> dict | None:
+    if runtime not in {"codex", "omx"} or not observation:
+        return None
+    status = observation.get("status")
+    session_id = observation.get("runtime_session_id") or observation.get("session_id")
+    if session_id or status in {"observed", "already-bound"}:
+        return {
+            "ready": True,
+            "ready_reason": "runtime-session-bound",
+            "runtime_session_ready": True,
+            "runtime_session_ready_reason": "runtime-session-bound",
+        }
+    reason = observation.get("reason") or status or "runtime-session-binding-pending"
+    return {
+        "ready": False,
+        "ready_reason": reason,
+        "runtime_session_ready": False,
+        "runtime_session_ready_reason": reason,
+    }
 
 
 def _should_send_codex_startup_handshake(*, runtime: str, resume_session: str | None, fork_session: str | None = None) -> bool:
