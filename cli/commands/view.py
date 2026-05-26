@@ -227,10 +227,91 @@ def _record_refs(record: dict) -> set[str]:
     return refs
 
 
-def _record_can_be_live(record: dict) -> bool:
+def _record_hidden_from_live(record: dict) -> bool:
     if record.get("terminal_state") == "terminal" or record.get("restore_suppressed"):
-        return False
-    return record.get("managed_state") not in {"missing_pane", "stopped"}
+        return True
+    if record.get("managed_state") == "stopped":
+        return True
+    status = str(record.get("status") or "").lower()
+    return status in {"dead", "killed", "cut", "quarantined", "archived"}
+
+
+def _live_view_failure(*, schema: str, detail: str | None = None, **extra) -> dict:
+    return {
+        "ok": False,
+        "schema": schema,
+        "view_scope": "live",
+        "scope": "live",
+        "error": "tmux-mirror-unavailable",
+        "detail": detail or "tmux mirror unavailable",
+        **extra,
+    }
+
+
+def _record_matches_physical_pane(record: dict, pane: dict) -> bool:
+    return bool(_record_refs(record) & _physical_refs([pane]))
+
+
+def _live_projected_managed_state(row: dict) -> str:
+    state = row.get("managed_state")
+    if state and state not in {"missing_pane", "stopped"}:
+        return state
+    binding = row.get("runtime_session_binding")
+    if binding in {"bound", "argv-resume", "runtime-session-bound"} or row.get("runtime_session_id") or row.get("session_id"):
+        return "spawned_bound"
+    return "spawned_unbound"
+
+
+def _live_status_rows(*, include_hidden: bool) -> dict:
+    mirror = tmux_mirror.list_physical_panes()
+    if not mirror.get("ok"):
+        return {
+            "ok": False,
+            "error": mirror.get("error") or "tmux mirror unavailable",
+            "rows": [],
+            "historical_count": len(registry.list_agents(include_hidden=include_hidden)),
+        }
+
+    records = registry.list_agents(include_hidden=include_hidden)
+    status_by_target = {
+        _row_target(row): row
+        for row in _status_rows(include_hidden=include_hidden)
+        if _row_target(row)
+    }
+    rows = []
+    seen: set[tuple[str | None, str | None]] = set()
+    for pane in mirror.get("panes") or []:
+        for record in records:
+            if _record_hidden_from_live(record):
+                continue
+            if not _record_matches_physical_pane(record, pane):
+                continue
+            target = _row_target(record)
+            key = (target, pane.get("pane_id"))
+            if key in seen:
+                continue
+            seen.add(key)
+            enriched = {
+                **(status_by_target.get(target) or {}),
+                **record,
+                "target": target,
+                "fleet": record.get("fleet"),
+                "seat": record.get("seat") or record.get("name"),
+                "pane_ref": pane.get("pane_ref") or record.get("pane_ref"),
+                "terminal_ref": pane.get("terminal_ref") or record.get("terminal_ref"),
+                "physical_fleet": pane.get("physical_fleet"),
+                "physical_seat": pane.get("window_name"),
+                "pane_id": pane.get("pane_id"),
+                "liveness": "alive",
+            }
+            enriched["managed_state"] = _live_projected_managed_state(enriched)
+            rows.append(enriched)
+
+    return {
+        "ok": True,
+        "rows": rows,
+        "historical_count": len(records),
+    }
 
 
 def _run_self(*, include_hidden: bool) -> dict:
@@ -258,24 +339,15 @@ def _run_self(*, include_hidden: bool) -> dict:
 
 
 def _run_fleets(*, include_hidden: bool) -> dict:
-    mirror = tmux_mirror.list_physical_panes()
-    if not mirror.get("ok"):
-        return {
-            "ok": False,
-            "schema": "aura.view.fleets.v1",
-            "view_scope": "live",
-            "scope": "live",
-            "error": "tmux-mirror-unavailable",
-            "detail": mirror.get("error") or "tmux mirror unavailable",
-            "fleets": [],
-        }
-    physical_refs = _physical_refs(mirror.get("panes") or [])
+    live = _live_status_rows(include_hidden=include_hidden)
+    if not live.get("ok"):
+        return _live_view_failure(
+            schema="aura.view.fleets.v1",
+            detail=live.get("error"),
+            fleets=[],
+        )
     counts: dict[str, int] = {}
-    for row in registry.list_agents(include_hidden=include_hidden):
-        if not _record_can_be_live(row):
-            continue
-        if not (_record_refs(row) & physical_refs):
-            continue
+    for row in live.get("rows") or []:
         fleet = row.get("fleet")
         if fleet:
             counts[fleet] = counts.get(fleet, 0) + 1
@@ -293,8 +365,18 @@ def _run_fleets(*, include_hidden: bool) -> dict:
 
 def _run_fleet(*, include_hidden: bool, fleet_name: str | None = None) -> dict:
     context = reports.infer_context()
+    live = _live_status_rows(include_hidden=include_hidden)
+    if not live.get("ok"):
+        failure = _live_view_failure(
+            schema="aura.view.fleet.v1",
+            detail=live.get("error"),
+            fleet=fleet_name or context.get("fleet"),
+            seats=[],
+        )
+        failure["view_scope"] = "fleet"
+        return failure
+    rows = live.get("rows") or []
     if fleet_name:
-        rows = _status_rows(include_hidden=include_hidden, fleet=fleet_name)
         fleet_rows = [row for row in rows if row.get("fleet") == fleet_name and _is_live(row)]
         return {
             "fleet": fleet_name,
@@ -302,7 +384,6 @@ def _run_fleet(*, include_hidden: bool, fleet_name: str | None = None) -> dict:
         }
 
     context_fleet = context.get("fleet")
-    rows = _status_rows(include_hidden=include_hidden, fleet=context_fleet)
     resolved = _resolve_self(rows, context)
     fleet = None
     self_row = None
@@ -325,15 +406,23 @@ def _run_fleet(*, include_hidden: bool, fleet_name: str | None = None) -> dict:
 
 
 def _run_roster(*, include_hidden: bool) -> dict:
-    rows = _status_rows(include_hidden=include_hidden)
-    live_rows = [row for row in rows if _is_live(row)]
+    live = _live_status_rows(include_hidden=include_hidden)
+    if not live.get("ok"):
+        return _live_view_failure(
+            schema="aura.view.roster.v1",
+            detail=live.get("error"),
+            counts={"fleets": 0, "seats": 0, "historical_seats": live.get("historical_count", 0)},
+            fleets=[],
+            seats=[],
+        )
+    live_rows = [row for row in live.get("rows") or [] if _is_live(row)]
     fleets = sorted({row.get("fleet") for row in live_rows if row.get("fleet")})
     return {
         "ok": True,
         "schema": "aura.view.roster.v1",
         "view_scope": "live",
         "scope": "live",
-        "counts": {"fleets": len(fleets), "seats": len(live_rows), "historical_seats": len(rows)},
+        "counts": {"fleets": len(fleets), "seats": len(live_rows), "historical_seats": live.get("historical_count", 0)},
         "fleets": fleets,
         "seats": [_compact_status(row) for row in live_rows],
     }

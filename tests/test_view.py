@@ -294,6 +294,72 @@ def test_view_fleets_reports_tmux_mirror_failure(monkeypatch, tmp_path):
     }
 
 
+def test_view_fleet_reports_tmux_mirror_failure_instead_of_empty_roster(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from lib import registry
+    from commands import view
+
+    registry.upsert_agent({
+        "fleet": "aura-engine",
+        "name": "adjunct-engineer",
+        "runtime": "codex",
+        "pane_ref": "tmux:aura-engine:%101",
+    })
+    monkeypatch.setattr(view.tmux_mirror, "list_physical_panes", lambda: {
+        "ok": False,
+        "error": "can't access /tmp/tmux-1000/default",
+        "panes": [],
+    })
+
+    result = view.run(argparse.Namespace(view_action="fleet", view_target="aura-engine", scope=None, limit=10, include_hidden=False))
+
+    assert result["ok"] is False
+    assert result["schema"] == "aura.view.fleet.v1"
+    assert result["view_scope"] == "fleet"
+    assert result["error"] == "tmux-mirror-unavailable"
+    assert result["fleet"] == "aura-engine"
+    assert result["seats"] == []
+
+
+def test_view_fleet_uses_tmux_join_not_stale_registry_projection(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from lib import registry
+    from commands import view
+
+    registry.write_registry({
+        "fitcert:pipeline": {
+            "fleet": "fitcert",
+            "name": "pipeline",
+            "runtime": "codex",
+            "runtime_session_id": "session-live",
+            "pane_ref": "tmux:fitcert:%11",
+            "managed_state": "missing_pane",
+        },
+        "fitcert:stale": {
+            "fleet": "fitcert",
+            "name": "stale",
+            "runtime": "codex",
+            "runtime_session_id": "session-stale",
+            "pane_ref": "tmux:fitcert:%99",
+            "managed_state": "spawned_bound",
+        },
+    })
+    monkeypatch.setattr(view.tmux_mirror, "list_physical_panes", lambda: {
+        "ok": True,
+        "panes": [
+            {"tmux_session": "fitcert", "physical_fleet": "fitcert", "window_name": "pipeline", "pane_id": "%11", "pane_ref": "tmux:fitcert:%11", "terminal_ref": "tmux:fitcert:pipeline"},
+        ],
+    })
+
+    result = view.run(argparse.Namespace(view_action="fleet", view_target="fitcert", scope=None, limit=10, include_hidden=False))
+
+    assert [row["target"] for row in result["seats"]] == ["fitcert:pipeline"]
+    assert result["seats"][0]["liveness"] == "alive"
+    assert result["seats"][0]["managed_state"] == "spawned_bound"
+
+
 def test_view_fleet_returns_same_fleet_rows(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.setenv("AURA_FLEET", "runway-engineering")
@@ -301,12 +367,15 @@ def test_view_fleet_returns_same_fleet_rows(monkeypatch, tmp_path):
 
     from commands import view
 
-    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False, fleet=None: [
-        {"target": "runway-engineering:lead-engineer", "seat": "lead-engineer", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
-        {"target": "runway-engineering:worker", "seat": "worker", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
-        {"target": "runway-engineering:stale", "seat": "stale", "fleet": "runway-engineering", "liveness": "missing", "managed_state": "missing_pane"},
-        {"target": "runway-marketing:other", "seat": "other", "fleet": "runway-marketing", "liveness": "alive", "managed_state": "spawned_unbound"},
-    ])
+    monkeypatch.setattr(view, "_live_status_rows", lambda include_hidden=False: {
+        "ok": True,
+        "historical_count": 4,
+        "rows": [
+            {"target": "runway-engineering:lead-engineer", "seat": "lead-engineer", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
+            {"target": "runway-engineering:worker", "seat": "worker", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
+            {"target": "runway-marketing:other", "seat": "other", "fleet": "runway-marketing", "liveness": "alive", "managed_state": "spawned_unbound"},
+        ],
+    })
 
     result = view.run(argparse.Namespace(view_action="fleet", view_target=None, scope=None, limit=10, include_hidden=False))
 
@@ -326,37 +395,38 @@ def test_view_fleet_accepts_explicit_fleet_and_flattens_latest_report(monkeypatc
 
     from commands import view
 
-    calls = []
+    def fake_live_status_rows(include_hidden=False):
+        return {
+            "ok": True,
+            "historical_count": 2,
+            "rows": [
+                {
+                    "target": "flexgraph-chatbot:engineering-lead",
+                    "seat": "engineering-lead",
+                    "fleet": "flexgraph-chatbot",
+                    "status": "waiting",
+                    "runtime": "codex",
+                    "runtime_profile": "aura-worker",
+                    "runtime_profile_ref": "codex/aura-worker",
+                    "runtime_profile_runtime": "codex",
+                    "runtime_profile_source": "desks",
+                    "runtime_session_id": "session-engineering",
+                    "liveness": "alive",
+                    "managed_state": "spawned_bound",
+                    "identity": {"provider": "desks", "id": "r_5c425f44", "name": "flexgraph:chatbot:engineering:lead"},
+                    "latest_report": {"state": "parked", "work": "Loaded identity and waiting for assignment"},
+                },
+                {
+                    "target": "other-fleet:lead",
+                    "seat": "lead",
+                    "fleet": "other-fleet",
+                    "liveness": "alive",
+                    "managed_state": "spawned_unbound",
+                },
+            ],
+        }
 
-    def fake_status_rows(include_hidden=False, fleet=None):
-        calls.append(fleet)
-        return [
-            {
-                "target": "flexgraph-chatbot:engineering-lead",
-                "seat": "engineering-lead",
-                "fleet": "flexgraph-chatbot",
-                "status": "waiting",
-                "runtime": "codex",
-                "runtime_profile": "aura-worker",
-                "runtime_profile_ref": "codex/aura-worker",
-                "runtime_profile_runtime": "codex",
-                "runtime_profile_source": "desks",
-                "runtime_session_id": "session-engineering",
-                "liveness": "alive",
-                "managed_state": "spawned_bound",
-                "identity": {"provider": "desks", "id": "r_5c425f44", "name": "flexgraph:chatbot:engineering:lead"},
-                "latest_report": {"state": "parked", "work": "Loaded identity and waiting for assignment"},
-            },
-            {
-                "target": "other-fleet:lead",
-                "seat": "lead",
-                "fleet": "other-fleet",
-                "liveness": "alive",
-                "managed_state": "spawned_unbound",
-            },
-        ]
-
-    monkeypatch.setattr(view, "_status_rows", fake_status_rows)
+    monkeypatch.setattr(view, "_live_status_rows", fake_live_status_rows)
 
     result = view.run(argparse.Namespace(view_action="fleet", view_target="flexgraph-chatbot", scope=None, limit=10, include_hidden=False))
 
@@ -380,7 +450,6 @@ def test_view_fleet_accepts_explicit_fleet_and_flattens_latest_report(monkeypatc
             },
         ],
     }
-    assert calls == ["flexgraph-chatbot"]
 
 
 def test_view_roster_returns_live_rows_by_default(monkeypatch, tmp_path):
@@ -388,11 +457,14 @@ def test_view_roster_returns_live_rows_by_default(monkeypatch, tmp_path):
 
     from commands import view
 
-    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
-        {"target": "runway-engineering:lead-engineer", "seat": "lead-engineer", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
-        {"target": "runway-research:research-lead", "seat": "research-lead", "fleet": "runway-research", "liveness": "alive", "managed_state": "spawned_unbound"},
-        {"target": "runway-research:stale", "seat": "stale", "fleet": "runway-research", "liveness": "missing", "managed_state": "missing_pane"},
-    ])
+    monkeypatch.setattr(view, "_live_status_rows", lambda include_hidden=False: {
+        "ok": True,
+        "historical_count": 3,
+        "rows": [
+            {"target": "runway-engineering:lead-engineer", "seat": "lead-engineer", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_unbound"},
+            {"target": "runway-research:research-lead", "seat": "research-lead", "fleet": "runway-research", "liveness": "alive", "managed_state": "spawned_unbound"},
+        ],
+    })
 
     result = view.run(argparse.Namespace(view_action="roster", scope=None, limit=10, include_hidden=False))
 
@@ -406,6 +478,52 @@ def test_view_roster_returns_live_rows_by_default(monkeypatch, tmp_path):
         "runway-engineering:lead-engineer",
         "runway-research:research-lead",
     }
+
+
+def test_view_roster_reports_tmux_mirror_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from lib import registry
+    from commands import view
+
+    registry.upsert_agent({"fleet": "aura-engine", "name": "adjunct-engineer", "pane_ref": "tmux:aura-engine:%101"})
+    monkeypatch.setattr(view.tmux_mirror, "list_physical_panes", lambda: {
+        "ok": False,
+        "error": "no tmux socket",
+        "panes": [],
+    })
+
+    result = view.run(argparse.Namespace(view_action="roster", scope=None, limit=10, include_hidden=False))
+
+    assert result["ok"] is False
+    assert result["schema"] == "aura.view.roster.v1"
+    assert result["error"] == "tmux-mirror-unavailable"
+    assert result["counts"] == {"fleets": 0, "seats": 0, "historical_seats": 1}
+    assert result["seats"] == []
+
+
+def test_view_roster_uses_tmux_join_and_keeps_historical_count(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from lib import registry
+    from commands import view
+
+    registry.write_registry({
+        "fleet-a:live": {"fleet": "fleet-a", "name": "live", "runtime": "codex", "pane_ref": "tmux:fleet-a:%1"},
+        "fleet-b:stale": {"fleet": "fleet-b", "name": "stale", "runtime": "codex", "pane_ref": "tmux:fleet-b:%2"},
+    })
+    monkeypatch.setattr(view.tmux_mirror, "list_physical_panes", lambda: {
+        "ok": True,
+        "panes": [
+            {"tmux_session": "fleet-a", "physical_fleet": "fleet-a", "window_name": "live", "pane_id": "%1", "pane_ref": "tmux:fleet-a:%1", "terminal_ref": "tmux:fleet-a:live"},
+        ],
+    })
+
+    result = view.run(argparse.Namespace(view_action="roster", scope=None, limit=10, include_hidden=False))
+
+    assert result["counts"] == {"fleets": 1, "seats": 1, "historical_seats": 2}
+    assert result["fleets"] == ["fleet-a"]
+    assert [row["target"] for row in result["seats"]] == ["fleet-a:live"]
 
 
 def test_view_historical_returns_all_managed_rows(monkeypatch, tmp_path):
@@ -461,10 +579,13 @@ def test_view_live_alias_preserves_live_roster(monkeypatch, tmp_path):
 
     from commands import view
 
-    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
-        {"target": "runway-engineering:lead", "seat": "lead", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_bound"},
-        {"target": "runway-engineering:stale", "seat": "stale", "fleet": "runway-engineering", "liveness": "missing", "managed_state": "missing_pane"},
-    ])
+    monkeypatch.setattr(view, "_live_status_rows", lambda include_hidden=False: {
+        "ok": True,
+        "historical_count": 2,
+        "rows": [
+            {"target": "runway-engineering:lead", "seat": "lead", "fleet": "runway-engineering", "liveness": "alive", "managed_state": "spawned_bound"},
+        ],
+    })
 
     result = view.run(argparse.Namespace(view_action="live", view_target=None, scope=None, limit=10, include_hidden=False))
 
