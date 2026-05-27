@@ -57,10 +57,6 @@ def test_report_appends_semantic_delta_with_inferred_context(tmp_path):
         "AURA_SEAT": "engineer",
         "AURA_RUNTIME": "codex",
         "CODEX_THREAD_ID": "019ddf5f-b386-7ef0-9f43-8329ab2019c7",
-        "DESKS_ROLE_ID": "leader-engine",
-        "DESKS_PRODUCT": "flex",
-        "DESKS_UNIT": "engine",
-        "DESKS_ROLE_HOME": "/tmp/roles/leader-engine",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
 

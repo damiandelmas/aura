@@ -176,7 +176,7 @@ def test_rename_preserves_physical_refs_and_adds_alias(tmp_path, monkeypatch):
     result = registry.rename_agent(
         "unit-fleet:old-seat",
         new_name="leader-engine",
-        metadata={"desks_role_id": "leader-engine", "desks_product": "flex"},
+        metadata={"identity_provider": "runway", "identity_id": "pos_leader_engine"},
     )
 
     assert result["ok"] is True
@@ -190,8 +190,8 @@ def test_rename_preserves_physical_refs_and_adds_alias(tmp_path, monkeypatch):
     assert moved["pane_ref"] == "tmux:unit-fleet:%12"
     assert moved["backend_ref"] == "unit-fleet:old-seat"
     assert moved["session_id"] == "session-1"
-    assert moved["desks_role_id"] == "leader-engine"
-    assert moved["desks_product"] == "flex"
+    assert moved["identity_provider"] == "runway"
+    assert moved["identity_id"] == "pos_leader_engine"
     assert moved["rename_source"] == "unit-fleet:old-seat"
     assert registry.read_aliases()["unit-fleet:old-seat"]["target"] == "unit-fleet:leader-engine"
     assert registry.read_aliases()["unit-fleet:old-seat"]["reason"] == "rename"

@@ -492,11 +492,6 @@ def _run_historical(*, include_hidden: bool) -> dict:
     }
 
 
-def _role_field(record: dict, name: str) -> str | None:
-    role = record.get("role") or {}
-    return record.get(name) or role.get(name)
-
-
 def _infer_scope(context: dict, explicit: str | None = None) -> dict:
     if explicit:
         if explicit.startswith("fleet:"):
@@ -511,13 +506,6 @@ def _infer_scope(context: dict, explicit: str | None = None) -> dict:
             return {"kind": "unit", "name": value, "unit": value}
         return {"kind": "named", "name": explicit}
 
-    role = context.get("role") or {}
-    product = role.get("desks_product")
-    unit = role.get("desks_unit")
-    if product and unit:
-        return {"kind": "unit", "name": f"{product}:{unit}", "product": product, "unit": unit}
-    if product:
-        return {"kind": "product", "name": product, "product": product}
     if context.get("fleet"):
         return {"kind": "fleet", "name": context["fleet"], "fleet": context["fleet"]}
     return {"kind": "global", "name": "global"}
@@ -536,8 +524,9 @@ def _matches_scope(record: dict, scope: dict) -> bool:
     if kind == "global":
         return True
     fleet = record.get("fleet")
-    product = _role_field(record, "desks_product")
-    unit = _role_field(record, "desks_unit")
+    org = record.get("org") if isinstance(record.get("org"), dict) else {}
+    product = org.get("product")
+    unit = org.get("unit")
     name = scope.get("name")
     if kind == "fleet":
         return fleet == scope.get("fleet")
@@ -633,10 +622,11 @@ def run(args):
         for agent in seat_status.list_seat_statuses(include_hidden=include_hidden)
         if _matches_scope(agent, scope)
     ]
+    scoped_targets = {_target_for(agent) for agent in agents}
     report_rows = [
         row
         for row in reports.iter_reports()
-        if _matches_scope(row, scope)
+        if _target_for(row) in scoped_targets
     ]
     report_rows = report_rows[-limit:]
     last_reports = _last_reports_by_target(report_rows)
@@ -668,11 +658,6 @@ def run(args):
             "org": agent.get("org"),
             "risk_flags": agent.get("risk_flags") or [],
             "placements": agent.get("placements") or [],
-            "role": {
-                key: agent.get(key)
-                for key in ("desks_role_id", "desks_product", "desks_unit", "desks_role_home")
-                if agent.get(key)
-            },
             "last_report": _report_summary(last_reports.get(_target_for(agent))),
         })
     colleagues = all_colleagues[:limit]

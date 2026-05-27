@@ -7,13 +7,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "cli"))
 
 
-def test_view_infers_product_scope_from_current_role(monkeypatch, tmp_path):
+def test_view_without_explicit_scope_uses_current_fleet(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.setenv("AURA_FLEET", "flex-leaders")
     monkeypatch.setenv("AURA_SEAT", "leader-engine")
     monkeypatch.setenv("AURA_RUNTIME", "codex")
     monkeypatch.setenv("CODEX_THREAD_ID", "019ddf5f-b386-7ef0-9f43-8329ab2019c7")
-    monkeypatch.setenv("DESKS_PRODUCT", "flex")
 
     from lib import registry, reports
     from commands import view
@@ -23,8 +22,7 @@ def test_view_infers_product_scope_from_current_role(monkeypatch, tmp_path):
         "fleet": "flex-leaders",
         "runtime": "codex",
         "status": "idle",
-        "desks_product": "flex",
-        "desks_unit": "engine",
+        "org": {"product": "flex", "unit": "engine"},
         "runtime_session_id": "leader-session",
     })
     registry.upsert_agent({
@@ -32,16 +30,14 @@ def test_view_infers_product_scope_from_current_role(monkeypatch, tmp_path):
         "fleet": "flex-specialists",
         "runtime": "codex",
         "status": "working",
-        "desks_product": "flex",
-        "desks_unit": "engine",
+        "org": {"product": "flex", "unit": "engine"},
     })
     registry.upsert_agent({
         "name": "demo-builder",
         "fleet": "flexgraph-workers",
         "runtime": "codex",
         "status": "working",
-        "desks_product": "flexgraph",
-        "desks_unit": "surfaces",
+        "org": {"product": "flexgraph", "unit": "surfaces"},
     })
 
     monkeypatch.setenv("AURA_SEAT", "specialist-testing")
@@ -62,13 +58,10 @@ def test_view_infers_product_scope_from_current_role(monkeypatch, tmp_path):
     assert result["ok"] is True
     assert result["view_scope"] == "scoped"
     assert result["scope_source"] == "context"
-    assert result["scope"] == {"kind": "unit", "name": "flex:engine", "product": "flex", "unit": "engine"}
-    assert result["counts"]["colleagues"] == 2
-    assert {row["seat"] for row in result["colleagues"]} == {"leader-engine", "specialist-testing"}
-    assert result["fleets"] == ["flex-leaders", "flex-specialists"]
-    specialist = next(row for row in result["colleagues"] if row["seat"] == "specialist-testing")
-    assert specialist["last_report"]["state"] == "working"
-    assert specialist["last_report"]["work"] == "Checking report verification"
+    assert result["scope"] == {"kind": "fleet", "name": "flex-leaders", "fleet": "flex-leaders"}
+    assert result["counts"]["colleagues"] == 1
+    assert {row["seat"] for row in result["colleagues"]} == {"leader-engine"}
+    assert result["fleets"] == ["flex-leaders"]
 
 
 def test_view_can_scope_to_one_fleet(monkeypatch, tmp_path):
@@ -133,7 +126,6 @@ def test_view_includes_pending_queue_for_scoped_targets(monkeypatch, tmp_path):
 def test_view_keys_latest_reports_by_fleet_and_seat(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.setenv("AURA_RUNTIME", "codex")
-    monkeypatch.setenv("DESKS_PRODUCT", "flex")
 
     from lib import registry, reports
     from commands import view
@@ -142,13 +134,13 @@ def test_view_keys_latest_reports_by_fleet_and_seat(monkeypatch, tmp_path):
         "name": "lead",
         "fleet": "fleet-a",
         "runtime": "codex",
-        "desks_product": "flex",
+        "org": {"product": "flex"},
     })
     registry.upsert_agent({
         "name": "lead",
         "fleet": "fleet-b",
         "runtime": "codex",
-        "desks_product": "flex",
+        "org": {"product": "flex"},
     })
 
     monkeypatch.setenv("AURA_SEAT", "lead")
@@ -157,7 +149,7 @@ def test_view_keys_latest_reports_by_fleet_and_seat(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_FLEET", "fleet-b")
     reports.append_report({"state": "blocked", "work": "fleet-b work"})
 
-    result = view.run(argparse.Namespace(scope=None, limit=10, include_hidden=False))
+    result = view.run(argparse.Namespace(scope="product:flex", limit=10, include_hidden=False))
 
     by_target = {f"{row['fleet']}:{row['seat']}": row for row in result["colleagues"]}
     assert by_target["fleet-a:lead"]["last_report"]["work"] == "fleet-a work"

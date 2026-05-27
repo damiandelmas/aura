@@ -153,9 +153,7 @@ def _read_yaml(path: Path) -> dict[str, Any] | None:
 def _org_from_identity(record: dict[str, Any], identity: dict[str, Any] | None) -> tuple[dict[str, Any] | None, str | None]:
     if not identity or identity.get("provider") != "desks" or not identity.get("id"):
         return None, None
-    product = record.get("desks_product")
-    if not product and identity.get("name"):
-        product = str(identity["name"]).split(":", 1)[0]
+    product = str(identity["name"]).split(":", 1)[0] if identity.get("name") else None
     if not product:
         return None, None
 
@@ -254,6 +252,9 @@ def build_from_record(
     possible_matches = bound_record.get("runtime_session_possible_matches") or []
     identity, identity_flag = _identity_from_record(record)
     org, org_flag = _org_from_identity(record, identity)
+    if not org and isinstance(record.get("org"), dict):
+        org = dict(record["org"])
+        org_flag = None
     restore = session_ledger.restore_status(
         {**bound_record, "runtime_session_id": runtime_session_id, "session_id": runtime_session_id},
         runtimes.capabilities(record.get("runtime")),
@@ -346,10 +347,6 @@ def build_from_record(
         "identity_id": seat_schema.identity_id_for(record),
         "identity_label": (identity or {}).get("name") or record.get("identity_label") or record.get("desks_current_name"),
         "desks_identity_id": record.get("desks_identity_id"),
-        "desks_product": record.get("desks_product"),
-        "desks_unit": record.get("desks_unit"),
-        "desks_role_id": record.get("desks_role_id"),
-        "desks_role_home": record.get("desks_role_home"),
         "flex_project_manifest": record.get("flex_project_manifest"),
         "flex_project_root": record.get("flex_project_root"),
         "trace_cell": record.get("trace_cell"),

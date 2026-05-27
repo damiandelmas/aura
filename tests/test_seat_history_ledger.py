@@ -36,7 +36,7 @@ def test_append_seat_event_normalizes_before_after(monkeypatch, tmp_path):
         "runtime_session_id": "new-session",
         "identity_id": "r_after",
         "identity_label": "new:name",
-        "desks_role_id": "leader-engineer",
+        "legacy_role_id": "leader-engineer",
     }
 
     event = session_ledger.append_seat_event(
@@ -62,8 +62,8 @@ def test_append_seat_event_normalizes_before_after(monkeypatch, tmp_path):
     assert event["after"]["seat_instance_id"] == "si_after456"
     assert event["after"]["identity_id"] == "r_after"
     assert "ignored_noise" not in event["before"]
-    assert "desks_role_id" not in event
-    assert "desks_role_id" not in event["after"]
+    assert "legacy_role_id" not in event
+    assert "legacy_role_id" not in event["after"]
 
 
 def test_seat_history_for_target_follows_rename_alias(monkeypatch, tmp_path):

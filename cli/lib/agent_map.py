@@ -43,8 +43,8 @@ def _map_entry(row: dict[str, Any], *, include_fleet: bool = False) -> dict[str,
 
 
 def _unit_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    product = next((row.get("desks_product") or (row.get("org") or {}).get("product") for row in rows if row.get("desks_product") or row.get("org")), None)
-    unit = next((row.get("desks_unit") or (row.get("org") or {}).get("unit") for row in rows if row.get("desks_unit") or (row.get("org") or {}).get("unit")), None)
+    product = next(((row.get("org") or {}).get("product") for row in rows if row.get("org")), None)
+    unit = next(((row.get("org") or {}).get("unit") for row in rows if (row.get("org") or {}).get("unit")), None)
     programs = sorted({
         (row.get("org") or {}).get("program")
         for row in rows
