@@ -62,8 +62,8 @@ def inject(workdir: str, emit_lifecycle: bool = True) -> dict:
     Idempotent: preserves any existing hook entries, appends ours if absent.
     Returns a diagnostic dict for the spawn result.
 
-    `emit_lifecycle=False` skips the lifecycle-event hooks — use for silent
-    keepers (e.g. ledger clones) that must not ping their parent PM.
+    `emit_lifecycle=False` skips the lifecycle-event hooks. Use it only for
+    deliberate background launches that must not ping their parent PM.
     """
     if not emit_lifecycle:
         return {"hooks": "skipped", "reason": "emit_lifecycle=False (silent keeper)"}

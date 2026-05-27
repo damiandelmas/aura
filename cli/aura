@@ -90,8 +90,6 @@ def main():
                          help="Human-readable external identity label for this live spawn")
     p_spawn.add_argument("--at", "-a", metavar="REF",
                          help="Slice at: content search, 'L225' (line), '42' (msg#), or UUID")
-    p_spawn.add_argument("--slice", "-s", metavar="N",
-                         help="[DEPRECATED] Use --at instead. Legacy message number.")
     p_spawn.add_argument("--prompt", "-p", metavar="TEXT",
                          help="Initial prompt (implies --wait)")
     p_spawn.add_argument("--work", metavar="PATH",
@@ -109,9 +107,7 @@ def main():
     p_spawn.add_argument("--as-pane", dest="as_pane", action="store_true",
                          help="Spawn without stealing focus (tmux -d). Use when spawning from a session a human is watching.")
     p_spawn.add_argument("--silent", dest="silent", action="store_true",
-                         help="Silent keeper: skip AGENT_STARTED/AGENT_STOPPED lifecycle hooks. For ledger clones and similar background agents.")
-    p_spawn.add_argument("--clone", dest="clone", action="store_true",
-                         help="Force an Aura JSONL --memory clone (new UUID, isolated JSONL). Runtime-native conversation forks use --fork-session.")
+                         help="Silent keeper: skip AGENT_STARTED/AGENT_STOPPED lifecycle hooks for background launches.")
     p_spawn.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "omx", "opencode", "openclaw", "shell", "command"],
                          help="Run a generic terminal-backed runtime instead of the Claude wrapper path")
     p_spawn.add_argument("--profile", metavar="NAME",

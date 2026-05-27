@@ -137,19 +137,8 @@ def run(args):
                 if session_workdir and os.path.isdir(session_workdir):
                     workdir = session_workdir
 
-                # If slicing, do it HERE so we can symlink the result
-                # --at is preferred, --slice is legacy fallback.
-                # --clone (without --at) means "fork at tail": compute line count
-                # and use it as the slice ref, so the clone gets an isolated JSONL.
-                slice_ref = getattr(args, 'at', None) or getattr(args, 'slice', None)
-                if not slice_ref and getattr(args, 'clone', False):
-                    try:
-                        with open(jsonl_path, 'r') as _f:
-                            tail_line = sum(1 for _ in _f)
-                        if tail_line > 0:
-                            slice_ref = f"L{tail_line}"
-                    except Exception:
-                        pass
+                # If slicing, do it HERE so we can symlink the result.
+                slice_ref = getattr(args, 'at', None)
                 if slice_ref:
                     new_session_id = slice_at(jsonl_path, slice_ref)
                     # Update jsonl_path to point to sliced file
@@ -205,7 +194,7 @@ def run(args):
         # Use full session ID if we found it (may be sliced session)
         session_id = full_session_id or args.memory
         cmd_parts.extend(["-r", session_id])
-        # Note: --slice is handled above in spawn.py, not passed to aura.py
+        # Note: --at slicing is handled above in spawn.py, not passed to aura.py
 
     if args.knowledge:
         cmd_parts.extend(["--from", args.knowledge])
