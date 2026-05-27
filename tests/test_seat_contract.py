@@ -2938,7 +2938,7 @@ def test_capture_stop_sense_and_watch_commands_are_public_contract_names():
     assert "--json" not in help_result.stdout
 
 
-def test_suppressed_operator_commands_remain_explicitly_callable():
+def test_archived_diagnostic_commands_are_not_cli_entrypoints():
     for command in ("route", "ether"):
         result = subprocess.run(
             [sys.executable, str(CLI), command, "--help"],
@@ -2947,8 +2947,8 @@ def test_suppressed_operator_commands_remain_explicitly_callable():
             capture_output=True,
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         )
-        assert result.returncode == 0
-        assert "==SUPPRESS==" not in result.stdout
+        assert result.returncode != 0
+        assert "invalid choice" in result.stderr
 
 
 def test_posture_cli_dispatches_to_posture_command(tmp_path):
@@ -4008,32 +4008,6 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         )
         assert "fake1" in windows_after_untile.stdout.splitlines()
         assert "fake2" in windows_after_untile.stdout.splitlines()
-
-        done_result = run_aura("write", "fake1", "DONE ready for review", "--enter", "--as", "tester")
-        assert done_result.returncode == 0, done_result.stderr + done_result.stdout
-        time.sleep(0.8)
-
-        route_dry_result = run_aura("route", "--fleet", fleet, "--dry-run", "--max-actions", "3", "--lines", "60")
-        assert route_dry_result.returncode == 0, route_dry_result.stderr + route_dry_result.stdout
-        assert '"schema": "aura.route.v1"' in route_dry_result.stdout
-        assert '"dry_run": true' in route_dry_result.stdout
-        assert '"source_seat": "fake1"' in route_dry_result.stdout
-        assert '"target_seat": "fake2"' in route_dry_result.stdout
-        assert '"status": "proposed"' in route_dry_result.stdout
-
-        route_send_without_limit = run_aura("route", "--fleet", fleet, "--send", "--lines", "60")
-        assert route_send_without_limit.returncode != 0
-        assert "requires explicit --max-actions" in route_send_without_limit.stdout
-
-        route_live_result = run_aura("route", "--fleet", fleet, "--send", "--max-actions", "1", "--lines", "60")
-        assert route_live_result.returncode == 0, route_live_result.stderr + route_live_result.stdout
-        assert '"dry_run": false' in route_live_result.stdout
-        assert '"status": "sent"' in route_live_result.stdout
-
-        route_duplicate_result = run_aura("route", "--fleet", fleet, "--send", "--max-actions", "1", "--lines", "60")
-        assert route_duplicate_result.returncode == 0, route_duplicate_result.stderr + route_duplicate_result.stdout
-        assert '"status": "skipped_duplicate"' in route_duplicate_result.stdout
-        assert (tmp_path / "fleets" / fleet / "route" / "events.jsonl").exists()
 
         stop_result = run_aura("stop", "fake1", "--force")
         assert stop_result.returncode == 0, stop_result.stderr + stop_result.stdout

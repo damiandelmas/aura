@@ -20,7 +20,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, posture as posture_cmd, write as write_cmd, route, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, ether as ether_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
+from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
 from lib.output import output
 
 
@@ -655,22 +655,6 @@ def main():
     p_posture.add_argument("--lines", type=int, default=80,
                            help="Number of captured output lines to inspect (default: 80)")
 
-    # route
-    p_route = subparsers.add_parser("route", help=argparse.SUPPRESS)
-    p_route.add_argument("--fleet", "-f", metavar="NAME", required=True,
-                         help="Fleet name to observe and route within")
-    mode_group = p_route.add_mutually_exclusive_group()
-    mode_group.add_argument("--dry-run", action="store_true",
-                            help="Evaluate proposed actions without sending (default)")
-    mode_group.add_argument("--send", action="store_true",
-                            help="Execute eligible send actions")
-    p_route.add_argument("--max-actions", type=int,
-                         help="Maximum actions to return or send; required >0 with --send; dry-run defaults to 10")
-    p_route.add_argument("--policy", metavar="PATH",
-                         help="Optional JSON routing policy")
-    p_route.add_argument("--lines", type=int, default=80,
-                         help="Capture line count for route observation (default: 80)")
-
     # dash
     p_dash = subparsers.add_parser("dash", help="Manage tmux dashboard layouts for a fleet")
     dash_sub = p_dash.add_subparsers(dest="dash_action", required=True)
@@ -953,41 +937,6 @@ def main():
     p_discord_listen.add_argument("--dry-run", action="store_true", help="Parse and ack routes without sending to Aura")
     p_discord_listen.add_argument("--ready-once", action="store_true", help="Connect, print ready state, and exit")
 
-    # ether — objective coordination recommendations
-    p_ether = subparsers.add_parser("ether", help=argparse.SUPPRESS)
-    ether_sub = p_ether.add_subparsers(dest="ether_area", required=True)
-
-    p_ether_objective = ether_sub.add_parser("objective", help="Manage Ether objectives")
-    objective_sub = p_ether_objective.add_subparsers(dest="objective_action", required=True)
-    p_objective_create = objective_sub.add_parser("create", help="Create an objective")
-    p_objective_create.add_argument("objective_id")
-    p_objective_create.add_argument("--title")
-    p_objective_create.add_argument("--seat", action="append", help="Attach seat as FLEET:SEAT; can be repeated or comma-separated")
-    p_objective_list = objective_sub.add_parser("list", help="List objectives")
-    p_objective_list.add_argument("--include-archived", action="store_true")
-    p_objective_show = objective_sub.add_parser("show", help="Show an objective")
-    p_objective_show.add_argument("objective_id")
-    p_objective_add_seat = objective_sub.add_parser("add-seat", help="Attach seats to an objective")
-    p_objective_add_seat.add_argument("objective_id")
-    p_objective_add_seat.add_argument("--seat", action="append", required=True)
-    p_objective_archive = objective_sub.add_parser("archive", help="Archive an objective")
-    p_objective_archive.add_argument("objective_id")
-
-    p_ether_evaluate = ether_sub.add_parser("evaluate", help="Evaluate one objective")
-    p_ether_evaluate.add_argument("objective_id")
-    p_ether_evaluate.add_argument("--dry-run", action="store_true")
-
-    p_ether_recs = ether_sub.add_parser("recommendations", help="List Ether recommendations")
-    p_ether_recs.add_argument("--objective")
-    p_ether_recs.add_argument("--status")
-    p_ether_recs.add_argument("--limit", type=int, default=50)
-
-    p_ether_rec = ether_sub.add_parser("recommendation", help="Manage one recommendation")
-    rec_sub = p_ether_rec.add_subparsers(dest="recommendation_action", required=True)
-    p_ether_rec_mark = rec_sub.add_parser("mark", help="Mark recommendation status")
-    p_ether_rec_mark.add_argument("recommendation_id")
-    p_ether_rec_mark.add_argument("--status", required=True, choices=["accepted", "rejected", "superseded", "expired"])
-
     # placement
     p_placement = subparsers.add_parser("placement", help="Manage grouping/link placements without moving tmux panes")
     placement_sub = p_placement.add_subparsers(dest="placement_action", required=True)
@@ -1060,8 +1009,6 @@ def main():
             result = watch.run(args)
         elif args.command == "posture":
             result = posture_cmd.run(args)
-        elif args.command == "route":
-            result = route.run(args)
         elif args.command == "dash":
             result = dash.run(args)
         elif args.command == "set":
@@ -1092,8 +1039,6 @@ def main():
             result = clawhip_cmd.run(args)
         elif args.command == "discord":
             result = discord_bridge.run(args)
-        elif args.command == "ether":
-            result = ether_cmd.run(args)
         elif args.command == "ledger":
             result = ledger.run(args)
         else:
