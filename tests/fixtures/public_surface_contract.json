@@ -1,0 +1,146 @@
+{
+  "schema": "aura.public_surface_contract.v1",
+  "help": {
+    "agent_safe_verbs": [
+      "spawn",
+      "send",
+      "queue",
+      "report",
+      "view",
+      "inspect",
+      "event",
+      "placement"
+    ],
+    "operator_tools": [
+      "seat",
+      "agent",
+      "skills",
+      "keeper",
+      "profile",
+      "capture",
+      "sense",
+      "watch",
+      "posture",
+      "dash",
+      "list",
+      "sessions",
+      "fleets",
+      "deferred",
+      "discord",
+      "clawhip",
+      "write"
+    ]
+  },
+  "cli_categories": {
+    "common": [
+      "spawn",
+      "send",
+      "queue",
+      "report",
+      "view",
+      "inspect"
+    ],
+    "organization": [
+      "placement",
+      "event"
+    ],
+    "operator": [
+      "agent",
+      "agent-map",
+      "broadcast",
+      "capture",
+      "dash",
+      "deferred",
+      "fleets",
+      "holding",
+      "keeper",
+      "list",
+      "posture",
+      "profile",
+      "quick",
+      "resolve",
+      "seat",
+      "sense",
+      "sessions",
+      "skills",
+      "watch",
+      "write"
+    ],
+    "integrations": [
+      "clawhip",
+      "discord"
+    ],
+    "runtime_profile_names": [
+      "hermes"
+    ],
+    "hidden_internal": []
+  },
+  "skills": {
+    "normal": [
+      "aura-view",
+      "aura-status",
+      "aura-send",
+      "aura-queue",
+      "aura-spawn",
+      "aura-report",
+      "aura-placement"
+    ],
+    "operator": [
+      "aura-operator"
+    ],
+    "normal_forbidden_cli_commands": [
+      "agent",
+      "agent-map",
+      "broadcast",
+      "capture",
+      "dash",
+      "deferred",
+      "fleets",
+      "holding",
+      "keeper",
+      "list",
+      "posture",
+      "profile",
+      "resolve",
+      "seat",
+      "sense",
+      "sessions",
+      "skills",
+      "watch",
+      "write"
+    ]
+  },
+  "retired_forbidden_surfaces": {
+    "top-level check": "\\baura\\s+check\\b",
+    "top-level ledger": "\\baura\\s+ledger\\b",
+    "top-level rename": "\\baura\\s+rename\\b",
+    "top-level start": "\\baura\\s+start\\b",
+    "top-level stop": "\\baura\\s+stop\\b",
+    "diagnostic sleep": "\\baura\\s+sleep\\b",
+    "diagnostic set": "\\baura\\s+set\\b",
+    "legacy rehome": "\\baura\\s+(?:seat\\s+)?rehome\\b|\\brehome\\b",
+    "register orphan": "\\bregister-orphan\\b",
+    "spawn clone flag": "\\bspawn\\b[^\\n`]*\\s--clone\\b",
+    "spawn slice flag": "\\bspawn\\b[^\\n`]*\\s--slice\\b",
+    "desks identity alias": "\\bdesks_identity_id\\b",
+    "retired context skill root": "/home/axp/projects/aura/context/current/skills\\b"
+  },
+  "removed_cli_entrypoints": [
+    "check",
+    "ledger",
+    "rename",
+    "start",
+    "stop",
+    "sleep",
+    "set",
+    "rehome",
+    "register-orphan"
+  ],
+  "removed_spawn_flags": [
+    "--clone",
+    "--slice"
+  ],
+  "removed_seat_subcommands": [
+    "rehome"
+  ]
+}
