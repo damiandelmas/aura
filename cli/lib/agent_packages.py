@@ -139,14 +139,8 @@ def manifest_path(root: Path) -> Path:
     return root / "manifest.json"
 
 
-def legacy_agent_path(root: Path) -> Path:
-    return root / "agent.json"
-
-
 def _read_manifest(root: Path) -> dict[str, Any]:
     path = manifest_path(root)
-    if not path.exists():
-        path = legacy_agent_path(root)
     if not path.exists():
         raise FileNotFoundError(f"agent package missing manifest.json: {root}")
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -709,7 +703,6 @@ def inspect(ref: str) -> dict[str, Any]:
     dirs = package_dirs(root, runtime)
     files = {
         "manifest": str(manifest_path(root)),
-        "legacy_agent_json": str(legacy_agent_path(root)),
     }
     sizes = {}
     for label, path in dirs.items():
@@ -765,12 +758,9 @@ def _manifest_status(root: Path) -> tuple[dict[str, Any] | None, list[str], str 
     if not root.exists():
         return None, ["missing-package-root"], None
     path = manifest_path(root)
-    legacy_path = legacy_agent_path(root)
     used_path: Path | None = None
     if path.exists():
         used_path = path
-    elif legacy_path.exists():
-        used_path = legacy_path
     if not used_path:
         return None, ["missing-manifest"], None
     try:

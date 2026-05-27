@@ -220,7 +220,7 @@ def resolve_agent(ref: str) -> dict[str, Any]:
             agent=ref,
         )
     root = Path(str(record.get("root") or "")).expanduser().resolve()
-    if not (root / "manifest.json").is_file() and not (root / "agent.json").is_file():
+    if not (root / "manifest.json").is_file():
         raise SkillLibraryError("package-manifest-missing", f"agent package missing manifest: {root}", agent=ref, agent_root=str(root))
     codex_home = root / ".codex"
     if not codex_home.is_dir():

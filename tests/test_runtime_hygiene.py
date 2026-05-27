@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "cli"))
 
 
-def test_package_runtime_findings_report_residue_env_drift_and_legacy_warning(tmp_path):
+def test_package_runtime_findings_report_residue_and_env_drift(tmp_path):
     from lib import runtime_hygiene
 
     root = tmp_path / "agents" / "i_pkg"
@@ -32,13 +32,16 @@ def test_package_runtime_findings_report_residue_env_drift_and_legacy_warning(tm
         by_code.setdefault(finding["code"], []).append(finding)
 
     assert by_code["package-runtime-residue"][0]["severity"] == "error"
-    assert by_code["package-runtime-residue"][0]["residue"] == "runtime-session.json"
-    assert by_code["legacy-manifest-compat"][0]["severity"] == "warning"
+    assert {finding["residue"] for finding in by_code["package-runtime-residue"]} == {
+        "agent.json",
+        "runtime-session.json",
+    }
     assert {finding["env"] for finding in by_code["package-runtime-env-drift"]} == {
         "CODEX_HOME",
         "OMX_TEAM_STATE_ROOT",
     }
     assert [finding["code"] for finding in runtime_hygiene.severe_findings(findings)] == [
+        "package-runtime-residue",
         "package-runtime-residue",
         "package-runtime-env-drift",
         "package-runtime-env-drift",

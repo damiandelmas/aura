@@ -833,22 +833,22 @@ def test_agent_cli_create_and_inspect_public_argv(tmp_path):
     assert Path(inspected["agent"]["root"], ".codex").is_dir()
 
 
-def test_agent_resolve_reads_legacy_agent_json(monkeypatch, tmp_path):
+def test_agent_resolve_requires_manifest_json(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
     from lib import agent_packages
 
-    root = agent_packages.agents_root() / "i_legacy"
+    root = agent_packages.agents_root() / "i_package"
     root.mkdir(parents=True)
     (root / "agent.json").write_text(
         json.dumps(
             {
                 "schema": "aura.agent_package.v1",
-                "agent_id": "i_legacy",
-                "address": "legacy:agent",
+                "agent_id": "i_package",
+                "address": "unit:agent",
                 "runtime": "omx",
                 "cwd": str(tmp_path),
-                "fleet": "legacy",
+                "fleet": "unit",
                 "seat": "agent",
                 "root": str(root),
             }
@@ -858,17 +858,18 @@ def test_agent_resolve_reads_legacy_agent_json(monkeypatch, tmp_path):
     )
     agent_packages.write_index(
         {
-            "agents": {"i_legacy": str(root)},
-            "addresses": {"legacy:agent": "i_legacy"},
-            "aliases": {"legacy-agent": "i_legacy"},
+            "agents": {"i_package": str(root)},
+            "addresses": {"unit:agent": "i_package"},
+            "aliases": {"unit-agent": "i_package"},
         }
     )
 
-    resolved = agent_packages.resolve("legacy-agent")
-
-    assert resolved["agent_id"] == "i_legacy"
-    assert resolved["runtime"] == "omx"
-    assert resolved["root"] == str(root)
+    try:
+        agent_packages.resolve("unit-agent")
+    except FileNotFoundError as exc:
+        assert "missing manifest.json" in str(exc)
+    else:
+        raise AssertionError("agent.json must not satisfy package manifest resolution")
 
 
 def test_agent_index_corruption_fails_loudly(monkeypatch, tmp_path):

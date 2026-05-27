@@ -1017,13 +1017,6 @@ def _is_package_agent_record(record: dict | None) -> bool:
         root = Path(str(raw)).expanduser()
         if (root / "manifest.json").exists():
             return True
-        if (root / "agent.json").exists():
-            try:
-                body = json.loads((root / "agent.json").read_text(encoding="utf-8"))
-            except Exception:
-                body = {}
-            if str(body.get("schema") or "").startswith("aura.agent_"):
-                return True
     return False
 
 

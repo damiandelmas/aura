@@ -15,6 +15,7 @@ DEFAULT_CODEX_WAL_WARN_BYTES = GIB
 DEFAULT_CODEX_WAL_CRITICAL_BYTES = 10 * GIB
 
 CAPSULE_RESIDUE = (
+    "agent.json",
     "runtime-session.json",
     "receipts",
     "artifacts",
@@ -23,8 +24,6 @@ CAPSULE_RESIDUE = (
     "codex-home",
     "omx-root",
 )
-
-LEGACY_COMPAT_FILES = ("agent.json",)
 
 
 def _finding(
@@ -47,16 +46,14 @@ def _finding(
 
 
 def _read_manifest(root: Path) -> dict[str, Any] | None:
-    for name in ("manifest.json", "agent.json"):
-        path = root / name
-        if not path.exists():
-            continue
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        return payload if isinstance(payload, dict) else None
-    return None
+    path = root / "manifest.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def package_runtime_findings(
@@ -87,19 +84,6 @@ def package_runtime_findings(
                     severity="error",
                     path=path,
                     detail=f"package root contains legacy runtime capsule residue: {name}",
-                    residue=name,
-                )
-            )
-
-    for name in LEGACY_COMPAT_FILES:
-        path = root_path / name
-        if path.exists():
-            findings.append(
-                _finding(
-                    "legacy-manifest-compat",
-                    severity="warning",
-                    path=path,
-                    detail=f"package uses legacy manifest compatibility file: {name}",
                     residue=name,
                 )
             )

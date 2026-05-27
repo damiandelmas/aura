@@ -78,13 +78,6 @@ def _is_package_agent_root(root: Path) -> bool:
         resolved = root.expanduser()
     if (resolved / "manifest.json").exists():
         return True
-    if (resolved / "agent.json").exists():
-        try:
-            body = json.loads((resolved / "agent.json").read_text(encoding="utf-8"))
-        except Exception:
-            body = {}
-        if str(body.get("schema") or "").startswith("aura.agent_"):
-            return True
     return False
 
 
