@@ -33,15 +33,6 @@ def test_runtime_profile_ref_rejects_mismatched_runtime():
         runtime_profiles.normalize_runtime_profile_ref("omx/dev", expected_runtime="codex")
 
 
-def test_runtime_profile_map_accepts_bare_profiles_when_runtime_key_is_known():
-    from lib import runtime_profiles
-
-    assert runtime_profiles.normalize_runtime_profile_map({"codex": "dev", "omx": "omx/dev"}) == {
-        "codex": "codex/dev",
-        "omx": "omx/dev",
-    }
-
-
 def test_runtime_profile_adapter_classification_matches_atlas():
     from lib import runtime_profiles
 

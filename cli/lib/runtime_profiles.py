@@ -194,31 +194,6 @@ def normalize_runtime_profile_ref(
     return RuntimeProfileRef(runtime=runtime, profile=profile)
 
 
-def normalize_runtime_profile_map(value) -> dict[str, str]:
-    """Return canonical refs from a runtime->profile/ref mapping."""
-
-    if not value:
-        return {}
-    if not isinstance(value, dict):
-        raise ValueError("desks runtime_profiles must be an object")
-    normalized: dict[str, str] = {}
-    for runtime, ref in value.items():
-        runtime_key = runtime_boxes.validate_logical_segment(
-            str(runtime or "").strip(),
-            label="desks runtime profile runtime",
-        )
-        raw_ref = str(ref or "").strip()
-        if not raw_ref:
-            raise ValueError(f"desks runtime_profiles.{runtime_key} is empty")
-        if "/" not in raw_ref:
-            raw_ref = f"{runtime_key}/{raw_ref}"
-        normalized[runtime_key] = normalize_runtime_profile_ref(
-            raw_ref,
-            expected_runtime=runtime_key,
-        ).canonical
-    return normalized
-
-
 def classify_runtime_profile_adapter(runtime: str) -> RuntimeAdapterDescriptor:
     """Return the atlas-backed profile adapter classification for a runtime."""
 
