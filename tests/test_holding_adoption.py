@@ -399,7 +399,7 @@ def test_holding_adopt_resolves_holding_record(monkeypatch, aura_state):
     assert record["terminal_ref"] == "tmux:runway-engineering:%191"
 
 
-def test_register_orphan_explicit_pane_uses_shared_adoption_core(monkeypatch, aura_state):
+def test_seat_adopt_explicit_pane_uses_shared_adoption_core(monkeypatch, aura_state):
     from commands import seat as seat_cmd
     from lib import registry
 
@@ -416,15 +416,19 @@ def test_register_orphan_explicit_pane_uses_shared_adoption_core(monkeypatch, au
     monkeypatch.setattr(seat_cmd, "_run_tmux", fake_run_tmux)
 
     args = argparse.Namespace(
-        seat_action="register-orphan",
+        seat_action="adopt",
         target="runway-engineering:engineer",
         pane="tmux:runway-engineering:%191",
         runtime="codex",
-        cwd=None,
+        cwd="auto",
+        rename_window=False,
+        identity_provider=None,
+        identity_id=None,
+        identity_label=None,
     )
-    result = seat_cmd._register_orphan(args, registry)
+    result = seat_cmd.run(args)
 
     assert result["ok"] is True
-    assert result["action"] == "register-orphan"
-    assert result["record"]["registered_via"] == "register-orphan"
+    assert result["action"] == "adopt"
+    assert result["record"]["registered_via"] == "adopt"
     assert result["record"]["pane_ref"] == "tmux:runway-engineering:%191"

@@ -59,7 +59,7 @@ def _candidate_from_pane(pane: dict, *, registry, managed_refs: set[str]) -> dic
         "pane_pid": pane.get("pane_pid"),
         "active_command": command,
         "cwd": pane.get("pane_current_path"),
-        "runtime_hint": seat_cmd._infer_orphan_runtime(command),
+        "runtime_hint": seat_cmd._infer_adoption_runtime(command),
         "already_registered": already_registered,
     }
 
@@ -141,7 +141,7 @@ def _adopt(args) -> dict:
     pane_ref = record.get("pane_ref")
     if not pane_ref:
         return {"ok": False, "error": "holding-missing-pane-ref", "holding_id": args.holding_id}
-    discovery = seat_cmd._validate_explicit_orphan_pane(pane_ref, fleet)
+    discovery = seat_cmd._validate_explicit_adoption_pane(pane_ref, fleet)
     if not discovery.get("ok"):
         return {"ok": False, **discovery, "holding_id": args.holding_id, "target": target}
 
@@ -154,7 +154,6 @@ def _adopt(args) -> dict:
         discovered_by=f"holding:{args.holding_id}",
         source_command="aura holding adopt",
         registered_via="holding-adopt",
-        action="adopt",
         rename_window=bool(getattr(args, "rename_window", False)),
         adoption_source=args.holding_id,
     )
