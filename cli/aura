@@ -66,10 +66,6 @@ def main():
     # spawn
     p_spawn = subparsers.add_parser("spawn", help="Create a new agent")
     p_spawn.add_argument("name", nargs="?", help="Agent name")
-    p_spawn.add_argument("--manifest", metavar="PATH",
-                         help="Spawn from a tool-readable role manifest such as Desks role.json")
-    p_spawn.add_argument("--role-home", metavar="PATH",
-                         help="Spawn from a Desks role home directory containing role.json")
     p_spawn.add_argument("--fleet", "-f", metavar="NAME",
                          help="Fleet name (groups agents in one tmux session)")
     p_spawn.add_argument("--fleet-id", metavar="FLEET_ID",
@@ -350,8 +346,6 @@ def main():
     p_seat_resolve.add_argument("target")
     p_seat_restart = seat_sub.add_parser("restart", help="Replace a seat runtime while preserving logical identity")
     p_seat_restart.add_argument("target", help="Seat ref, usually fleet:seat")
-    p_seat_restart.add_argument("--role-home", help="Desks role home containing role.json")
-    p_seat_restart.add_argument("--manifest", help="Desks role manifest path")
     p_seat_restart.add_argument("--cwd", help="Override relaunch working directory")
     p_seat_restart.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "omx", "opencode", "openclaw", "shell", "command"],
                                 help="Override runtime for relaunch")

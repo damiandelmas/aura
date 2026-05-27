@@ -71,8 +71,6 @@ def _spawn_args(record: dict, args) -> argparse.Namespace:
     seat = getattr(args, "seat", None) or record["seat"]
     return argparse.Namespace(
         name=seat,
-        manifest=None,
-        role_home=None,
         fleet=fleet,
         fleet_id=None,
         knowledge=None,
@@ -83,7 +81,6 @@ def _spawn_args(record: dict, args) -> argparse.Namespace:
         identity_id=record["agent_id"],
         identity_label=record.get("address") or record.get("alias") or record["agent_id"],
         at=None,
-        slice=None,
         prompt=getattr(args, "prompt", None),
         work=None,
         cwd=cwd,
@@ -93,7 +90,6 @@ def _spawn_args(record: dict, args) -> argparse.Namespace:
         model=getattr(args, "model", None),
         as_pane=getattr(args, "as_pane", False),
         silent=False,
-        clone=False,
         runtime=runtime,
         profile=None,
         runtime_profile=record.get("profile"),

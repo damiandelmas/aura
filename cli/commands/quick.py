@@ -247,8 +247,6 @@ def _spawn_args(args, *, profile: str | None, quick_agent: dict[str, object] | N
     boxed = runtime == "codex"
     return argparse.Namespace(
         name=args.seat or generated_seat(runtime),
-        manifest=None,
-        role_home=None,
         fleet=args.fleet or default_fleet(),
         fleet_id=None,
         knowledge=None,
@@ -256,7 +254,6 @@ def _spawn_args(args, *, profile: str | None, quick_agent: dict[str, object] | N
         resume_session=None,
         fresh=True,
         at=None,
-        slice=None,
         prompt=args.prompt,
         work=args.work,
         cwd=args.cwd or os.getcwd(),
@@ -266,7 +263,6 @@ def _spawn_args(args, *, profile: str | None, quick_agent: dict[str, object] | N
         model=args.model,
         as_pane=args.as_pane,
         silent=False,
-        clone=False,
         runtime=runtime,
         profile=None,
         runtime_profile=runtime_profile,

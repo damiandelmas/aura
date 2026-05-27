@@ -90,8 +90,6 @@ class RestartTerminal:
 def _args(**overrides):
     base = {
         "target": "unitfleet:engineer",
-        "role_home": None,
-        "manifest": None,
         "cwd": None,
         "runtime": None,
         "prompt": None,

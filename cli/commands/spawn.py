@@ -1,6 +1,5 @@
 """Spawn new agent."""
 
-import json
 import os
 import shlex
 import subprocess
@@ -70,12 +69,8 @@ def _infer_fleet_from_caller():
 
 def run(args):
     """Spawn a new agent."""
-    manifest_result = _apply_spawn_manifest(args)
-    if manifest_result and not manifest_result.get("ok"):
-        return manifest_result
-
     if not getattr(args, 'name', None):
-        return {"ok": False, "error": "agent name is required unless --manifest or --role-home supplies a seat"}
+        return {"ok": False, "error": "agent name is required"}
 
     if getattr(args, 'prompt', None) and getattr(args, 'work', None):
         return {"ok": False, "error": "use either --prompt or --work, not both"}
@@ -351,7 +346,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             return result_fn({"ok": False, "error": str(exc), "name": args.name})
     if fork_session and launch_command:
         return result_fn({"ok": False, "error": "use either --fork-session or --command, not both", "name": args.name})
-    role_meta = dict(getattr(args, "_role_manifest_meta", None) or {})
+    role_meta = {}
     agent_package = dict(getattr(args, "_agent_package", None) or {})
     agent_package_meta = {
         "agent_package_id": agent_package.get("agent_id"),
@@ -380,18 +375,6 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             role_meta["identity_label"] = identity_label_arg
         if identity_provider_arg == "desks":
             role_meta["desks_identity_id"] = identity_id_arg
-    try:
-        desks_runtime_profiles = _validated_desks_runtime_profiles(role_meta.get("desks_runtime_profiles"))
-    except ValueError as exc:
-        return result_fn({
-            "ok": False,
-            "error": "invalid-desks-runtime-profile",
-            "detail": str(exc),
-            "name": args.name,
-            "runtime": runtime,
-        })
-    if desks_runtime_profiles:
-        role_meta["desks_runtime_profiles"] = desks_runtime_profiles
     raw_profile = getattr(args, 'profile', None)
     explicit_omx_profile = getattr(args, 'omx_profile', None)
     runtime_profile_ref_arg = getattr(args, 'runtime_profile', None)
@@ -416,21 +399,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         runtime_profile = ref_profile
         runtime_profile_ref = canonical_ref
         runtime_profile_source = "cli-runtime-profile"
-    profile_source = getattr(args, "_profile_source", None) or ("cli" if raw_profile else None)
-    explicit_cli_profile = bool(raw_profile and profile_source == "cli")
-    desks_runtime_profile_ref = None
-    if (
-        not runtime_profile
-        and not explicit_cli_profile
-        and not explicit_omx_profile
-        and runtime in desks_runtime_profiles
-    ):
-        desks_runtime_profile_ref = desks_runtime_profiles[runtime]
-        _, runtime_profile, runtime_profile_ref = _normalize_runtime_profile_ref(
-            desks_runtime_profile_ref,
-            expected_runtime=runtime,
-        )
-        runtime_profile_source = "desks"
+    profile_source = "cli" if raw_profile else None
     if runtime == "omx" and raw_profile and explicit_omx_profile and raw_profile != explicit_omx_profile:
         return result_fn({
             "ok": False,
@@ -447,7 +416,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "name": args.name,
             "runtime": runtime,
         })
-    if runtime == "omx" and runtime_profile and raw_profile and profile_source != "manifest-default" and raw_profile != runtime_profile:
+    if runtime == "omx" and runtime_profile and raw_profile and raw_profile != runtime_profile:
         return result_fn({
             "ok": False,
             "error": "conflicting-omx-profile",
@@ -472,7 +441,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             runtime_profile_source = "cli-omx-profile"
         elif runtime_profile:
             omx_profile = runtime_profile
-        elif raw_profile and profile_source != "manifest-default":
+        elif raw_profile:
             omx_profile = raw_profile
             runtime_profile_source = "cli-profile"
         if omx_profile:
@@ -526,7 +495,6 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "runtime_profile_ref": runtime_profile_ref,
             "runtime_profile_runtime": runtime,
             "runtime_profile_source": runtime_profile_source or "cli-runtime-profile",
-            **({"desks_runtime_profile_ref": desks_runtime_profile_ref} if desks_runtime_profile_ref else {}),
         }
     recorded_profile = profile if runtime == "hermes" else omx_profile if runtime == "omx" else codex_profile if runtime == "codex" else None
     try:
@@ -557,7 +525,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     fleet = getattr(terminal, "SESSION_NAME", None) or registry.current_fleet(default="aura")
     launch_id = f"aura-launch-{uuid.uuid4().hex[:16]}"
     seat_instance_id = registry.new_seat_instance_id()
-    flex_manifest, flex_root = _resolve_launch_flex_project(workdir_path, role_meta)
+    flex_manifest, flex_root = _resolve_launch_flex_project(workdir_path)
     flex_packet = _render_flex_project_launch_packet(flex_manifest, flex_root)
     augmented_prompt = _augment_runtime_prompt(
         runtime,
@@ -623,7 +591,6 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         if agent_package_meta.get("agent_package_alias"):
             launch_env["AURA_AGENT_PACKAGE_ALIAS"] = str(agent_package_meta["agent_package_alias"])
     if role_meta:
-        launch_env.update(_desks_launch_env(role_meta))
         if role_meta.get("identity_provider"):
             launch_env["AURA_IDENTITY_PROVIDER"] = str(role_meta["identity_provider"])
         if role_meta.get("identity_id"):
@@ -1413,346 +1380,7 @@ def _normalize_runtime_profile_ref(ref: str, *, expected_runtime: str | None = N
     return normalized.runtime, normalized.profile, normalized.canonical
 
 
-def _validated_desks_runtime_profiles(value) -> dict[str, str]:
-    """Return canonical runtime profile refs from Desks metadata."""
-
-    from lib import runtime_profiles
-
-    return runtime_profiles.normalize_runtime_profile_map(value)
-
-
-def _desks_profile_metadata(manifest: dict) -> dict:
-    role_home = manifest["role_home"]
-    identity_path = role_home / "identity.json"
-    if identity_path.is_file() and role_home.parent.name == "identities":
-        try:
-            identity = json.loads(identity_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            identity = {}
-        if isinstance(identity, dict):
-            identity_id = identity.get("identity_id") or role_home.name
-            meta = {
-                "identity_provider": "desks",
-                "identity_id": identity_id,
-                "identity_label": identity.get("current_name"),
-                "identity_bind_source": "desks-launch",
-                "identity_bind_confidence": "explicit",
-                "desks_identity_id": identity_id,
-                "desks_identity_home": str(role_home),
-                "desks_memory_home": str(role_home / "memory"),
-                "desks_current_name": identity.get("current_name"),
-            }
-            if isinstance(identity.get("runtime_profiles"), dict):
-                meta["desks_runtime_profiles"] = dict(identity["runtime_profiles"])
-            return meta
-        return {}
-
-    profile_dir = role_home
-    profile_path = profile_dir / "profile.json"
-    if not profile_path.is_file():
-        return {}
-    try:
-        profile = json.loads(profile_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(profile, dict):
-        return {}
-
-    profile_id = profile.get("profile_id")
-    identity_id = profile.get("identity_id")
-    meta = {
-        "identity_provider": "desks" if identity_id else None,
-        "identity_id": identity_id,
-        "identity_bind_source": "desks-launch" if identity_id else None,
-        "identity_bind_confidence": "explicit" if identity_id else None,
-        "desks_profile_id": profile_id,
-        "desks_profile_home": str(profile_dir),
-        "desks_identity_id": identity_id,
-    }
-    if isinstance(profile.get("runtime_profiles"), dict):
-        meta["desks_runtime_profiles"] = dict(profile["runtime_profiles"])
-    if identity_id and profile_dir.parent.name == "profiles":
-        desks_root = profile_dir.parent.parent
-        identity_home = desks_root / "identities" / str(identity_id)
-        meta.update({
-            "desks_identity_home": str(identity_home),
-            "desks_memory_home": str(identity_home / "memory"),
-        })
-        identity_path = identity_home / "identity.json"
-        if identity_path.is_file():
-            try:
-                identity = json.loads(identity_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                identity = {}
-            if isinstance(identity, dict):
-                meta["desks_current_name"] = identity.get("current_name")
-                meta["identity_label"] = identity.get("current_name")
-                if isinstance(identity.get("runtime_profiles"), dict) and "desks_runtime_profiles" not in meta:
-                    meta["desks_runtime_profiles"] = dict(identity["runtime_profiles"])
-    return {key: value for key, value in meta.items() if value}
-
-
-def _role_metadata_from_manifest(manifest: dict) -> dict:
-    files = manifest.get("files") or {}
-    bootstrap = files.get("bootstrap")
-    meta = {
-        "desks_role_home": str(manifest["role_home"]),
-        "desks_role_id": manifest["role_id"],
-        "desks_product": manifest["product"],
-        "desks_unit": manifest["unit"],
-        "desks_manifest": str(manifest["manifest_path"]),
-        "desks_bootstrap": str(bootstrap) if bootstrap else None,
-        "desks_compression": str(files.get("compression")) if files.get("compression") else None,
-        "desks_memory": str(files.get("memory")) if files.get("memory") else None,
-        "desks_default_seat": manifest.get("seat"),
-        "desks_default_fleet": manifest.get("fleet"),
-        "flex_project_manifest": str(manifest["flex_project_manifest"]) if manifest.get("flex_project_manifest") else None,
-        "flex_project_root": str(manifest["flex_project_root"]) if manifest.get("flex_project_root") else None,
-    }
-    profile_meta = _desks_profile_metadata(manifest)
-    runtime_profiles = {}
-    if isinstance(profile_meta.get("desks_runtime_profiles"), dict):
-        runtime_profiles.update(profile_meta["desks_runtime_profiles"])
-    if isinstance(manifest.get("runtime_profiles"), dict):
-        runtime_profiles.update(manifest["runtime_profiles"])
-    meta.update(profile_meta)
-    if runtime_profiles:
-        meta["desks_runtime_profiles"] = runtime_profiles
-    return {key: value for key, value in meta.items() if value}
-
-
-def _desks_launch_env(role_meta: dict) -> dict:
-    if not role_meta:
-        return {}
-    mappings = {
-        "ROLE_HOME": "desks_role_home",
-        "ROLE_ID": "desks_role_id",
-        "PRODUCT": "desks_product",
-        "UNIT": "desks_unit",
-        "MANIFEST": "desks_manifest",
-        "IDENTITY_ID": "desks_identity_id",
-        "GENERIC_IDENTITY_PROVIDER": "identity_provider",
-        "GENERIC_IDENTITY_ID": "identity_id",
-        "PROFILE_ID": "desks_profile_id",
-        "CURRENT_NAME": "desks_current_name",
-        "IDENTITY_HOME": "desks_identity_home",
-        "PROFILE_HOME": "desks_profile_home",
-        "MEMORY_HOME": "desks_memory_home",
-        "DEFAULT_SEAT": "desks_default_seat",
-        "DEFAULT_FLEET": "desks_default_fleet",
-    }
-    env = {}
-    for env_suffix, meta_key in mappings.items():
-        value = role_meta.get(meta_key, "")
-        env[f"DESKS_{env_suffix}"] = value
-        env[f"AURA_DESKS_{env_suffix}"] = value
-    if role_meta.get("desks_runtime_profiles"):
-        value = json.dumps(role_meta["desks_runtime_profiles"], sort_keys=True)
-        env["DESKS_RUNTIME_PROFILES"] = value
-        env["AURA_DESKS_RUNTIME_PROFILES"] = value
-    return env
-
-
-def _apply_spawn_manifest(args) -> dict | None:
-    """Apply role manifest defaults to spawn args.
-
-    Aura stays role-naive at runtime. This adapter only consumes a strict launch
-    contract and records the role metadata with the spawned seat.
-    """
-    manifest_arg = getattr(args, "manifest", None)
-    role_home_arg = getattr(args, "role_home", None)
-    if not manifest_arg and not role_home_arg:
-        return None
-    if manifest_arg and role_home_arg:
-        return {"ok": False, "error": "use either --manifest or --role-home, not both"}
-
-    try:
-        manifest = _load_role_manifest(manifest_arg, role_home_arg)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
-
-    seat = manifest["seat"]
-    fleet = manifest["fleet"]
-    workspace_root = manifest["workspace_root"]
-    bootstrap = manifest["files"]["bootstrap"]
-
-    if getattr(args, "cwd", None):
-        try:
-            requested_cwd = Path(args.cwd).expanduser()
-            if not requested_cwd.is_absolute():
-                requested_cwd = Path.cwd() / requested_cwd
-            requested_cwd = requested_cwd.resolve()
-        except OSError:
-            requested_cwd = Path(args.cwd)
-        if requested_cwd != Path(workspace_root):
-            return {"ok": False, "error": f"manifest cwd mismatch: --cwd={requested_cwd} manifest={workspace_root}"}
-    if getattr(args, "prompt", None) or getattr(args, "work", None):
-        return {"ok": False, "error": "manifest supplies the bootstrap prompt; do not combine with --prompt or --work"}
-
-    args.name = getattr(args, "name", None) or seat
-    args.fleet = getattr(args, "fleet", None) or fleet
-    args.cwd = str(workspace_root)
-    args.runtime = getattr(args, "runtime", None) or manifest.get("runtime") or "codex"
-    if not getattr(args, "resume_session", None):
-        args.prompt = "\n".join([
-            f"Read {bootstrap} and follow it.",
-            f"Use {manifest['role_home']} as your Desks role home.",
-        ])
-    if not getattr(args, "context", None) and manifest["files"].get("agents"):
-        args.context = str(manifest["files"]["agents"])
-    if not getattr(args, "profile", None):
-        manifest_profile = manifest.get("profile")
-        args.profile = manifest_profile or seat
-        args._profile_source = "manifest" if manifest_profile else "manifest-default"
-    else:
-        args._profile_source = getattr(args, "_profile_source", None) or "cli"
-    args._role_manifest_meta = _role_metadata_from_manifest(manifest)
-    args._role_manifest = manifest
-    return {"ok": True, "manifest": str(manifest["manifest_path"])}
-
-
-def _load_role_manifest(manifest_arg: str | None, role_home_arg: str | None) -> dict:
-    manifest_path = Path(manifest_arg or Path(role_home_arg) / "role.json").expanduser()
-    if not manifest_path.is_absolute():
-        manifest_path = Path.cwd() / manifest_path
-    manifest_path = manifest_path.resolve()
-    if not manifest_path.is_file():
-        raise ValueError(f"manifest not found: {manifest_path}")
-    try:
-        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"manifest is not valid JSON: {manifest_path}: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise ValueError("manifest must be a JSON object")
-    schema = raw.get("schema")
-    if schema != "desks.role.v1":
-        raise ValueError(f"unsupported manifest schema: {schema!r}")
-
-    role_home = manifest_path.parent
-    identity_role = role_home.parent.name == "identities" and (role_home / "identity.json").is_file()
-    if identity_role:
-        raw.setdefault("product", "desks")
-        raw.setdefault("unit", "identity")
-        files = dict(raw.get("files") or {})
-        files.setdefault("bootstrap", "BOOTSTRAP.md")
-        files.setdefault("compression", "COMPACTION.md")
-        if files.get("compaction") and not files.get("compression"):
-            files["compression"] = files["compaction"]
-        raw["files"] = files
-
-    required = ("product", "unit", "role_id", "seat", "fleet", "workspace_root", "files")
-    missing = [field for field in required if not raw.get(field)]
-    if missing:
-        raise ValueError(f"manifest missing required field(s): {', '.join(missing)}")
-    files = raw.get("files")
-    if not isinstance(files, dict):
-        raise ValueError("manifest files must be an object")
-    files = dict(files)
-    if files.get("compaction") and not files.get("compression"):
-        files["compression"] = files["compaction"]
-    raw["files"] = files
-
-    manifest_role_home = raw.get("role_home")
-    if manifest_role_home:
-        declared = Path(str(manifest_role_home)).expanduser()
-        if not declared.is_absolute():
-            declared = (role_home / declared).resolve()
-        else:
-            declared = declared.resolve()
-        if declared != role_home:
-            raise ValueError(f"manifest role_home mismatch: {declared} != {role_home}")
-
-    workspace_root = Path(str(raw["workspace_root"])).expanduser()
-    if not workspace_root.is_absolute():
-        workspace_root = (manifest_path.parent / workspace_root).resolve()
-    else:
-        workspace_root = workspace_root.resolve()
-    if not workspace_root.is_dir():
-        raise ValueError(f"manifest workspace_root is not a directory: {workspace_root}")
-
-    required_files = ("bootstrap", "compression") if identity_role else ("soul", "agents", "memory", "bootstrap", "compression")
-    missing_files = [field for field in required_files if not files.get(field)]
-    if missing_files:
-        raise ValueError(f"manifest files missing required key(s): {', '.join(missing_files)}")
-
-    resolved_files = {}
-    for key, value in files.items():
-        if value in (None, ""):
-            continue
-        path = Path(str(value)).expanduser()
-        if path.is_absolute():
-            raise ValueError(f"manifest files.{key} must be relative to role_home: {value}")
-        resolved = (role_home / path).resolve()
-        try:
-            resolved.relative_to(role_home)
-        except ValueError as exc:
-            raise ValueError(f"manifest files.{key} escapes role_home: {value}") from exc
-        if key in required_files or key == "sessions":
-            if not resolved.is_file():
-                raise ValueError(f"manifest files.{key} not found: {resolved}")
-        resolved_files[key] = resolved
-
-    flex_project_manifest, flex_project_root = _resolve_flex_project(raw, workspace_root)
-
-    return {
-        **raw,
-        "manifest_path": manifest_path,
-        "role_home": role_home,
-        "workspace_root": workspace_root,
-        "files": resolved_files,
-        "flex_project_manifest": flex_project_manifest,
-        "flex_project_root": flex_project_root,
-    }
-
-
-def _resolve_flex_project(raw: dict, workspace_root: Path) -> tuple[Path | None, Path | None]:
-    manifest_value = raw.get("flex_project_manifest")
-    root_value = raw.get("flex_project_root")
-
-    def resolve_under_workspace(value: str) -> Path:
-        path = Path(str(value)).expanduser()
-        if path.is_absolute():
-            return path.resolve()
-        return (workspace_root / path).resolve()
-
-    if manifest_value:
-        manifest = resolve_under_workspace(str(manifest_value))
-        if not manifest.is_file():
-            raise ValueError(f"manifest flex_project_manifest not found: {manifest}")
-        return manifest, manifest.parent.parent
-
-    if root_value:
-        root = resolve_under_workspace(str(root_value))
-        manifest = root / ".flex" / "project.yaml"
-        if not manifest.is_file():
-            raise ValueError(f"manifest flex_project_root missing .flex/project.yaml: {root}")
-        return manifest, root
-
-    candidates = [
-        workspace_root / ".flex" / "project.yaml",
-        workspace_root / "context" / ".flex" / "project.yaml",
-    ]
-    for manifest in candidates:
-        if manifest.is_file():
-            return manifest.resolve(), manifest.parent.parent.resolve()
-    return None, None
-
-
-def _resolve_launch_flex_project(workdir_path: Path, role_meta: dict | None = None) -> tuple[Path | None, Path | None]:
-    role_meta = role_meta or {}
-    manifest_value = role_meta.get("flex_project_manifest")
-    root_value = role_meta.get("flex_project_root")
-    if manifest_value:
-        manifest = Path(str(manifest_value)).expanduser().resolve()
-        root = Path(str(root_value)).expanduser().resolve() if root_value else manifest.parent.parent.resolve()
-        if manifest.is_file():
-            return manifest, root
-    if root_value:
-        root = Path(str(root_value)).expanduser().resolve()
-        manifest = root / ".flex" / "project.yaml"
-        if manifest.is_file():
-            return manifest.resolve(), root
-
+def _resolve_launch_flex_project(workdir_path: Path) -> tuple[Path | None, Path | None]:
     try:
         start = workdir_path.expanduser().resolve()
     except OSError:
@@ -2241,16 +1869,6 @@ def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> Non
             "codex_profile_root": result.get("codex_profile_root"),
             "codex_profile_applied": result.get("codex_profile_applied"),
             "codex_profile_templates_applied": result.get("codex_profile_templates_applied"),
-            "desks_role_home": result.get("desks_role_home"),
-            "desks_role_id": result.get("desks_role_id"),
-            "desks_product": result.get("desks_product"),
-            "desks_unit": result.get("desks_unit"),
-            "desks_manifest": result.get("desks_manifest"),
-            "desks_bootstrap": result.get("desks_bootstrap"),
-            "desks_compression": result.get("desks_compression"),
-            "desks_memory": result.get("desks_memory"),
-            "desks_runtime_profiles": result.get("desks_runtime_profiles"),
-            "desks_runtime_profile_ref": result.get("desks_runtime_profile_ref"),
         })
         workspace_state.write_latest_session(workdir, record)
         try:

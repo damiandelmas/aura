@@ -49,7 +49,6 @@ def _args(tmp_path, **overrides):
         "work": None,
         "prompt": None,
         "as_pane": True,
-        "_role_manifest_meta": {},
         "identity_provider": None,
         "identity_id": None,
         "identity_label": None,
@@ -91,34 +90,6 @@ def test_fresh_spawn_does_not_inherit_stale_identity_binding(aura_state, tmp_pat
     assert "identity_label" not in record
     assert "runtime_session_id" not in record
     assert record["runtime_session_binding"] == "unbound"
-
-
-def test_spawn_from_desks_metadata_sets_generic_identity_binding(aura_state, tmp_path):
-    from commands import spawn
-    from lib import registry
-
-    args = _args(
-        tmp_path,
-        _role_manifest_meta={
-            "identity_provider": "desks",
-            "identity_id": "r_new",
-            "identity_label": "flex:engine:lead",
-            "desks_identity_id": "r_new",
-        },
-    )
-
-    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda base: base)
-
-    assert result["ok"] is True
-    record = registry.get_agent("unitfleet:worker")
-    assert record["identity_provider"] == "desks"
-    assert record["identity_id"] == "r_new"
-    assert record["identity_label"] == "flex:engine:lead"
-    assert record["identity_bound_at"]
-    assert record["desks_identity_id"] == "r_new"
-    assert FakeTerminal.last_env["AURA_IDENTITY_PROVIDER"] == "desks"
-    assert FakeTerminal.last_env["AURA_IDENTITY_ID"] == "r_new"
-    assert FakeTerminal.last_env["AURA_IDENTITY_LABEL"] == "flex:engine:lead"
 
 
 def test_spawn_identity_args_set_generic_identity_in_one_operation(aura_state, tmp_path):

@@ -13,15 +13,6 @@ from pathlib import Path
 FLEX_PACKET_MARKER = "[FLEX PROJECT RETRIEVAL]"
 
 
-def _load_role_metadata(role_home: str | None, manifest_path: str | None) -> dict:
-    if not role_home and not manifest_path:
-        return {}
-    from commands import spawn
-
-    manifest = spawn._load_role_manifest(manifest_path, role_home)
-    return spawn._role_metadata_from_manifest(manifest)
-
-
 def _tmux_target(ref: str) -> str:
     value = str(ref or "")
     if value.startswith("tmux:"):
@@ -426,23 +417,8 @@ def _flex_project_for_record(record: dict) -> tuple[Path | None, Path | None]:
     from commands import spawn
 
     workdir = record.get("cwd") or record.get("workdir") or record.get("runtime_session_cwd")
-    role_meta = {
-        key: record.get(key)
-        for key in (
-            "desks_role_home",
-            "desks_role_id",
-            "desks_product",
-            "desks_unit",
-            "desks_manifest",
-            "flex_project_manifest",
-            "flex_project_root",
-        )
-        if record.get(key)
-    }
     if workdir:
-        return spawn._resolve_launch_flex_project(Path(str(workdir)), role_meta)
-    if role_meta:
-        return spawn._resolve_launch_flex_project(Path.cwd(), role_meta)
+        return spawn._resolve_launch_flex_project(Path(str(workdir)))
     return None, None
 
 
@@ -726,35 +702,9 @@ def _restart_handoff_gate(record: dict, *, force: bool) -> dict:
 
 
 def _restart_role_metadata(args, record: dict) -> tuple[dict, str | None, str | None]:
-    manifest_arg = getattr(args, "manifest", None)
-    role_home_arg = getattr(args, "role_home", None)
-    if manifest_arg and role_home_arg:
-        raise ValueError("use either --manifest or --role-home, not both")
-    if manifest_arg or role_home_arg:
-        from commands import spawn
-
-        manifest = spawn._load_role_manifest(manifest_arg, role_home_arg)
-        files = manifest.get("files") or {}
-        meta = spawn._role_metadata_from_manifest(manifest)
-        prompt = "\n".join([
-            f"Read {files.get('bootstrap')} and follow it.",
-            f"Use {manifest['role_home']} as your Desks role home.",
-        ])
-        return meta, str(manifest["workspace_root"]), prompt
-
     meta = {
         key: record.get(key)
         for key in (
-            "desks_role_home",
-            "desks_role_id",
-            "desks_product",
-            "desks_unit",
-            "desks_manifest",
-            "desks_bootstrap",
-            "desks_compression",
-            "desks_memory",
-            "desks_default_seat",
-            "desks_default_fleet",
             "identity_provider",
             "identity_id",
             "identity_label",
@@ -999,14 +949,10 @@ def _restart(args, registry, terminal) -> dict:
         )
         if record.get(key) is not None
     }
-    explicit_role_package = bool(getattr(args, "manifest", None) or getattr(args, "role_home", None))
-    identity_carried_forward = bool(carried_identity) and not explicit_role_package
+    identity_carried_forward = bool(carried_identity)
     if identity_carried_forward:
         role_meta.update(carried_identity)
     if role_meta:
-        from commands import spawn
-
-        launch_env.update(spawn._desks_launch_env(role_meta))
         if role_meta.get("identity_provider"):
             launch_env["AURA_IDENTITY_PROVIDER"] = str(role_meta["identity_provider"])
         if role_meta.get("identity_id"):

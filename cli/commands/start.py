@@ -16,8 +16,6 @@ from commands import spawn
 def _spawn_args(args) -> argparse.Namespace:
     return argparse.Namespace(
         name=args.seat,
-        manifest=None,
-        role_home=None,
         fleet=args.fleet,
         fleet_id=None,
         knowledge=None,
@@ -27,7 +25,6 @@ def _spawn_args(args) -> argparse.Namespace:
         identity_id=None,
         identity_label=None,
         at=None,
-        slice=None,
         prompt=None,
         work=None,
         cwd=args.cwd or os.getcwd(),
@@ -37,7 +34,6 @@ def _spawn_args(args) -> argparse.Namespace:
         model=args.model,
         as_pane=True,
         silent=False,
-        clone=False,
         runtime="codex",
         profile=None,
         launch_command=None,
