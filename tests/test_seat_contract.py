@@ -2934,12 +2934,13 @@ def test_capture_stop_sense_and_watch_commands_are_public_contract_names():
     assert "event" in help_result.stdout
     assert "route" not in help_result.stdout
     assert "ether" not in help_result.stdout
+    assert "sleep" not in help_result.stdout
     assert "==SUPPRESS==" not in help_result.stdout
     assert "--json" not in help_result.stdout
 
 
 def test_archived_diagnostic_commands_are_not_cli_entrypoints():
-    for command in ("route", "ether"):
+    for command in ("route", "ether", "sleep"):
         result = subprocess.run(
             [sys.executable, str(CLI), command, "--help"],
             cwd=ROOT,

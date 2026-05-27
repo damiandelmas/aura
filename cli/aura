@@ -20,7 +20,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, sleep as sleep_cmd, broadcast, capture, stop, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
+from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, broadcast, capture, stop, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
 from lib.output import output
 
 
@@ -753,15 +753,6 @@ def main():
     p_resolve = subparsers.add_parser("resolve", help="Resolve agent name or tmux group → session_id + window + status")
     p_resolve.add_argument("target", help="Agent name, comma-separated names, or tmux session name")
 
-    # sleep — self-schedule a deferred aura-send
-    p_sleep = subparsers.add_parser("sleep", help="Schedule deferred wake-up message")
-    p_sleep.add_argument("seconds", help="Delay in seconds before firing")
-    p_sleep.add_argument("message", help="Message to deliver")
-    p_sleep.add_argument("--target", metavar="NAME",
-                         help="Recipient agent (default: self via $AURA_AGENT_NAME)")
-    p_sleep.add_argument("--as", dest="sender", metavar="NAME",
-                         help="Sender label (default: $AURA_AGENT_NAME or 'cli')")
-
     # event — durable scheduler
     p_event = subparsers.add_parser("event", help="Manage durable event scheduler jobs")
     event_sub = p_event.add_subparsers(dest="event_action", required=True)
@@ -1023,8 +1014,6 @@ def main():
             result = fleets_cmd.run(args)
         elif args.command == "resolve":
             result = resolve.run(args)
-        elif args.command == "sleep":
-            result = sleep_cmd.run(args)
         elif args.command == "event":
             result = event.run(args)
         elif args.command == "deferred":
