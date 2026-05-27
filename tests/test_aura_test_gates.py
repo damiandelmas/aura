@@ -46,12 +46,13 @@ def test_include_live_appends_codex_live_smoke():
     assert steps[-1].timeout == 240
 
 
-def test_hygiene_gate_runs_compile_and_diff_check():
+def test_hygiene_gate_runs_public_surface_compile_and_diff_check():
     gates = load_gates_module()
 
     steps = gates.select_steps(["hygiene"], include_live=False)
 
-    assert [step.name for step in steps] == ["py-compile", "diff-check"]
+    assert [step.name for step in steps] == ["public-surface-contract", "py-compile", "diff-check"]
+    assert steps[0].command == [*gates.PYTEST_BASE, "tests/test_public_surface_contract.py"]
     assert steps[-1].command == ["git", "diff", "--check"]
 
 

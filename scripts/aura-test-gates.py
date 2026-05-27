@@ -58,6 +58,10 @@ def _pytest_step(name: str, *paths: str, env: dict[str, str] | None = None, time
     return Step(name, [*PYTEST_BASE, *paths], env or {}, timeout=timeout)
 
 
+def _public_surface_step() -> Step:
+    return _pytest_step("public-surface-contract", "tests/test_public_surface_contract.py", timeout=60)
+
+
 def gates() -> dict[str, list[Step]]:
     baseline = [
         _pytest_step(
@@ -109,7 +113,7 @@ def gates() -> dict[str, list[Step]]:
         "codex-hook": codex_hook,
         "runtime": runtime,
         "full": full,
-        "hygiene": [_py_compile_step(), _diff_check_step()],
+        "hygiene": [_public_surface_step(), _py_compile_step(), _diff_check_step()],
         "live-codex": live_codex,
         "confidence": [*full, *codex_hook, *runtime],
     }
