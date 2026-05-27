@@ -2050,6 +2050,8 @@ def test_capture_sense_and_watch_commands_are_public_contract_names():
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
     )
     assert help_result.returncode == 0
+    assert "Agent-safe verbs: spawn, send, queue, report, view, inspect, event, placement." in help_result.stdout
+    assert "Operator tools: seat, agent, skills, keeper, profile" in help_result.stdout
     assert "capture" in help_result.stdout
     assert "stop" not in help_result.stdout
     assert "ledger" not in help_result.stdout

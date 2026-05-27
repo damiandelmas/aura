@@ -54,9 +54,9 @@ def main():
         prog="aura",
         description="AI-first agent orchestration",
         epilog=(
-            "Agent primitives: spawn, seat, send, queue, report, view, inspect, event. "
-            "Operator tools: capture, sense, watch, dash, deferred, sessions, "
-            "discord, clawhip, write."
+            "Agent-safe verbs: spawn, send, queue, report, view, inspect, event, placement. "
+            "Operator tools: seat, agent, skills, keeper, profile, capture, sense, watch, "
+            "posture, dash, list, sessions, fleets, deferred, discord, clawhip, write."
         ),
     )
     parser.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
