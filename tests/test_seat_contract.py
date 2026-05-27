@@ -2041,7 +2041,7 @@ def test_terminal_backend_exports_pane_pid():
     assert hasattr(terminal, "pane_pid")
 
 
-def test_capture_stop_sense_and_watch_commands_are_public_contract_names():
+def test_capture_sense_and_watch_commands_are_public_contract_names():
     help_result = subprocess.run(
         [sys.executable, str(CLI), "--help"],
         cwd=ROOT,
@@ -2051,7 +2051,7 @@ def test_capture_stop_sense_and_watch_commands_are_public_contract_names():
     )
     assert help_result.returncode == 0
     assert "capture" in help_result.stdout
-    assert "stop" in help_result.stdout
+    assert "stop" not in help_result.stdout
     assert "sense" in help_result.stdout
     assert "watch" in help_result.stdout
     assert "posture" in help_result.stdout
@@ -3138,13 +3138,13 @@ def test_fake_runtime_spawn_send_capture_stop_e2e(tmp_path):
         assert "fake1" in windows_after_untile.stdout.splitlines()
         assert "fake2" in windows_after_untile.stdout.splitlines()
 
-        stop_result = run_aura("stop", "fake1", "--force")
-        assert stop_result.returncode == 0, stop_result.stderr + stop_result.stdout
-        assert '"stop": true' in stop_result.stdout
+        cut_result = run_aura("seat", "cut", "fake1", "--force")
+        assert cut_result.returncode == 0, cut_result.stderr + cut_result.stdout
+        assert '"cut": true' in cut_result.stdout
 
-        stop_result = run_aura("stop", "fake2", "--force")
-        assert stop_result.returncode == 0, stop_result.stderr + stop_result.stdout
-        assert '"stop": true' in stop_result.stdout
+        cut_result = run_aura("seat", "cut", "fake2", "--force")
+        assert cut_result.returncode == 0, cut_result.stderr + cut_result.stdout
+        assert '"cut": true' in cut_result.stdout
     finally:
         subprocess.run(["tmux", "kill-session", "-t", fleet], capture_output=True, text=True)
 
