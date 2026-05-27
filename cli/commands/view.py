@@ -248,7 +248,25 @@ def _live_view_failure(*, schema: str, detail: str | None = None, **extra) -> di
     }
 
 
+def _pane_ref_parts(value: str | None) -> tuple[str | None, str | None]:
+    if not value:
+        return None, None
+    parts = str(value).split(":")
+    pane_id = next((part for part in parts if part.startswith("%")), None)
+    if not pane_id:
+        return None, None
+    pane_index = parts.index(pane_id)
+    session = parts[pane_index - 1] if pane_index > 0 and parts[pane_index - 1] != "tmux" else None
+    return session, pane_id
+
+
 def _record_matches_physical_pane(record: dict, pane: dict) -> bool:
+    pane_ref_session, pane_ref_id = _pane_ref_parts(record.get("pane_ref"))
+    if pane_ref_id:
+        pane_session = pane.get("tmux_session") or pane.get("physical_fleet")
+        if pane_ref_session and pane_session and pane_ref_session != pane_session:
+            return False
+        return pane_ref_id == pane.get("pane_id")
     return bool(_record_refs(record) & _physical_refs([pane]))
 
 
@@ -279,7 +297,7 @@ def _live_status_rows(*, include_hidden: bool) -> dict:
         if _row_target(row)
     }
     rows = []
-    seen: set[tuple[str | None, str | None]] = set()
+    seen_targets: set[str] = set()
     for pane in mirror.get("panes") or []:
         for record in records:
             if _record_hidden_from_live(record):
@@ -287,10 +305,9 @@ def _live_status_rows(*, include_hidden: bool) -> dict:
             if not _record_matches_physical_pane(record, pane):
                 continue
             target = _row_target(record)
-            key = (target, pane.get("pane_id"))
-            if key in seen:
+            if not target or target in seen_targets:
                 continue
-            seen.add(key)
+            seen_targets.add(target)
             enriched = {
                 **(status_by_target.get(target) or {}),
                 **record,

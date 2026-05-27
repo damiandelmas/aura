@@ -526,6 +526,96 @@ def test_view_roster_uses_tmux_join_and_keeps_historical_count(monkeypatch, tmp_
     assert [row["target"] for row in result["seats"]] == ["fleet-a:live"]
 
 
+def test_view_roster_pane_ref_match_requires_session(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from lib import registry
+    from commands import view
+
+    registry.write_registry({
+        "old-fleet:stale": {
+            "fleet": "old-fleet",
+            "name": "stale",
+            "runtime": "codex",
+            "pane_ref": "tmux:old-fleet:%1",
+        },
+        "live-fleet:worker": {
+            "fleet": "live-fleet",
+            "name": "worker",
+            "runtime": "codex",
+            "pane_ref": "tmux:live-fleet:%1",
+        },
+    })
+    monkeypatch.setattr(view.tmux_mirror, "list_physical_panes", lambda: {
+        "ok": True,
+        "panes": [
+            {"tmux_session": "live-fleet", "physical_fleet": "live-fleet", "window_name": "worker", "pane_id": "%1", "pane_ref": "tmux:live-fleet:%1", "terminal_ref": "tmux:live-fleet:worker"},
+        ],
+    })
+
+    result = view.run(argparse.Namespace(view_action="roster", scope=None, limit=10, include_hidden=False))
+
+    assert result["counts"] == {"fleets": 1, "seats": 1, "historical_seats": 2}
+    assert [row["target"] for row in result["seats"]] == ["live-fleet:worker"]
+
+
+def test_view_roster_dedupes_window_level_terminal_ref_matches(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from lib import registry
+    from commands import view
+
+    registry.write_registry({
+        "fleet-a:worker": {
+            "fleet": "fleet-a",
+            "name": "worker",
+            "runtime": "codex",
+            "terminal_ref": "tmux:fleet-a:worker",
+        },
+    })
+    monkeypatch.setattr(view.tmux_mirror, "list_physical_panes", lambda: {
+        "ok": True,
+        "panes": [
+            {"tmux_session": "fleet-a", "physical_fleet": "fleet-a", "window_name": "worker", "pane_id": "%1", "pane_ref": "tmux:fleet-a:%1", "terminal_ref": "tmux:fleet-a:worker"},
+            {"tmux_session": "fleet-a", "physical_fleet": "fleet-a", "window_name": "worker", "pane_id": "%2", "pane_ref": "tmux:fleet-a:%2", "terminal_ref": "tmux:fleet-a:worker"},
+        ],
+    })
+
+    result = view.run(argparse.Namespace(view_action="roster", scope=None, limit=10, include_hidden=False))
+
+    assert result["counts"] == {"fleets": 1, "seats": 1, "historical_seats": 1}
+    assert [row["target"] for row in result["seats"]] == ["fleet-a:worker"]
+
+
+def test_view_roster_prefers_pane_ref_over_window_level_terminal_ref(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from lib import registry
+    from commands import view
+
+    registry.write_registry({
+        "fleet-a:worker": {
+            "fleet": "fleet-a",
+            "name": "worker",
+            "runtime": "codex",
+            "pane_ref": "tmux:fleet-a:%2",
+            "terminal_ref": "tmux:fleet-a:worker",
+        },
+    })
+    monkeypatch.setattr(view.tmux_mirror, "list_physical_panes", lambda: {
+        "ok": True,
+        "panes": [
+            {"tmux_session": "fleet-a", "physical_fleet": "fleet-a", "window_name": "worker", "pane_id": "%1", "pane_ref": "tmux:fleet-a:%1", "terminal_ref": "tmux:fleet-a:worker"},
+            {"tmux_session": "fleet-a", "physical_fleet": "fleet-a", "window_name": "worker", "pane_id": "%2", "pane_ref": "tmux:fleet-a:%2", "terminal_ref": "tmux:fleet-a:worker"},
+        ],
+    })
+
+    live = view._live_status_rows(include_hidden=False)
+
+    assert live["rows"][0]["target"] == "fleet-a:worker"
+    assert live["rows"][0]["pane_ref"] == "tmux:fleet-a:%2"
+
+
 def test_view_historical_returns_all_managed_rows(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
 
