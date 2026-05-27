@@ -87,7 +87,6 @@ def test_dashboard_identity_uses_canonical_status_and_desks_position(aura_state)
         "runtime_session_source": "argv:codex-resume",
         "identity_provider": "desks",
         "identity_id": "r_dash001",
-        "desks_identity_id": "r_dash001",
     })
 
     result = dashboard_identity.build_dashboard_identity("runway-engineering:lead-engineer", terminal=FakeTerminal)

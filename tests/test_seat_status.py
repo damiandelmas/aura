@@ -163,7 +163,6 @@ units:
         "pane_ref": "tmux:runway-engineering:%222",
         "identity_provider": "desks",
         "identity_id": "r_status001",
-        "desks_identity_id": "r_status001",
         "runtime_session_id": "019dd797-1169-7931-b2f7-17824b3b7134",
         "runtime_session_source": "argv:codex-resume",
     })

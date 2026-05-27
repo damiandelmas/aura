@@ -68,7 +68,6 @@ def test_fresh_spawn_does_not_inherit_stale_identity_binding(aura_state, tmp_pat
         "runtime": "codex",
         "status": "dead",
         "pane_ref": "tmux:unitfleet:%old",
-        "desks_identity_id": "r_old",
         "identity_provider": "desks",
         "identity_id": "r_old",
         "identity_label": "old:name",
@@ -84,7 +83,6 @@ def test_fresh_spawn_does_not_inherit_stale_identity_binding(aura_state, tmp_pat
     assert record["pane_ref"] == "tmux:unitfleet:%9"
     assert record["seat_instance_id"].startswith("si_")
     assert record["seat_instance_id"] != "si_oldoldold01"
-    assert "desks_identity_id" not in record
     assert "identity_provider" not in record
     assert "identity_id" not in record
     assert "identity_label" not in record
@@ -109,13 +107,11 @@ def test_spawn_identity_args_set_generic_identity_in_one_operation(aura_state, t
     assert result["identity_provider"] == "desks"
     assert result["identity_id"] == "r_direct"
     assert result["identity_label"] == "flex:systems:operations:lead"
-    assert result["desks_identity_id"] == "r_direct"
     assert result["seat_instance_id"].startswith("si_")
     record = registry.get_agent("unitfleet:worker")
     assert record["identity_provider"] == "desks"
     assert record["identity_id"] == "r_direct"
     assert record["identity_label"] == "flex:systems:operations:lead"
-    assert record["desks_identity_id"] == "r_direct"
     assert record["seat_instance_id"] == result["seat_instance_id"]
     assert FakeTerminal.last_env["AURA_IDENTITY_PROVIDER"] == "desks"
     assert FakeTerminal.last_env["AURA_IDENTITY_ID"] == "r_direct"

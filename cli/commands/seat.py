@@ -711,12 +711,6 @@ def _restart_role_metadata(args, record: dict) -> tuple[dict, str | None, str | 
             "identity_bound_at",
             "identity_bind_source",
             "identity_bind_confidence",
-            "desks_identity_id",
-            "desks_profile_id",
-            "desks_current_name",
-            "desks_identity_home",
-            "desks_profile_home",
-            "desks_memory_home",
             "flex_project_manifest",
             "flex_project_root",
         )
@@ -945,7 +939,6 @@ def _restart(args, registry, terminal) -> dict:
             "identity_bound_at",
             "identity_bind_source",
             "identity_bind_confidence",
-            "desks_identity_id",
         )
         if record.get(key) is not None
     }
@@ -1405,18 +1398,12 @@ ADOPTION_RESET_FIELDS = {
     # A reused fleet:seat address is a new live incarnation unless an operator
     # explicitly binds it. Do not inherit identity/session continuity from a
     # stale current projection at the same routing address.
-    "desks_identity_id": None,
     "identity_provider": None,
     "identity_id": None,
     "identity_label": None,
     "identity_bound_at": None,
     "identity_bind_source": None,
     "identity_bind_confidence": None,
-    "desks_current_name": None,
-    "desks_identity_home": None,
-    "desks_memory_home": None,
-    "desks_profile_id": None,
-    "desks_profile_home": None,
     "runtime_session_id": None,
     "session_id": None,
     "source_session_id": None,
@@ -1535,12 +1522,11 @@ def _tag(args, registry, terminal=None) -> dict:
             after=updated,
             evidence={
                 "source_command": "aura seat tag",
-                "caller": os.environ.get("DESKS_CALLER", "cli"),
+                "caller": "cli",
                 "set_keys": sorted(set_pairs.keys()),
                 "unset_keys": sorted(unset_keys),
                 "changed_keys": changed_keys,
                 "expected_seat_instance_id": expected_instance_id,
-                "rename": os.environ.get("DESKS_RENAME") == "true",
                 "before": before,
                 "after": after,
             },
@@ -1795,8 +1781,6 @@ def _adopt_pane_as_seat(
             "identity_bind_source": source_command,
             "identity_bind_confidence": "explicit",
         })
-        if identity_provider == "desks":
-            record["desks_identity_id"] = identity_id
 
     inserted = registry.upsert_agent(record)
     try:
@@ -1805,7 +1789,7 @@ def _adopt_pane_as_seat(
         stored = dict(data.get(key, inserted))
         stored.update(record)
         for reset_key, reset_value in ADOPTION_RESET_FIELDS.items():
-            if reset_key in {"identity_provider", "identity_id", "identity_label", "desks_identity_id"} and identity_provider and identity_id:
+            if reset_key in {"identity_provider", "identity_id", "identity_label"} and identity_provider and identity_id:
                 continue
             if bound and reset_key in ADOPTION_SESSION_RESET_KEYS:
                 continue
@@ -1827,8 +1811,6 @@ def _adopt_pane_as_seat(
                 "identity_bind_source": source_command,
                 "identity_bind_confidence": "explicit",
             })
-            if identity_provider == "desks":
-                stored["desks_identity_id"] = identity_id
         inserted = registry.replace_agent_record(stored)
     except Exception:
         pass
@@ -2001,9 +1983,7 @@ def _audit(args, registry, terminal) -> dict:
             agent.get("identity_provider")
             or agent.get("identity_id")
             or agent.get("identity_label")
-            or agent.get("desks_identity_id")
         )
-        has_generic_identity = bool(agent.get("identity_provider") or agent.get("identity_id"))
         risk_flags = []
         if not alive_targets:
             risk_flags.append("missing-pane")
@@ -2015,8 +1995,6 @@ def _audit(args, registry, terminal) -> dict:
             risk_flags.append("missing-seat-instance-id")
         if not agent.get("runtime_session_id") and agent.get("runtime") not in ("shell", "command"):
             risk_flags.append("runtime-session-missing")
-        if agent.get("desks_identity_id") and not has_generic_identity:
-            risk_flags.append("legacy-desks-alias-only")
         seat = agent.get("name") or agent.get("seat")
         expected_ref = registry.seat_ref(fleet, seat)
         if (agent.get("seat_ref") and agent.get("seat_ref") != expected_ref) or (
@@ -2031,8 +2009,6 @@ def _audit(args, registry, terminal) -> dict:
             suggested_action = "inspect-or-adopt"
         elif "missing-seat-instance-id" in risk_flags:
             suggested_action = "restart-or-repair-current-projection"
-        elif "legacy-desks-alias-only" in risk_flags:
-            suggested_action = "repair-generic-identity-binding"
         else:
             suggested_action = "none"
         rows.append({
@@ -2049,10 +2025,9 @@ def _audit(args, registry, terminal) -> dict:
             "pane_exists_anywhere": pane_exists,
             "runtime_session_id": agent.get("runtime_session_id"),
             "seat_instance_id": agent.get("seat_instance_id"),
-            "identity_provider": agent.get("identity_provider") or ("desks" if agent.get("desks_identity_id") else None),
-            "identity_id": agent.get("identity_id") or agent.get("desks_identity_id"),
-            "identity_label": agent.get("identity_label") or agent.get("desks_current_name"),
-            "desks_identity_id": agent.get("desks_identity_id"),
+            "identity_provider": agent.get("identity_provider"),
+            "identity_id": agent.get("identity_id"),
+            "identity_label": agent.get("identity_label"),
             "last_seen": agent.get("last_seen"),
             "risk_flags": risk_flags,
             "suggested_action": suggested_action,

@@ -373,8 +373,6 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         })
         if identity_label_arg:
             role_meta["identity_label"] = identity_label_arg
-        if identity_provider_arg == "desks":
-            role_meta["desks_identity_id"] = identity_id_arg
     raw_profile = getattr(args, 'profile', None)
     explicit_omx_profile = getattr(args, 'omx_profile', None)
     runtime_profile_ref_arg = getattr(args, 'runtime_profile', None)
@@ -758,7 +756,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "runtime_session_pid": None,
         }
     session_clear_keys = [key for key, value in session_meta.items() if value is None]
-    has_identity_binding = bool(role_meta.get("identity_id") or role_meta.get("desks_identity_id"))
+    has_identity_binding = bool(role_meta.get("identity_id"))
     identity_clear_keys = []
     if not has_identity_binding:
         identity_clear_keys = [
@@ -768,12 +766,6 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "identity_bound_at",
             "identity_bind_source",
             "identity_bind_confidence",
-            "desks_identity_id",
-            "desks_current_name",
-            "desks_identity_home",
-            "desks_memory_home",
-            "desks_profile_id",
-            "desks_profile_home",
         ]
     elif role_meta.get("identity_id") and not role_meta.get("identity_bound_at"):
         role_meta = {**role_meta, "identity_bound_at": registry.now_iso()}

@@ -125,11 +125,11 @@ def _identity_from_record(record: dict[str, Any]) -> tuple[dict[str, Any] | None
     identity: dict[str, Any] = {
         "provider": provider,
         "id": identity_id,
-        "name": record.get("identity_label") or record.get("desks_current_name"),
+        "name": record.get("identity_label"),
         "current": {},
     }
     if provider == "desks" and identity_id:
-        identity_home = Path(record.get("desks_identity_home") or (_desks_root() / "identities" / str(identity_id))).expanduser()
+        identity_home = (_desks_root() / "identities" / str(identity_id)).expanduser()
         identity_json = _read_json(identity_home / "identity.json")
         if identity_json:
             identity["name"] = identity_json.get("current_name") or identity.get("name")
@@ -345,8 +345,7 @@ def build_from_record(
         "latest_event_at": record.get("latest_event_at"),
         "identity_provider": seat_schema.identity_provider_for(record),
         "identity_id": seat_schema.identity_id_for(record),
-        "identity_label": (identity or {}).get("name") or record.get("identity_label") or record.get("desks_current_name"),
-        "desks_identity_id": record.get("desks_identity_id"),
+        "identity_label": (identity or {}).get("name") or record.get("identity_label"),
         "flex_project_manifest": record.get("flex_project_manifest"),
         "flex_project_root": record.get("flex_project_root"),
         "trace_cell": record.get("trace_cell"),

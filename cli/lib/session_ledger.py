@@ -86,7 +86,6 @@ SNAPSHOT_FIELDS = (
     "identity_provider",
     "identity_id",
     "identity_label",
-    "desks_identity_id",
     "agent_package_id",
     "agent_package_address",
     "agent_package_alias",
@@ -174,11 +173,6 @@ def append_seat_event(
     identity_provider = _first_present(after_snap, before_snap, key="identity_provider")
     identity_id = _first_present(after_snap, before_snap, key="identity_id")
     identity_label = _first_present(after_snap, before_snap, key="identity_label")
-    desks_identity_id = _first_present(after_snap, before_snap, key="desks_identity_id")
-    if not identity_id and desks_identity_id:
-        identity_id = desks_identity_id
-    if not identity_provider and desks_identity_id:
-        identity_provider = "desks"
     record = {
         "schema": "aura.seat_history.v1",
         "event_id": new_event_id(),
@@ -203,7 +197,6 @@ def append_seat_event(
         "identity_provider": identity_provider,
         "identity_id": identity_id,
         "identity_label": identity_label,
-        "desks_identity_id": desks_identity_id,
         "actor": actor,
         "source_command": source_command,
         "before": before_snap,
@@ -577,10 +570,9 @@ def restore_plan_from_rows(rows: list[dict[str, Any]], capabilities: dict[str, d
             "latest_event": row.get("latest_event"),
             "latest_event_id": row.get("latest_event_id"),
             "latest_event_at": row.get("latest_event_at"),
-            "identity_provider": row.get("identity_provider") or ("desks" if row.get("desks_identity_id") else None),
-            "identity_id": row.get("identity_id") or row.get("desks_identity_id"),
+            "identity_provider": row.get("identity_provider"),
+            "identity_id": row.get("identity_id"),
             "identity_label": row.get("identity_label"),
-            "desks_identity_id": row.get("desks_identity_id"),
             "agent_package_id": row.get("agent_package_id"),
             "agent_package_address": row.get("agent_package_address"),
             "agent_package_alias": row.get("agent_package_alias"),

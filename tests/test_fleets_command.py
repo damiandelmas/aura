@@ -40,7 +40,8 @@ def test_sessions_fleets_includes_fleet_ids(monkeypatch, tmp_path):
         "registered": True,
         "runtime_session_id": "session-1",
         "runtime_session_binding": "bound",
-        "desks_identity_id": "r_test",
+        "identity_provider": "desks",
+        "identity_id": "r_test",
     })
     session_ledger.append_seat_event(
         event="seat_spawned",
@@ -89,7 +90,8 @@ def test_fleet_history_builds_restore_commands(monkeypatch, tmp_path):
         "registered": True,
         "runtime_session_id": "session-1",
         "runtime_session_binding": "bound",
-        "desks_identity_id": "r_test",
+        "identity_provider": "desks",
+        "identity_id": "r_test",
     })
     session_ledger.append_seat_event(
         event="seat_spawned",

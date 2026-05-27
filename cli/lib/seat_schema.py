@@ -7,14 +7,12 @@ from __future__ import annotations
 #
 # Aura identity binding is provider-generic. `identity_provider` + `identity_id`
 # is the load-bearing handle for whatever identity harness launched or adopted a
-# live seat incarnation. `desks_identity_id` remains as a legacy compatibility
-# alias while older rows and tools migrate.
+# live seat incarnation.
 #
 # Flex project pointers stay in the allowlist because they are unrelated to the
 # identity arc and remain useful as opaque project metadata exported into the
 # runtime environment.
 TAG_ALLOWLIST = frozenset({
-    "desks_identity_id",
     "identity_provider",
     "identity_id",
     "identity_label",
@@ -27,22 +25,17 @@ TAG_ALLOWLIST = frozenset({
 
 
 def identity_id_for(record: dict | None) -> str | None:
-    """Return the generic identity id, falling back to the legacy Desks alias."""
+    """Return the generic identity id."""
     if not isinstance(record, dict):
         return None
-    return record.get("identity_id") or record.get("desks_identity_id")
+    return record.get("identity_id")
 
 
 def identity_provider_for(record: dict | None) -> str | None:
-    """Return the identity provider, inferring `desks` for legacy rows."""
+    """Return the identity provider."""
     if not isinstance(record, dict):
         return None
-    provider = record.get("identity_provider")
-    if provider:
-        return provider
-    if record.get("desks_identity_id"):
-        return "desks"
-    return None
+    return record.get("identity_provider")
 
 
 def infer_backend_ref(terminal_ref: str | None, *, fleet: str | None = None, name: str | None = None) -> str | None:

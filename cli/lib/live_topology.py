@@ -138,7 +138,7 @@ def _compact_identity(record: dict[str, Any]) -> dict[str, Any] | None:
         for key, value in {
             "provider": identity.get("provider") or record.get("identity_provider"),
             "id": identity.get("id") or record.get("identity_id"),
-            "name": identity.get("name") or record.get("identity_label") or record.get("desks_current_name"),
+            "name": identity.get("name") or record.get("identity_label"),
         }.items()
         if value
     }

@@ -19,8 +19,6 @@ def aura_state(monkeypatch, tmp_path):
     state_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("AURA_STATE_DIR", str(state_root))
     monkeypatch.setenv("AURA_FLEET", "test-fleet")
-    monkeypatch.delenv("DESKS_CALLER", raising=False)
-    monkeypatch.delenv("DESKS_RENAME", raising=False)
     return state_root
 
 
@@ -51,15 +49,16 @@ def test_tag_writes_allowed_keys_and_returns_updated_record(aura_state):
     args = argparse.Namespace(
         seat_action="tag",
         target="test-fleet:engineer",
-        set=["desks_identity_id=r_6be5b613"],
+        set=["identity_provider=desks", "identity_id=r_6be5b613"],
         unset=[],
         expect_seat_instance_id=None,
     )
     result = seat_cmd._tag(args, registry)
 
     assert result["ok"] is True
-    assert result["changed"] == ["desks_identity_id"]
-    assert result["record"]["desks_identity_id"] == "r_6be5b613"
+    assert result["changed"] == ["identity_id", "identity_provider"]
+    assert result["record"]["identity_provider"] == "desks"
+    assert result["record"]["identity_id"] == "r_6be5b613"
 
 
 def test_tag_writes_generic_identity_binding(aura_state):
@@ -95,20 +94,20 @@ def test_tag_unset_removes_key_when_value_empty(aura_state):
     from commands import seat as seat_cmd
     from lib import registry
 
-    _seed_seat(desks_identity_id="r_old")
+    _seed_seat(identity_provider="desks", identity_id="r_old")
 
     args = argparse.Namespace(
         seat_action="tag",
         target="test-fleet:engineer",
-        set=["desks_identity_id="],
+        set=["identity_id="],
         unset=[],
         expect_seat_instance_id=None,
     )
     result = seat_cmd._tag(args, registry)
 
     assert result["ok"] is True
-    assert "desks_identity_id" not in result["record"]
-    assert result["changed"] == ["desks_identity_id"]
+    assert "identity_id" not in result["record"]
+    assert result["changed"] == ["identity_id"]
 
 
 def test_tag_explicit_unset_flag_removes_key(aura_state):
@@ -159,7 +158,7 @@ def test_tag_rejects_target_without_registry_row(aura_state):
     args = argparse.Namespace(
         seat_action="tag",
         target="test-fleet:nope",
-        set=["desks_identity_id=r_x"],
+        set=["identity_id=r_x"],
         unset=[],
         expect_seat_instance_id=None,
     )
@@ -220,12 +219,12 @@ def test_tag_appends_session_ledger_event_with_before_after(aura_state):
     from commands import seat as seat_cmd
     from lib import registry, session_ledger
 
-    _seed_seat(desks_identity_id="r_old")
+    _seed_seat(identity_provider="desks", identity_id="r_old")
 
     args = argparse.Namespace(
         seat_action="tag",
         target="test-fleet:engineer",
-        set=["desks_identity_id=r_new"],
+        set=["identity_id=r_new"],
         unset=[],
         expect_seat_instance_id=None,
     )
@@ -237,22 +236,22 @@ def test_tag_appends_session_ledger_event_with_before_after(aura_state):
     row = matches[-1]
     assert row["seat_ref"] == "test-fleet:engineer"
     evidence = row.get("evidence", {})
-    assert evidence.get("set_keys") == ["desks_identity_id"]
-    assert evidence.get("changed_keys") == ["desks_identity_id"]
-    assert evidence.get("before") == {"desks_identity_id": "r_old"}
-    assert evidence.get("after") == {"desks_identity_id": "r_new"}
+    assert evidence.get("set_keys") == ["identity_id"]
+    assert evidence.get("changed_keys") == ["identity_id"]
+    assert evidence.get("before") == {"identity_id": "r_old"}
+    assert evidence.get("after") == {"identity_id": "r_new"}
 
 
 def test_tag_is_idempotent_on_no_change(aura_state):
     from commands import seat as seat_cmd
     from lib import registry, session_ledger
 
-    _seed_seat(desks_identity_id="r_same")
+    _seed_seat(identity_provider="desks", identity_id="r_same")
 
     args = argparse.Namespace(
         seat_action="tag",
         target="test-fleet:engineer",
-        set=["desks_identity_id=r_same"],
+        set=["identity_id=r_same"],
         unset=[],
         expect_seat_instance_id=None,
     )
@@ -267,17 +266,16 @@ def test_tag_is_idempotent_on_no_change(aura_state):
     assert matches[-1]["evidence"]["changed_keys"] == []
 
 
-def test_tag_records_caller_from_environment(monkeypatch, aura_state):
+def test_tag_records_cli_caller(aura_state):
     from commands import seat as seat_cmd
     from lib import registry, session_ledger
 
-    monkeypatch.setenv("DESKS_CALLER", "desks-resolve")
     _seed_seat()
 
     args = argparse.Namespace(
         seat_action="tag",
         target="test-fleet:engineer",
-        set=["desks_identity_id=r_6be5b613"],
+        set=["identity_provider=desks", "identity_id=r_6be5b613"],
         unset=[],
         expect_seat_instance_id=None,
     )
@@ -285,28 +283,7 @@ def test_tag_records_caller_from_environment(monkeypatch, aura_state):
 
     rows = session_ledger.iter_records()
     matches = [r for r in rows if r.get("event") == "seat_metadata_tagged"]
-    assert matches[-1]["evidence"]["caller"] == "desks-resolve"
-
-
-def test_tag_rename_flag_recorded_in_evidence(monkeypatch, aura_state):
-    from commands import seat as seat_cmd
-    from lib import registry, session_ledger
-
-    monkeypatch.setenv("DESKS_CALLER", "desks-resolve")
-    monkeypatch.setenv("DESKS_RENAME", "true")
-    _seed_seat()
-
-    args = argparse.Namespace(
-        seat_action="tag",
-        target="test-fleet:engineer",
-        set=["desks_identity_id=r_6be5b613"],
-        unset=[],
-    )
-    seat_cmd._tag(args, registry)
-
-    rows = session_ledger.iter_records()
-    matches = [r for r in rows if r.get("event") == "seat_metadata_tagged"]
-    assert matches[-1]["evidence"]["rename"] is True
+    assert matches[-1]["evidence"]["caller"] == "cli"
 
 
 def test_tag_rejects_malformed_set_pair(aura_state):
@@ -346,7 +323,7 @@ def test_tag_does_not_mutate_routing_fields(aura_state):
     args = argparse.Namespace(
         seat_action="tag",
         target="test-fleet:engineer",
-        set=["desks_identity_id=r_6be5b613"],
+        set=["identity_provider=desks", "identity_id=r_6be5b613"],
         unset=[],
     )
     result = seat_cmd._tag(args, registry)

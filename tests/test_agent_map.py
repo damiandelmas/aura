@@ -112,7 +112,6 @@ def test_agent_map_includes_self_and_same_fleet_colleagues(aura_state):
         "pane_ref": "tmux:flex-systems-archeology:%1",
         "identity_provider": "desks",
         "identity_id": "r_self",
-        "desks_identity_id": "r_self",
         "runtime_session_id": "session-self",
         "runtime_session_source": "argv:codex-resume",
     })
@@ -126,7 +125,6 @@ def test_agent_map_includes_self_and_same_fleet_colleagues(aura_state):
         "pane_ref": "tmux:flex-systems-archeology:%2",
         "identity_provider": "desks",
         "identity_id": "r_peer",
-        "desks_identity_id": "r_peer",
         "runtime_session_binding": "unbound",
     })
     registry.upsert_agent({

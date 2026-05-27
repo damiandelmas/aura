@@ -135,7 +135,6 @@ def test_restart_preserves_seat_and_records_seat_history(monkeypatch, tmp_path):
         identity_provider="desks",
         identity_id="r_restart",
         identity_label="flex:engine:lead",
-        desks_identity_id="r_restart",
     ))
 
     result = seat._restart(_args(prompt="fresh start"), registry, RestartTerminal)

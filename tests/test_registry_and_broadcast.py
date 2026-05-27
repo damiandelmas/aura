@@ -527,7 +527,8 @@ def test_seat_audit_reports_identity_and_instance_risks_without_mutation(tmp_pat
         "runtime": "codex",
         "status": "dead",
         "pane_ref": "tmux:fleet:%2",
-        "desks_identity_id": "r_stale",
+        "identity_provider": "desks",
+        "identity_id": "r_stale",
     })
 
     before = registry.read_registry()
@@ -562,7 +563,6 @@ def test_seat_audit_reports_identity_and_instance_risks_without_mutation(tmp_pat
         "identity-on-dead-row",
         "missing-seat-instance-id",
         "runtime-session-missing",
-        "legacy-desks-alias-only",
     } <= stale_flags
     assert by_ref["fleet:stale"]["suggested_action"] == "archive-or-restore"
     assert registry.read_registry() == before
