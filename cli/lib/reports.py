@@ -63,15 +63,6 @@ def infer_context() -> dict[str, Any]:
         or (agent or {}).get("runtime_session_id")
     )
 
-    role = {
-        "desks_role_id": _env_first("DESKS_ROLE_ID", "AURA_DESKS_ROLE_ID") or (agent or {}).get("desks_role_id"),
-        "desks_role_home": _env_first("DESKS_ROLE_HOME", "AURA_DESKS_ROLE_HOME") or (agent or {}).get("desks_role_home"),
-        "desks_product": _env_first("DESKS_PRODUCT", "AURA_DESKS_PRODUCT") or (agent or {}).get("desks_product"),
-        "desks_unit": _env_first("DESKS_UNIT", "AURA_DESKS_UNIT") or (agent or {}).get("desks_unit"),
-        "desks_manifest": _env_first("DESKS_MANIFEST", "AURA_DESKS_MANIFEST") or (agent or {}).get("desks_manifest"),
-    }
-    role = {key: value for key, value in role.items() if value}
-
     warnings = []
     if not seat:
         warnings.append("seat-not-inferred")
@@ -90,7 +81,7 @@ def infer_context() -> dict[str, Any]:
         "runtime_session_confidence": resolved.get("runtime_session_confidence"),
         "cwd": os.getcwd(),
         "pane": os.environ.get("TMUX_PANE"),
-        "role": role,
+        "role": {},
         "warnings": warnings,
     }
 

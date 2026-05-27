@@ -97,10 +97,7 @@ def test_report_appends_semantic_delta_with_inferred_context(tmp_path):
     assert record["fleet"] == "unitfleet"
     assert record["runtime"] == "codex"
     assert record["session_id"] == "019ddf5f-b386-7ef0-9f43-8329ab2019c7"
-    assert record["role"]["desks_role_id"] == "leader-engine"
-    assert record["role"]["desks_product"] == "flex"
-    assert record["role"]["desks_unit"] == "engine"
-    assert record["role"]["desks_role_home"] == "/tmp/roles/leader-engine"
+    assert record["role"] == {}
 
     ledger = tmp_path / ".aura" / "reports" / "reports.jsonl"
     lines = ledger.read_text(encoding="utf-8").splitlines()
