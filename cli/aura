@@ -8,7 +8,7 @@ All output is stable JSON by default.
 Usage:
     aura spawn worker --knowledge npta
     aura send worker "do the thing"
-    aura check worker
+    aura inspect worker
     aura list
 """
 
@@ -19,7 +19,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, list as list_cmd, ledger, resolve, broadcast, capture, stop, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
+from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, inspect as inspect_cmd, list as list_cmd, ledger, resolve, broadcast, capture, stop, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
 from lib.output import output
 
 
@@ -529,16 +529,6 @@ def main():
     p_broadcast.add_argument("--allow-hidden", action="store_true",
                              help="Allow broadcasting to hidden/internal fleets such as Ether panels")
 
-    # check
-    p_check = subparsers.add_parser("check", help="Check agent status")
-    p_check.add_argument("name", help="Agent name")
-    p_check.add_argument("--output", "-o", action="store_true",
-                         help="Include terminal output")
-    p_check.add_argument("--lines", type=int, default=20,
-                         help="Number of output lines (default: 20)")
-    p_check.add_argument("--format", choices=["text", "ansi"], default="text",
-                         help="Output capture format when --output is used: text or ansi (default: text)")
-
     # inspect
     p_inspect = subparsers.add_parser("inspect", help="Inspect one seat: status, terminal excerpt, or semantic sense")
     p_inspect.add_argument("name", help="Seat/agent name")
@@ -595,7 +585,7 @@ def main():
                          help="Seconds to wait for local LLM sense before fallback/error (default: 8)")
 
     # watch
-    p_watch = subparsers.add_parser("watch", help="Watch a seat through mechanical capture/check")
+    p_watch = subparsers.add_parser("watch", help="Watch a seat through repeated mechanical inspection")
     p_watch.add_argument("name", nargs="?", help="Seat/agent name")
     p_watch.add_argument("--fleet", "-f", metavar="NAME",
                          help="Watch all seats in a fleet; currently requires --once")
@@ -963,8 +953,6 @@ def main():
             result = broadcast.run(args)
         elif args.command == "write":
             result = write_cmd.run(args)
-        elif args.command == "check":
-            result = check.run(args)
         elif args.command == "inspect":
             result = inspect_cmd.run(args)
         elif args.command == "capture":

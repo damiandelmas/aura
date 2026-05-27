@@ -1,4 +1,4 @@
-"""Check agent status."""
+"""Internal mechanical seat-status primitive used by inspect/sense/watch."""
 
 
 def run(args):

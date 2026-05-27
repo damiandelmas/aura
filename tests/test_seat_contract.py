@@ -2058,6 +2058,7 @@ def test_capture_stop_sense_and_watch_commands_are_public_contract_names():
     assert "write" in help_result.stdout
     assert "dash" in help_result.stdout
     assert "event" in help_result.stdout
+    assert "check" not in help_result.stdout
     assert "route" not in help_result.stdout
     assert "ether" not in help_result.stdout
     assert "sleep" not in help_result.stdout
