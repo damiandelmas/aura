@@ -1164,18 +1164,6 @@ def _restart(args, registry, terminal) -> dict:
                     })
             except Exception:
                 pass
-            try:
-                from lib import desks_sessions
-                from lib import seat_schema
-
-                identity_provider = seat_schema.identity_provider_for(updated) or seat_schema.identity_provider_for(record)
-                identity_id = seat_schema.identity_id_for(updated) or seat_schema.identity_id_for(record)
-                desks_sessions.append_identity_session(
-                    identity_id if identity_provider == "desks" else None,
-                    session_observation.get("runtime_session_id"),
-                )
-            except Exception:
-                pass
     except Exception as exc:
         session_observation = {"status": "error", "reason": "session-discovery-error", "error": str(exc)}
 

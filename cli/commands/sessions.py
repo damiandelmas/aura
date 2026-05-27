@@ -1041,7 +1041,7 @@ def _bind_registry_session(
     event: str,
     extra: dict | None = None,
 ) -> dict:
-    from lib import desks_sessions, registry, runtime_session, session_ledger
+    from lib import registry, runtime_session, session_ledger
 
     updated = registry.upsert_agent({
         **previous,
@@ -1100,12 +1100,6 @@ def _bind_registry_session(
         source_command=f"aura sessions {event.removeprefix('session_').replace('_', '-')}",
         cwd=cwd,
     )
-    identity_provider = seat_schema.identity_provider_for(updated) or seat_schema.identity_provider_for(previous)
-    identity_id = seat_schema.identity_id_for(updated) or seat_schema.identity_id_for(previous)
-    desks_result = desks_sessions.append_identity_session(
-        identity_id if identity_provider == "desks" else None,
-        session_id,
-    )
     result = {
         "ok": True,
         "seat": seat,
@@ -1119,15 +1113,12 @@ def _bind_registry_session(
         "runtime_session_bind_source": source,
         "runtime_session_confidence": confidence,
         "registry_updated": True,
-        "desks_session_recorded": bool(desks_result.get("ok")),
     }
     if capsule_session.get("ok"):
         result.update({
             "runtime_capsule_ref": capsule_session.get("capsule_root"),
             "runtime_capsule_session": capsule_session.get("path"),
         })
-    if desks_result.get("ok") or not desks_result.get("skipped"):
-        result["desks_session"] = desks_result
     if extra:
         result.update(extra)
     return result

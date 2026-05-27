@@ -811,18 +811,6 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         **process_meta,
         **session_meta,
     })
-    if resume_session:
-        try:
-            from lib import desks_sessions
-
-            identity_provider = registered.get("identity_provider") or ("desks" if registered.get("desks_identity_id") else None)
-            identity_id = registered.get("identity_id") or registered.get("desks_identity_id") or role_meta.get("identity_id") or role_meta.get("desks_identity_id")
-            desks_sessions.append_identity_session(
-                identity_id if identity_provider == "desks" else None,
-                resume_session,
-            )
-        except Exception:
-            pass
     if session_clear_keys or identity_clear_keys:
         try:
             def clear_fields(current):
@@ -1751,7 +1739,6 @@ def _observe_spawn_session(
                     "runtime_session_confidence": "exact",
                     "runtime_session_evidence": evidence,
                     "runtime_session_cwd": found.get("cwd") or workdir,
-                    "desks_session_recorded": bound.get("desks_session_recorded"),
                 }
         except Exception as exc:
             last_session = {
