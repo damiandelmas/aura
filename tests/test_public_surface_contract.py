@@ -24,6 +24,7 @@ FORBIDDEN_PUBLIC_TEXT = {
     "spawn clone flag": re.compile(r"\bspawn\b[^\n`]*\s--clone\b"),
     "spawn slice flag": re.compile(r"\bspawn\b[^\n`]*\s--slice\b"),
     "desks identity alias": re.compile(r"\bdesks_identity_id\b"),
+    "retired context skill root": re.compile(r"/home/axp/projects/aura/context/current/skills\b"),
 }
 
 
