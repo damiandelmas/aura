@@ -1,6 +1,7 @@
 {
   "schema": "aura.public_surface_contract.v1",
   "help": {
+    "operator_tools_scope": "common-footer-subset",
     "agent_safe_verbs": [
       "spawn",
       "send",
@@ -29,6 +30,13 @@
       "discord",
       "clawhip",
       "write"
+    ],
+    "operator_tools_omitted_from_footer": [
+      "agent-map",
+      "broadcast",
+      "holding",
+      "quick",
+      "resolve"
     ]
   },
   "cli_categories": {
@@ -87,6 +95,13 @@
     ],
     "operator": [
       "aura-operator"
+    ],
+    "operator_skill_smoke_cli_commands": [
+      "agent",
+      "capture",
+      "profile",
+      "seat",
+      "write"
     ],
     "normal_forbidden_cli_commands": [
       "agent",

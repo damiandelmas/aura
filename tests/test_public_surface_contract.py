@@ -77,6 +77,14 @@ def _skill_file(skill_name: str) -> Path:
     return DEFAULT_SKILLS_ROOT / skill_name / "SKILL.md"
 
 
+def _require_skill_root() -> None:
+    assert DEFAULT_SKILLS_ROOT.exists(), (
+        "Aura public-surface skill checks require a real skill root. "
+        "Set AURA_PUBLIC_SURFACE_SKILLS_ROOT or install the Aura skills at "
+        f"{DEFAULT_SKILLS_ROOT}."
+    )
+
+
 def test_removed_public_commands_are_not_cli_entrypoints():
     for command in CONTRACT["removed_cli_entrypoints"]:
         result = _run_aura(command, "--help")
@@ -100,6 +108,12 @@ def test_top_level_help_taxonomy_matches_public_surface_contract():
             continue
         categorized.update(commands)
     assert _top_level_commands(result.stdout) == categorized
+
+    footer_operator_tools = set(CONTRACT["help"]["operator_tools"])
+    all_operator_tools = set(CONTRACT["cli_categories"]["operator"]) | set(CONTRACT["cli_categories"]["integrations"])
+    assert footer_operator_tools < all_operator_tools
+    assert all_operator_tools - footer_operator_tools == set(CONTRACT["help"]["operator_tools_omitted_from_footer"])
+    assert CONTRACT["help"]["operator_tools_scope"] == "common-footer-subset"
 
 
 def test_removed_public_subcommands_and_flags_are_not_exposed():
@@ -130,14 +144,14 @@ def test_current_docs_do_not_teach_removed_public_surfaces():
 
 
 def test_local_aura_skills_do_not_teach_removed_public_surfaces():
+    _require_skill_root()
     hits = _forbidden_hits(_skill_markdown_files(DEFAULT_SKILLS_ROOT))
 
     assert hits == []
 
 
 def test_normal_aura_skills_do_not_teach_operator_cli_commands():
-    if not DEFAULT_SKILLS_ROOT.exists():
-        return
+    _require_skill_root()
 
     operator_commands = "|".join(
         re.escape(command) for command in CONTRACT["skills"]["normal_forbidden_cli_commands"]
@@ -156,12 +170,11 @@ def test_normal_aura_skills_do_not_teach_operator_cli_commands():
 
 
 def test_operator_skill_is_allowed_to_teach_operator_cli_commands():
-    if not DEFAULT_SKILLS_ROOT.exists():
-        return
+    _require_skill_root()
 
     operator_skill = _skill_file(CONTRACT["skills"]["operator"][0])
     assert operator_skill.exists()
     text = operator_skill.read_text(encoding="utf-8", errors="ignore")
 
-    for command in ("seat", "agent", "profile", "write"):
+    for command in CONTRACT["skills"]["operator_skill_smoke_cli_commands"]:
         assert re.search(rf"\baura\s+{re.escape(command)}\b", text), command
