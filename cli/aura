@@ -9,7 +9,6 @@ Usage:
     aura spawn worker --knowledge npta
     aura send worker "do the thing"
     aura check worker
-    aura set worker --mode queue
     aura list
 """
 
@@ -20,7 +19,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, set as set_cmd, list as list_cmd, ledger, resolve, broadcast, capture, stop, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
+from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, check, inspect as inspect_cmd, list as list_cmd, ledger, resolve, broadcast, capture, stop, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
 from lib.output import output
 
 
@@ -675,12 +674,6 @@ def main():
     p_dash_identity = dash_sub.add_parser("identity", help="Render dashboard identity surface for one seat")
     p_dash_identity.add_argument("target", help="Seat ref, usually FLEET:SEAT")
 
-    # set
-    p_set = subparsers.add_parser("set", help="Set agent properties")
-    p_set.add_argument("name", help="Agent name")
-    p_set.add_argument("--mode", choices=["immediate", "queue", "notify"],
-                       help="Delivery mode")
-
     # stop
     p_stop = subparsers.add_parser("stop", help="Stop a seat")
     p_stop.add_argument("name", help="Seat/agent name")
@@ -1002,8 +995,6 @@ def main():
             result = posture_cmd.run(args)
         elif args.command == "dash":
             result = dash.run(args)
-        elif args.command == "set":
-            result = set_cmd.run(args)
         elif args.command == "stop":
             result = stop.run(args)
         elif args.command == "list":
