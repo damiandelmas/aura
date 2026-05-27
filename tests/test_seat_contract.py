@@ -2930,10 +2930,25 @@ def test_capture_stop_sense_and_watch_commands_are_public_contract_names():
     assert "watch" in help_result.stdout
     assert "posture" in help_result.stdout
     assert "write" in help_result.stdout
-    assert "route" in help_result.stdout
     assert "dash" in help_result.stdout
     assert "event" in help_result.stdout
+    assert "route" not in help_result.stdout
+    assert "ether" not in help_result.stdout
+    assert "==SUPPRESS==" not in help_result.stdout
     assert "--json" not in help_result.stdout
+
+
+def test_suppressed_operator_commands_remain_explicitly_callable():
+    for command in ("route", "ether"):
+        result = subprocess.run(
+            [sys.executable, str(CLI), command, "--help"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        assert result.returncode == 0
+        assert "==SUPPRESS==" not in result.stdout
 
 
 def test_posture_cli_dispatches_to_posture_command(tmp_path):

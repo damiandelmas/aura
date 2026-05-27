@@ -31,6 +31,25 @@ def env_float(name, default):
         return default
 
 
+def hide_suppressed_subcommands(parser):
+    """Keep private argparse subcommands callable without leaking them in help."""
+    for action in getattr(parser, "_actions", []):
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        visible = []
+        visible_actions = []
+        for choice in action._choices_actions:
+            if getattr(choice, "help", None) == argparse.SUPPRESS:
+                continue
+            visible_actions.append(choice)
+            visible.append(choice.dest)
+        action._choices_actions = visible_actions
+        if visible:
+            action.metavar = "{" + ",".join(visible) + "}"
+        for subparser in action.choices.values():
+            hide_suppressed_subcommands(subparser)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="aura",
@@ -994,6 +1013,7 @@ def main():
     p_ledger.add_argument("--limit", "-n", type=int, default=20,
                           help="Number of entries (default: 20)")
 
+    hide_suppressed_subcommands(parser)
     args = parser.parse_args()
 
     # Dispatch to command handler
