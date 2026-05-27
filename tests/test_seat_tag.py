@@ -20,7 +20,7 @@ def aura_state(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(state_root))
     monkeypatch.setenv("AURA_FLEET", "test-fleet")
     monkeypatch.delenv("DESKS_CALLER", raising=False)
-    monkeypatch.delenv("DESKS_REHOME", raising=False)
+    monkeypatch.delenv("DESKS_RENAME", raising=False)
     return state_root
 
 
@@ -288,12 +288,12 @@ def test_tag_records_caller_from_environment(monkeypatch, aura_state):
     assert matches[-1]["evidence"]["caller"] == "desks-resolve"
 
 
-def test_tag_rehome_flag_recorded_in_evidence(monkeypatch, aura_state):
+def test_tag_rename_flag_recorded_in_evidence(monkeypatch, aura_state):
     from commands import seat as seat_cmd
     from lib import registry, session_ledger
 
     monkeypatch.setenv("DESKS_CALLER", "desks-resolve")
-    monkeypatch.setenv("DESKS_REHOME", "true")
+    monkeypatch.setenv("DESKS_RENAME", "true")
     _seed_seat()
 
     args = argparse.Namespace(
@@ -306,7 +306,7 @@ def test_tag_rehome_flag_recorded_in_evidence(monkeypatch, aura_state):
 
     rows = session_ledger.iter_records()
     matches = [r for r in rows if r.get("event") == "seat_metadata_tagged"]
-    assert matches[-1]["evidence"]["rehome"] is True
+    assert matches[-1]["evidence"]["rename"] is True
 
 
 def test_tag_rejects_malformed_set_pair(aura_state):

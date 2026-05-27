@@ -130,10 +130,10 @@ def normalize_agent_record(record: dict[str, Any], *, fleet: str | None = None, 
     final_fleet = fleet or normalized.get("fleet") or current_fleet()
     if final_name:
         normalized["name"] = final_name
-        normalized["seat"] = normalized.get("seat") or final_name
+        normalized["seat"] = final_name
         normalized["fleet"] = final_fleet
         normalized["seat_ref"] = _key(final_fleet, final_name)
-        normalized["target"] = normalized.get("target") or normalized["seat_ref"]
+        normalized["target"] = normalized["seat_ref"]
     if normalized.get("status") is not None:
         normalized["status"] = _canonical_status(normalized.get("status"))
     for key in ("pane_ref", "backend_ref"):
@@ -156,9 +156,9 @@ def normalize_agent_record(record: dict[str, Any], *, fleet: str | None = None, 
 
 def _with_logical_physical_fields(record: dict[str, Any], *, fleet: str, name: str) -> dict[str, Any]:
     enriched = normalize_agent_record(record, fleet=fleet, name=name)
-    enriched.setdefault("logical_fleet", fleet)
-    enriched.setdefault("logical_name", name)
-    enriched.setdefault("logical_ref", _key(fleet, name))
+    enriched["logical_fleet"] = fleet
+    enriched["logical_name"] = name
+    enriched["logical_ref"] = _key(fleet, name)
     physical_fleet = (
         enriched.get("physical_fleet")
         or _physical_fleet_from_ref(enriched.get("pane_ref"))
@@ -474,11 +474,10 @@ def _same_live_incarnation(left: dict[str, Any] | None, right: dict[str, Any] | 
     return False
 
 
-def rehome_preflight(
+def rename_preflight(
     source: str,
     *,
     new_name: str | None = None,
-    new_fleet: str | None = None,
 ) -> dict[str, Any]:
     source_fleet, source_name = split_ref(source)
     if not source_fleet:
@@ -493,11 +492,11 @@ def rehome_preflight(
     if not existing:
         resolved, chain = resolve_alias(source_ref)
         if chain:
-            return {"ok": False, "error": f"source is an alias; rehome canonical target instead: {resolved}", "alias_chain": chain}
+            return {"ok": False, "error": f"source is an alias; use canonical target instead: {resolved}", "alias_chain": chain}
         return {"ok": False, "error": f"agent not found: {source_ref}"}
 
     target_name = new_name or existing.get("name")
-    target_fleet = new_fleet or existing.get("fleet")
+    target_fleet = existing.get("fleet")
     target_ref = _key(target_fleet, target_name)
     target_existing = data.get(target_ref)
     repair_duplicate = False
@@ -516,42 +515,48 @@ def rehome_preflight(
     }
 
 
-def rehome_agent(
+def rename_agent(
     source: str,
     *,
-    new_name: str | None = None,
-    new_fleet: str | None = None,
+    new_name: str,
     metadata: dict[str, Any] | None = None,
     alias_old: bool = True,
 ) -> dict[str, Any]:
-    with _registry_lock():
-        preflight = rehome_preflight(source, new_name=new_name, new_fleet=new_fleet)
-        if not preflight.get("ok"):
-            return preflight
+    """Rename a seat inside its current fleet without changing fleet ownership."""
+    source_fleet, source_name = split_ref(source)
+    existing = get_agent(source_name, fleet=source_fleet)
+    if not existing:
+        resolved, chain = resolve_alias(source)
+        if chain:
+            return {"ok": False, "error": f"source is an alias; rename canonical target instead: {resolved}", "alias_chain": chain}
+        return {"ok": False, "error": f"agent not found: {source}"}
+    target_fleet = existing.get("fleet")
+    preflight = rename_preflight(source, new_name=new_name)
+    if not preflight.get("ok"):
+        return preflight
 
+    with _registry_lock():
         source_ref = preflight["source"]
         target_ref = preflight["target"]
         data = read_registry()
         existing = data.get(source_ref) or preflight["source_record"]
         target_existing = data.get(target_ref) if target_ref != source_ref else None
-        target_name = new_name or existing.get("name")
-        target_fleet = new_fleet or existing.get("fleet")
 
         record = dict(existing)
         if target_existing:
             record.update(target_existing)
         record.update(metadata or {})
-        record["name"] = target_name
+        record["name"] = new_name
         record["fleet"] = target_fleet
-        record["seat"] = target_name
+        record["seat"] = new_name
         record["seat_ref"] = target_ref
         record["logical_fleet"] = target_fleet
-        record["logical_name"] = target_name
-        record["rehome_source"] = source_ref
-        record["rehome_at"] = now_iso()
+        record["logical_name"] = new_name
+        record["rename_source"] = source_ref
+        record["rename_at"] = now_iso()
         record["last_seen"] = now_iso()
-        record.setdefault("physical_fleet", existing.get("backend_ref", "").split(":", 1)[0] if existing.get("backend_ref") else existing.get("fleet"))
-        record = _with_logical_physical_fields(record, fleet=target_fleet, name=target_name)
+        record.setdefault("physical_fleet", existing.get("physical_fleet") or target_fleet)
+        record = _with_logical_physical_fields(record, fleet=target_fleet, name=new_name)
         record = _without_transient_fields(record)
 
         if target_ref != source_ref:
@@ -559,7 +564,7 @@ def rehome_agent(
         data[target_ref] = record
         _write_registry_unlocked(data)
 
-    alias = add_alias(source_ref, target_ref, reason="rehome") if alias_old and target_ref != source_ref else None
+    alias = add_alias(source_ref, target_ref, reason="rename") if alias_old and target_ref != source_ref else None
     return {
         "ok": True,
         "source": source_ref,

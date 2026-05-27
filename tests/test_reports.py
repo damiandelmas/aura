@@ -368,7 +368,7 @@ def test_report_release_records_send_exception_without_breaking_report(monkeypat
     assert saved["attempts"][0]["result"]["error"] == "queue release send failed: boom"
 
 
-def test_report_release_matches_rehomed_seat_alias(monkeypatch, tmp_path):
+def test_report_release_matches_renamed_seat_alias(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.setenv("AURA_FLEET", "newfleet")
     monkeypatch.setenv("AURA_SEAT", "worker")

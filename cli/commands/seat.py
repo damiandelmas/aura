@@ -97,9 +97,9 @@ def _discover_pane(record: dict, pane: dict) -> dict:
 def _verified_move_source(record: dict) -> dict:
     """Resolve the real pane for a seat before moving it.
 
-    Registry pane refs are cached operational state. A rehome with
-    --move-terminal is a physical operation, so prefer launch/session evidence
-    when it can identify the live pane more accurately than the cached ref.
+    Registry pane refs are cached operational state. Window rename/adopt
+    operations are physical operations, so prefer launch/session evidence when
+    it can identify the live pane more accurately than the cached ref.
     """
     source = record.get("pane_ref") or record.get("terminal_ref")
     if not record.get("aura_launch_id") and not (record.get("runtime_session_id") or record.get("session_id")):
@@ -125,6 +125,10 @@ def _verified_move_source(record: dict) -> dict:
                     "pane_id": parts[3],
                     "pane_pid": int(parts[4]) if parts[4].isdigit() else None,
                 }
+                expected_name = str(record.get("name") or record.get("seat") or "")
+                expected_fleet = str(record.get("physical_fleet") or record.get("fleet") or "")
+                if pane["window_name"] == expected_name and pane["session"] == expected_fleet:
+                    return {"ok": True, "source": source, "refreshed": False, "discovery": stale_source_discovery}
                 stale_source_discovery = _discover_pane(record, pane)
                 if _discovery_matches_record(record, stale_source_discovery):
                     return {"ok": True, "source": source, "refreshed": False, "discovery": stale_source_discovery}
@@ -223,7 +227,7 @@ def _destination_collision(*, fleet: str, name: str, source_pane_id: str) -> dic
         "existing": matches[0] if len(matches) == 1 else None,
         "matches": matches,
         "source_pane_id": source_pane_id,
-        "hint": "move or rename the existing window first, or rehome with --index to an explicit free window slot",
+        "hint": "move or rename the existing window first, or choose an explicit free window slot",
     }
 
 
@@ -1602,7 +1606,7 @@ def _tag(args, registry, terminal=None) -> dict:
                 "unset_keys": sorted(unset_keys),
                 "changed_keys": changed_keys,
                 "expected_seat_instance_id": expected_instance_id,
-                "rehome": os.environ.get("DESKS_REHOME") == "true",
+                "rename": os.environ.get("DESKS_RENAME") == "true",
                 "before": before,
                 "after": after,
             },
@@ -2363,6 +2367,79 @@ def _quarantine(args, registry, terminal) -> dict:
     }
 
 
+def _rename(args, registry) -> dict:
+    source = getattr(args, "source", None)
+    name = getattr(args, "name", None)
+    if not source or not name:
+        return {"ok": False, "error": "usage", "detail": "rename requires SOURCE and NEW_NAME"}
+    if ":" in name:
+        return {
+            "ok": False,
+            "error": "rename-target-must-be-seat-name",
+            "detail": "use only the new seat name; rename never changes fleet",
+        }
+    preflight = registry.rename_preflight(source, new_name=name)
+    if not preflight.get("ok"):
+        return preflight
+    existing = preflight.get("source_record")
+    if not existing:
+        return {"ok": False, "error": f"agent not found: {source}"}
+    fleet = existing.get("fleet")
+    current_name = existing.get("name") or existing.get("seat")
+    if name == current_name:
+        return {"ok": True, "renamed": False, "source": preflight.get("source"), "target": preflight.get("source")}
+
+    moved = _move_terminal(existing, fleet=fleet, name=name, index=None)
+    if not moved.get("ok"):
+        return moved
+    metadata = {
+        "terminal_ref": moved["terminal_ref"],
+        "backend_ref": moved["backend_ref"],
+        "pane_ref": moved["pane_ref"],
+        "physical_fleet": moved["physical_fleet"],
+    }
+    if moved.get("source_refreshed"):
+        metadata["rename_source_refreshed"] = True
+        metadata["rename_previous_pane_ref"] = moved.get("previous_pane_ref")
+    if moved.get("source_warning"):
+        metadata["rename_source_warning"] = moved.get("source_warning")
+
+    result = registry.rename_agent(source, new_name=name, metadata=metadata, alias_old=True)
+    if result.get("ok"):
+        try:
+            from lib import session_ledger
+
+            after = result.get("record")
+            session_ledger.append_seat_event(
+                event="seat_renamed",
+                before=existing,
+                after=after,
+                evidence={
+                    "source": result.get("source"),
+                    "target": result.get("target"),
+                    "same_fleet": True,
+                    "metadata_keys": sorted(metadata.keys()),
+                },
+                source_command="aura rename",
+                source_ref=result.get("source"),
+                target_ref=result.get("target"),
+            )
+            if result.get("alias"):
+                session_ledger.append_seat_event(
+                    event="seat_alias_created",
+                    before=existing,
+                    after=after,
+                    evidence=result.get("alias"),
+                    source_command="aura rename",
+                    source_ref=result["alias"].get("source"),
+                    target_ref=result["alias"].get("target"),
+                )
+        except Exception:
+            pass
+        result["renamed"] = True
+    return result
+
+
 def run(args):
     from lib import registry
 
@@ -2445,99 +2522,6 @@ def run(args):
             identity_id=getattr(args, "identity_id", None),
             identity_label=getattr(args, "identity_label", None),
         )
-    if action == "rehome":
-        try:
-            metadata = _load_role_metadata(getattr(args, "role_home", None), getattr(args, "manifest", None))
-        except Exception as exc:
-            return {"ok": False, "error": f"failed to load role metadata: {exc}"}
-        metadata = {key: value for key, value in metadata.items() if value}
-        if getattr(args, "index", None) is not None and not getattr(args, "move_terminal", False):
-            return {"ok": False, "error": "--index requires --move-terminal"}
-        if getattr(args, "move_terminal", False) and os.environ.get("AURA_ENABLE_UNSAFE_MOVE_TERMINAL") != "1":
-            return {
-                "ok": False,
-                "error": "rehome --move-terminal is parked pending pane-invariant hardening",
-                "safe_workflow": "cut/spawn for new names, or holding discover + seat adopt --pane for preserving a live pane",
-            }
-        preflight = registry.rehome_preflight(
-            args.source,
-            new_name=getattr(args, "name", None),
-            new_fleet=getattr(args, "fleet", None),
-        )
-        if not preflight.get("ok"):
-            return preflight
-        existing = preflight.get("source_record")
-        target_name = getattr(args, "name", None) or (existing or {}).get("name")
-        target_fleet = getattr(args, "fleet", None) or (existing or {}).get("fleet")
-        same_fleet_rename = bool(
-            existing
-            and target_fleet == existing.get("fleet")
-            and target_name
-            and target_name != existing.get("name")
-        )
-        physical_move = bool(getattr(args, "move_terminal", False) or same_fleet_rename)
-        if physical_move:
-            if not existing:
-                return {"ok": False, "error": f"agent not found: {args.source}"}
-            moved = _move_terminal(
-                existing,
-                fleet=target_fleet,
-                name=target_name,
-                index=getattr(args, "index", None),
-            )
-            if not moved.get("ok"):
-                return moved
-            metadata.update({
-                "terminal_ref": moved["terminal_ref"],
-                "backend_ref": moved["backend_ref"],
-                "pane_ref": moved["pane_ref"],
-                "physical_fleet": moved["physical_fleet"],
-            })
-            if moved.get("source_refreshed"):
-                metadata["rehome_source_refreshed"] = True
-                metadata["rehome_previous_pane_ref"] = moved.get("previous_pane_ref")
-            if moved.get("source_warning"):
-                metadata["rehome_source_warning"] = moved.get("source_warning")
-        result = registry.rehome_agent(
-            args.source,
-            new_name=getattr(args, "name", None),
-            new_fleet=getattr(args, "fleet", None),
-            metadata=metadata,
-            alias_old=not getattr(args, "no_alias_old", False),
-        )
-        if result.get("ok"):
-            result.setdefault("compatibility_warning", "seat rehome preserves legacy logical rename/readdress behavior; use aura placement add/remove for grouping without terminal movement")
-            try:
-                from lib import session_ledger
-
-                after = result.get("record")
-                event = "seat_role_adopted" if metadata and result.get("source") == result.get("target") else "seat_rehomed"
-                session_ledger.append_seat_event(
-                    event=event,
-                    before=existing,
-                    after=after,
-                    evidence={
-                        "source": result.get("source"),
-                        "target": result.get("target"),
-                        "move_terminal": physical_move,
-                        "implicit_same_fleet_rename": same_fleet_rename,
-                        "metadata_keys": sorted(metadata.keys()),
-                    },
-                    source_command="aura seat rehome",
-                    source_ref=result.get("source"),
-                    target_ref=result.get("target"),
-                )
-                if result.get("alias"):
-                    session_ledger.append_seat_event(
-                        event="seat_alias_created",
-                        before=existing,
-                        after=after,
-                        evidence=result.get("alias"),
-                        source_command="aura seat rehome",
-                        source_ref=result["alias"].get("source"),
-                        target_ref=result["alias"].get("target"),
-                    )
-            except Exception:
-                pass
-        return result
+    if action == "rename":
+        return _rename(args, registry)
     return {"ok": False, "error": f"unknown seat action: {action}"}

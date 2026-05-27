@@ -1687,7 +1687,7 @@ def test_sessions_bind_current_is_idempotent(monkeypatch, tmp_path):
     assert registry.get_agent("engineer", fleet="fleet-a")["runtime_session_confidence"] == "exact"
 
 
-def test_sessions_bind_hook_follows_rehome_alias_without_recreating_source(monkeypatch, tmp_path):
+def test_sessions_bind_hook_follows_rename_alias_without_recreating_source(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
 
     from commands import sessions
@@ -1701,8 +1701,8 @@ def test_sessions_bind_hook_follows_rehome_alias_without_recreating_source(monke
         "seat_instance_id": "si_hook",
         "pane_ref": "tmux:aura-refresh-test:%341",
     })
-    rehome = registry.rehome_agent("aura-refresh-test:operator", new_name="pilot")
-    assert rehome["ok"] is True
+    renamed = registry.rename_agent("aura-refresh-test:operator", new_name="pilot")
+    assert renamed["ok"] is True
 
     result = sessions.run(argparse.Namespace(
         sessions_action="bind-hook",

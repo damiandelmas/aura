@@ -123,7 +123,7 @@ def test_dash_identity_command_returns_surface(aura_state):
     assert result["compact"] == "runway-engineering:lead | si_dash002 | codex unbound"
 
 
-def test_dashboard_identity_updates_after_rehome(aura_state):
+def test_dashboard_identity_updates_after_rename(aura_state):
     from lib import dashboard_identity, registry
 
     registry.upsert_agent({
@@ -133,7 +133,7 @@ def test_dashboard_identity_updates_after_rehome(aura_state):
         "registered": True,
         "seat_instance_id": "si_dash003",
     })
-    registry.rehome_agent("runway-engineering:old-name", new_name="new-name")
+    registry.rename_agent("runway-engineering:old-name", new_name="new-name")
 
     result = dashboard_identity.build_dashboard_identity("runway-engineering:new-name")
 

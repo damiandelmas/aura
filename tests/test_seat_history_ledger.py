@@ -40,11 +40,11 @@ def test_append_seat_event_normalizes_before_after(monkeypatch, tmp_path):
     }
 
     event = session_ledger.append_seat_event(
-        event="seat_rehomed",
+        event="seat_renamed",
         before=before,
         after=after,
         evidence={"reason": "unit-test"},
-        source_command="aura seat rehome",
+        source_command="historical-ledger-import",
     )
 
     assert event["schema"] == "aura.seat_history.v1"
@@ -66,7 +66,7 @@ def test_append_seat_event_normalizes_before_after(monkeypatch, tmp_path):
     assert "desks_role_id" not in event["after"]
 
 
-def test_seat_history_for_target_follows_rehome_alias(monkeypatch, tmp_path):
+def test_seat_history_for_target_follows_rename_alias(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
     from lib import session_ledger
@@ -75,7 +75,7 @@ def test_seat_history_for_target_follows_rehome_alias(monkeypatch, tmp_path):
     new = {"name": "engineer", "fleet": "new", "runtime": "codex", "runtime_session_id": "s1"}
     session_ledger.append_seat_event(event="seat_spawned", after=old)
     session_ledger.append_seat_event(
-        event="seat_rehomed",
+        event="seat_renamed",
         before=old,
         after=new,
         source_ref="old:engineer",
@@ -90,7 +90,7 @@ def test_seat_history_for_target_follows_rehome_alias(monkeypatch, tmp_path):
     )
 
     rows = session_ledger.seat_history_for_target("new:engineer")
-    assert [row["event"] for row in rows] == ["seat_spawned", "seat_rehomed", "seat_alias_created"]
+    assert [row["event"] for row in rows] == ["seat_spawned", "seat_renamed", "seat_alias_created"]
 
 
 def test_restore_plan_from_ledger_uses_latest_active_state(monkeypatch, tmp_path):
@@ -124,7 +124,7 @@ def test_restore_plan_from_ledger_uses_latest_active_state(monkeypatch, tmp_path
         "cwd": "/repo",
     }
     session_ledger.append_seat_event(event="seat_spawned", after=old)
-    session_ledger.append_seat_event(event="seat_rehomed", before=old, after=new)
+    session_ledger.append_seat_event(event="seat_renamed", before=old, after=new)
     session_ledger.append_seat_event(event="seat_spawned", after=dead)
     session_ledger.append_seat_event(event="seat_cut", before=dead, after={**dead, "status": "dead"})
 

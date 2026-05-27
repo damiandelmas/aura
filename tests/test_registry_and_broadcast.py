@@ -157,46 +157,47 @@ def test_get_agent_prefers_current_fleet_and_accepts_fleet_qualified_name(tmp_pa
     assert registry.get_agent("flex-leaders-2:engineer")["fleet"] == "flex-leaders-2"
 
 
-def test_rehome_preserves_physical_refs_and_adds_alias(tmp_path, monkeypatch):
+def test_rename_preserves_physical_refs_and_adds_alias(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     from lib import registry
 
     registry.upsert_agent({
         "name": "old-seat",
-        "fleet": "old-fleet",
+        "fleet": "unit-fleet",
         "runtime": "codex",
         "session_id": "session-1",
         "runtime_session_id": "session-1",
-        "terminal_ref": "old-fleet:old-seat",
-        "backend_ref": "old-fleet:old-seat",
-        "pane_ref": "tmux:old-fleet:%12",
+        "terminal_ref": "unit-fleet:old-seat",
+        "backend_ref": "unit-fleet:old-seat",
+        "pane_ref": "tmux:unit-fleet:%12",
         "cwd": "/tmp/repo",
     })
 
-    result = registry.rehome_agent(
-        "old-fleet:old-seat",
+    result = registry.rename_agent(
+        "unit-fleet:old-seat",
         new_name="leader-engine",
-        new_fleet="flex-leaders",
         metadata={"desks_role_id": "leader-engine", "desks_product": "flex"},
     )
 
     assert result["ok"] is True
-    assert result["source"] == "old-fleet:old-seat"
-    assert result["target"] == "flex-leaders:leader-engine"
-    assert registry.get_agent("old-fleet:old-seat")["name"] == "leader-engine"
-    assert registry.get_agent("old-fleet:old-seat")["resolved_from"] == "old-fleet:old-seat"
-    moved = registry.get_agent("flex-leaders:leader-engine")
-    assert moved["fleet"] == "flex-leaders"
-    assert moved["seat_ref"] == "flex-leaders:leader-engine"
-    assert moved["pane_ref"] == "tmux:old-fleet:%12"
-    assert moved["backend_ref"] == "old-fleet:old-seat"
+    assert result["source"] == "unit-fleet:old-seat"
+    assert result["target"] == "unit-fleet:leader-engine"
+    assert registry.get_agent("unit-fleet:old-seat")["name"] == "leader-engine"
+    assert registry.get_agent("unit-fleet:old-seat")["resolved_from"] == "unit-fleet:old-seat"
+    moved = registry.get_agent("unit-fleet:leader-engine")
+    assert moved["fleet"] == "unit-fleet"
+    assert moved["seat_ref"] == "unit-fleet:leader-engine"
+    assert moved["pane_ref"] == "tmux:unit-fleet:%12"
+    assert moved["backend_ref"] == "unit-fleet:old-seat"
     assert moved["session_id"] == "session-1"
     assert moved["desks_role_id"] == "leader-engine"
     assert moved["desks_product"] == "flex"
-    assert registry.read_aliases()["old-fleet:old-seat"]["target"] == "flex-leaders:leader-engine"
+    assert moved["rename_source"] == "unit-fleet:old-seat"
+    assert registry.read_aliases()["unit-fleet:old-seat"]["target"] == "unit-fleet:leader-engine"
+    assert registry.read_aliases()["unit-fleet:old-seat"]["reason"] == "rename"
 
 
-def test_rehome_repairs_same_incarnation_duplicate_target(tmp_path, monkeypatch):
+def test_rename_repairs_same_incarnation_duplicate_target(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     from lib import registry
 
@@ -219,10 +220,10 @@ def test_rehome_repairs_same_incarnation_duplicate_target(tmp_path, monkeypatch)
         "runtime_session_id": "session-same",
         "terminal_ref": "aura-refresh-test:pilot",
         "backend_ref": "aura-refresh-test:pilot",
-        "rehome_source": "aura-refresh-test:operator",
+        "rename_source": "aura-refresh-test:operator",
     })
 
-    result = registry.rehome_agent("aura-refresh-test:operator", new_name="pilot")
+    result = registry.rename_agent("aura-refresh-test:operator", new_name="pilot")
 
     assert result["ok"] is True
     assert result["repair_duplicate"] is True
@@ -232,7 +233,7 @@ def test_rehome_repairs_same_incarnation_duplicate_target(tmp_path, monkeypatch)
     assert registry.read_aliases()["aura-refresh-test:operator"]["target"] == "aura-refresh-test:pilot"
 
 
-def test_rehome_rejects_different_incarnation_target(tmp_path, monkeypatch):
+def test_rename_rejects_different_incarnation_target(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     from lib import registry
 
@@ -251,41 +252,17 @@ def test_rehome_rejects_different_incarnation_target(tmp_path, monkeypatch):
         "pane_ref": "tmux:aura-refresh-test:%342",
     })
 
-    result = registry.rehome_agent("aura-refresh-test:operator", new_name="pilot")
+    result = registry.rename_agent("aura-refresh-test:operator", new_name="pilot")
 
     assert result["ok"] is False
     assert result["reason"] == "target-registry-exists"
     assert set(registry.read_registry().keys()) == {"aura-refresh-test:operator", "aura-refresh-test:pilot"}
 
 
-def test_seat_rehome_command_loads_role_metadata(tmp_path, monkeypatch):
+def test_aura_rename_replaces_public_seat_rehome_command(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
-    from commands import seat
     from lib import registry
 
-    role_home = tmp_path / "roles" / "leader-engine"
-    role_home.mkdir(parents=True)
-    for name in ("SOUL.md", "AGENTS.md", "MEMORY.md", "BOOTSTRAP.md", "COMPRESSION.md"):
-        (role_home / name).write_text(name, encoding="utf-8")
-    (role_home / "role.json").write_text(
-        '''{
-          "schema": "desks.role.v1",
-          "product": "flex",
-          "unit": "engine",
-          "role_id": "leader-engine",
-          "seat": "leader-engine",
-          "fleet": "flex-leaders",
-          "workspace_root": "/tmp",
-          "files": {
-            "soul": "SOUL.md",
-            "agents": "AGENTS.md",
-            "memory": "MEMORY.md",
-            "bootstrap": "BOOTSTRAP.md",
-            "compression": "COMPRESSION.md"
-          }
-        }''',
-        encoding="utf-8",
-    )
     registry.upsert_agent({
         "name": "old-seat",
         "fleet": "old-fleet",
@@ -293,25 +270,44 @@ def test_seat_rehome_command_loads_role_metadata(tmp_path, monkeypatch):
         "pane_ref": "tmux:old-fleet:%12",
     })
 
-    result = seat.run(argparse.Namespace(
-        seat_action="rehome",
-        source="old-fleet:old-seat",
-        name="leader-engine",
-        fleet="flex-leaders",
-        role_home=str(role_home),
-        manifest=None,
-        no_alias_old=False,
-    ))
+    env = {
+        **os.environ,
+        "AURA_STATE_DIR": str(tmp_path / ".aura"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    top_help = subprocess.run(
+        [sys.executable, str(ROOT / "cli" / "aura"), "--help"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    seat_help = subprocess.run(
+        [sys.executable, str(ROOT / "cli" / "aura"), "seat", "--help"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    old_command = subprocess.run(
+        [sys.executable, str(ROOT / "cli" / "aura"), "seat", "rehome", "old-fleet:old-seat", "--name", "leader-engine"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
 
-    assert result["ok"] is True
-    moved = registry.get_agent("flex-leaders:leader-engine")
-    assert moved["desks_role_home"] == str(role_home)
-    assert moved["desks_role_id"] == "leader-engine"
-    assert moved["desks_product"] == "flex"
-    assert moved["desks_unit"] == "engine"
+    assert top_help.returncode == 0
+    assert "rename" in top_help.stdout
+    assert seat_help.returncode == 0
+    assert "rehome" not in seat_help.stdout
+    assert old_command.returncode != 0
+    assert "invalid choice" in old_command.stderr
+    assert registry.get_agent("old-fleet:old-seat") is not None
+    assert registry.get_agent("flex-leaders:leader-engine") is None
 
 
-def test_seat_rehome_same_fleet_rename_mirrors_terminal_without_unsafe_flag(tmp_path, monkeypatch):
+def test_aura_rename_same_fleet_mirrors_terminal_without_unsafe_flag(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     monkeypatch.delenv("AURA_ENABLE_UNSAFE_MOVE_TERMINAL", raising=False)
     from commands import seat
@@ -341,313 +337,77 @@ def test_seat_rehome_same_fleet_rename_mirrors_terminal_without_unsafe_flag(tmp_
 
     monkeypatch.setattr(seat, "_move_terminal", fake_move_terminal)
     result = seat.run(argparse.Namespace(
-        seat_action="rehome",
+        seat_action="rename",
         source="unitfleet:old-seat",
         name="new-seat",
-        fleet=None,
-        role_home=None,
-        manifest=None,
-        move_terminal=False,
-        index=None,
-        no_alias_old=False,
     ))
 
     assert result["ok"] is True
+    assert result["renamed"] is True
     moved = registry.get_agent("unitfleet:new-seat")
     assert moved["terminal_ref"] == "unitfleet:new-seat"
     assert moved["backend_ref"] == "unitfleet:new-seat"
     assert moved["pane_ref"] == "tmux:unitfleet:%12"
+    assert moved["rename_source"] == "unitfleet:old-seat"
+    assert result["alias"]["reason"] == "rename"
 
 
-def test_seat_rehome_move_terminal_updates_physical_refs(tmp_path, monkeypatch):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
-    monkeypatch.setenv("AURA_ENABLE_UNSAFE_MOVE_TERMINAL", "1")
+def test_move_terminal_prefers_exact_cached_source_for_plain_rename(monkeypatch):
     from commands import seat
-    from lib import registry
 
-    registry.upsert_agent({
-        "name": "old-seat",
-        "fleet": "old-fleet",
+    record = {
+        "name": "outreach",
+        "seat": "outreach",
+        "fleet": "flexchat-marketing",
+        "physical_fleet": "flexchat-marketing",
         "runtime": "codex",
-        "pane_ref": "tmux:old-fleet:%12",
-        "terminal_ref": "old-fleet:old-seat",
-        "backend_ref": "old-fleet:old-seat",
-    })
-
-    def fake_move_terminal(record, *, fleet, name, index):
-        assert record["pane_ref"] == "tmux:old-fleet:%12"
-        assert fleet == "new-fleet"
-        assert name == "new-seat"
-        assert index == "2"
-        return {
-            "ok": True,
-            "terminal_ref": "new-fleet:new-seat",
-            "backend_ref": "new-fleet:new-seat",
-            "pane_ref": "tmux:new-fleet:%12",
-            "physical_fleet": "new-fleet",
-        }
-
-    monkeypatch.setattr(seat, "_move_terminal", fake_move_terminal)
-    result = seat.run(argparse.Namespace(
-        seat_action="rehome",
-        source="old-fleet:old-seat",
-        name="new-seat",
-        fleet="new-fleet",
-        role_home=None,
-        manifest=None,
-        move_terminal=True,
-        index="2",
-        no_alias_old=False,
-    ))
-
-    assert result["ok"] is True
-    moved = registry.get_agent("new-fleet:new-seat")
-    assert moved["terminal_ref"] == "new-fleet:new-seat"
-    assert moved["backend_ref"] == "new-fleet:new-seat"
-    assert moved["pane_ref"] == "tmux:new-fleet:%12"
-    assert moved["physical_fleet"] == "new-fleet"
-
-
-def test_seat_rehome_move_terminal_refreshes_stale_pane_ref(tmp_path, monkeypatch):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
-    monkeypatch.setenv("AURA_ENABLE_UNSAFE_MOVE_TERMINAL", "1")
-    from commands import seat
-    from lib import registry
-
-    registry.upsert_agent({
-        "name": "developer",
-        "fleet": "flex-desk",
-        "runtime": "codex",
-        "aura_launch_id": "aura-launch-real",
-        "runtime_session_id": "session-real",
-        "pane_ref": "tmux:flex-desks:%770",
-        "terminal_ref": "flex-desks:developer",
-        "backend_ref": "flex-desks:developer",
-    })
+        "aura_launch_id": "aura-launch-outreach",
+        "runtime_session_id": "session-outreach",
+        "pane_ref": "tmux:flexchat-marketing:%64",
+        "terminal_ref": "flexchat-marketing:outreach",
+        "backend_ref": "flexchat-marketing:outreach",
+    }
 
     monkeypatch.setattr(seat, "_list_tmux_panes", lambda: [
-        {"session": "flex-desks", "window_index": "7", "window_name": "developer-stale", "pane_id": "%770", "pane_pid": 770},
-        {"session": "flex-desk", "window_index": "1", "window_name": "developer", "pane_id": "%789", "pane_pid": 789},
+        {"session": "flexchat-marketing", "window_index": "2", "window_name": "outreach", "pane_id": "%64", "pane_pid": 640},
+        {"session": "flexchat-marketing", "window_index": "4", "window_name": "bash", "pane_id": "%130", "pane_pid": 130},
     ])
 
-    def fake_discover(record, pane):
-        if pane["pane_id"] == "%789":
+    def fake_discover(_record, pane):
+        if pane["pane_id"] == "%130":
             return {
-                "runtime_session_id": "session-real",
-                "runtime_session_evidence": {"aura_launch_id": "aura-launch-real"},
+                "runtime_session_id": "session-outreach",
+                "runtime_session_evidence": {"aura_launch_id": "aura-launch-outreach"},
             }
         return {}
 
     monkeypatch.setattr(seat, "_discover_pane", fake_discover)
 
-    calls = []
-
     def fake_run_tmux(args):
-        calls.append(args)
         if args[:3] == ["display-message", "-p", "-t"]:
             target = args[3]
             fmt = args[4]
-            if target == "flex-desks:%770" and "pane_pid" in fmt:
-                return subprocess.CompletedProcess(args, 0, stdout="flex-desks\t7\tdeveloper-stale\t%770\t770\n", stderr="")
-            if target == "flex-desk:%789" and fmt == "#{session_name}:#{window_index}:#{pane_id}":
-                return subprocess.CompletedProcess(args, 0, stdout="flex-desk:1:%789\n", stderr="")
-            if target == "%789" and fmt == "#{session_name}:#{window_index}:#{window_name}:#{pane_id}":
-                return subprocess.CompletedProcess(args, 0, stdout="flex-desks:8:developer:%789\n", stderr="")
+            if target == "flexchat-marketing:%64" and "pane_pid" in fmt:
+                return subprocess.CompletedProcess(args, 0, stdout="flexchat-marketing\t2\toutreach\t%64\t640\n", stderr="")
+            if target == "flexchat-marketing:%64" and fmt == "#{session_name}:#{window_index}:#{pane_id}":
+                return subprocess.CompletedProcess(args, 0, stdout="flexchat-marketing:2:%64\n", stderr="")
+            if target == "%64" and fmt == "#{session_name}:#{window_index}:#{window_name}:#{pane_id}":
+                return subprocess.CompletedProcess(args, 0, stdout="flexchat-marketing:2:marketing-manager:%64\n", stderr="")
         if args[:2] == ["has-session", "-t"]:
-            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-        if args[:2] == ["move-window", "-s"]:
-            assert args[2] == "flex-desk:1"
-            assert args[4] == "flex-desks:"
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if args[:2] == ["rename-window", "-t"]:
-            assert args[2] == "%789"
-            assert args[3] == "developer"
+            assert args[2] == "%64"
+            assert args[3] == "marketing-manager"
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-        return subprocess.CompletedProcess(args, 1, stdout="", stderr="unexpected")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr=f"unexpected {args}")
 
     monkeypatch.setattr(seat, "_run_tmux", fake_run_tmux)
 
-    result = seat.run(argparse.Namespace(
-        seat_action="rehome",
-        source="flex-desk:developer",
-        name="developer",
-        fleet="flex-desks",
-        role_home=None,
-        manifest=None,
-        move_terminal=True,
-        index=None,
-        no_alias_old=False,
-    ))
+    result = seat._move_terminal(record, fleet="flexchat-marketing", name="marketing-manager", index=None)
 
     assert result["ok"] is True
-    moved = registry.get_agent("flex-desks:developer")
-    assert moved["pane_ref"] == "tmux:flex-desks:%789"
-    assert moved["rehome_source_refreshed"] is True
-    assert moved["rehome_previous_pane_ref"] == "tmux:flex-desks:%770"
-
-
-def test_seat_rehome_move_terminal_refuses_destination_collision(tmp_path, monkeypatch):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
-    monkeypatch.setenv("AURA_ENABLE_UNSAFE_MOVE_TERMINAL", "1")
-    from commands import seat
-    from lib import registry
-
-    registry.upsert_agent({
-        "name": "developer",
-        "fleet": "flex-desk",
-        "runtime": "codex",
-        "aura_launch_id": "aura-launch-real",
-        "runtime_session_id": "session-real",
-        "pane_ref": "tmux:flex-desk:%789",
-        "terminal_ref": "flex-desk:developer",
-        "backend_ref": "flex-desk:developer",
-    })
-
-    def fake_discover(record, pane):
-        if pane["pane_id"] == "%789":
-            return {
-                "runtime_session_id": "session-real",
-                "runtime_session_evidence": {"aura_launch_id": "aura-launch-real"},
-            }
-        return {}
-
-    monkeypatch.setattr(seat, "_discover_pane", fake_discover)
-    monkeypatch.setattr(seat, "_list_tmux_panes", lambda: [
-        {"session": "flex-desks", "window_index": "7", "window_name": "developer", "pane_id": "%770", "pane_pid": 770},
-    ])
-
-    def fake_run_tmux(args):
-        if args[:3] == ["display-message", "-p", "-t"]:
-            target = args[3]
-            fmt = args[4]
-            if target == "flex-desk:%789" and "pane_pid" in fmt:
-                return subprocess.CompletedProcess(args, 0, stdout="flex-desk\t1\tdeveloper\t%789\t789\n", stderr="")
-            if target == "flex-desk:%789" and fmt == "#{session_name}:#{window_index}:#{pane_id}":
-                return subprocess.CompletedProcess(args, 0, stdout="flex-desk:1:%789\n", stderr="")
-            if target == "flex-desks:developer" and "pane_pid" in fmt:
-                return subprocess.CompletedProcess(args, 0, stdout="flex-desks\t7\tdeveloper\t%770\t770\n", stderr="")
-        if args[:2] == ["has-session", "-t"]:
-            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-        if args[:2] == ["move-window", "-s"]:
-            raise AssertionError("should refuse before moving a colliding destination")
-        return subprocess.CompletedProcess(args, 1, stdout="", stderr="unexpected")
-
-    monkeypatch.setattr(seat, "_run_tmux", fake_run_tmux)
-
-    result = seat.run(argparse.Namespace(
-        seat_action="rehome",
-        source="flex-desk:developer",
-        name="developer",
-        fleet="flex-desks",
-        role_home=None,
-        manifest=None,
-        move_terminal=True,
-        index=None,
-        no_alias_old=False,
-    ))
-
-    assert result["ok"] is False
-    assert result["reason"] == "target-window-exists"
-    assert result["existing"]["pane_id"] == "%770"
-    assert registry.get_agent("flex-desk:developer")["pane_ref"] == "tmux:flex-desk:%789"
-    assert registry.get_agent("flex-desks:developer") is None
-
-
-def test_seat_rehome_move_terminal_refuses_registry_collision_before_tmux(tmp_path, monkeypatch):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
-    monkeypatch.setenv("AURA_ENABLE_UNSAFE_MOVE_TERMINAL", "1")
-    from commands import seat
-    from lib import registry
-
-    registry.upsert_agent({
-        "name": "operator",
-        "fleet": "aura-refresh-test",
-        "runtime": "codex",
-        "seat_instance_id": "si_source",
-        "pane_ref": "tmux:aura-refresh-test:%341",
-    })
-    registry.upsert_agent({
-        "name": "pilot",
-        "fleet": "aura-refresh-test",
-        "runtime": "codex",
-        "seat_instance_id": "si_dest",
-        "pane_ref": "tmux:aura-refresh-test:%342",
-    })
-
-    def fail_move_terminal(record, *, fleet, name, index):
-        raise AssertionError("registry collision should be rejected before tmux mutation")
-
-    monkeypatch.setattr(seat, "_move_terminal", fail_move_terminal)
-
-    result = seat.run(argparse.Namespace(
-        seat_action="rehome",
-        source="aura-refresh-test:operator",
-        name="pilot",
-        fleet=None,
-        role_home=None,
-        manifest=None,
-        move_terminal=True,
-        index=None,
-        no_alias_old=False,
-    ))
-
-    assert result["ok"] is False
-    assert result["reason"] == "target-registry-exists"
-    assert set(registry.read_registry().keys()) == {"aura-refresh-test:operator", "aura-refresh-test:pilot"}
-
-
-def test_seat_rehome_move_terminal_is_parked_by_default(tmp_path, monkeypatch):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
-    monkeypatch.delenv("AURA_ENABLE_UNSAFE_MOVE_TERMINAL", raising=False)
-    from commands import seat
-    from lib import registry
-
-    registry.upsert_agent({
-        "name": "operator",
-        "fleet": "aura-refresh-test",
-        "runtime": "codex",
-        "seat_instance_id": "si_source",
-        "pane_ref": "tmux:aura-refresh-test:%341",
-    })
-
-    result = seat.run(argparse.Namespace(
-        seat_action="rehome",
-        source="aura-refresh-test:operator",
-        name="pilot",
-        fleet=None,
-        role_home=None,
-        manifest=None,
-        move_terminal=True,
-        index=None,
-        no_alias_old=False,
-    ))
-
-    assert result["ok"] is False
-    assert "parked" in result["error"]
-    assert "holding discover" in result["safe_workflow"]
-    assert registry.get_agent("aura-refresh-test:operator") is not None
-    assert registry.get_agent("aura-refresh-test:pilot") is None
-
-
-def test_seat_rehome_index_requires_move_terminal(tmp_path, monkeypatch):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
-    from commands import seat
-
-    result = seat.run(argparse.Namespace(
-        seat_action="rehome",
-        source="old-fleet:old-seat",
-        name="new-seat",
-        fleet="new-fleet",
-        role_home=None,
-        manifest=None,
-        move_terminal=False,
-        index="2",
-        no_alias_old=False,
-    ))
-
-    assert result["ok"] is False
-    assert "--index requires --move-terminal" in result["error"]
-
+    assert result["pane_ref"] == "tmux:flexchat-marketing:%64"
+    assert result["source_refreshed"] is False
 
 def test_seat_cut_routes_through_cut_command(monkeypatch):
     from commands import seat

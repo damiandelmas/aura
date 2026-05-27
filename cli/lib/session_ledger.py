@@ -301,7 +301,7 @@ def seat_history_for_target(target: str, *, limit: int | None = None, follow_ali
     while follow_aliases and changed:
         changed = False
         for row in rows:
-            if row.get("event") not in {"seat_rehomed", "seat_alias_created"}:
+            if row.get("event") not in {"seat_rehomed", "seat_renamed", "seat_alias_created"}:
                 continue
             refs = _row_refs(row)
             if refs & wanted and not refs <= wanted:
@@ -338,7 +338,7 @@ def project_latest_from_ledger(*, fleet: str | None = None) -> list[dict[str, An
             before = row.get("before") if isinstance(row.get("before"), dict) else None
             after = row.get("after") if isinstance(row.get("after"), dict) else None
             current_ref = row.get("seat_ref") or (after or {}).get("seat_ref") or (before or {}).get("seat_ref")
-            if event == "seat_rehomed":
+            if event in {"seat_rehomed", "seat_renamed"}:
                 old_ref = (before or {}).get("seat_ref") or row.get("source_ref")
                 new_ref = (after or {}).get("seat_ref") or row.get("target_ref") or current_ref
                 if old_ref and new_ref and old_ref in projections:
