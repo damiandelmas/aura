@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 
 def _ledger_latest_session_id(name):
-    """Return the most recent session_id for `name` from aura ledger (or None)."""
+    """Return the most recent session_id for `name` from the legacy ledger file."""
     try:
         from commands.ledger import read_ledger
         entries = read_ledger()

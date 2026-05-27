@@ -2052,6 +2052,7 @@ def test_capture_sense_and_watch_commands_are_public_contract_names():
     assert help_result.returncode == 0
     assert "capture" in help_result.stdout
     assert "stop" not in help_result.stdout
+    assert "ledger" not in help_result.stdout
     assert "sense" in help_result.stdout
     assert "watch" in help_result.stdout
     assert "posture" in help_result.stdout

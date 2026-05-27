@@ -19,7 +19,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, inspect as inspect_cmd, list as list_cmd, ledger, resolve, broadcast, capture, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
+from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, inspect as inspect_cmd, list as list_cmd, resolve, broadcast, capture, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
 from lib.output import output
 
 
@@ -56,7 +56,7 @@ def main():
         epilog=(
             "Agent primitives: spawn, seat, send, queue, report, view, inspect, event. "
             "Operator tools: capture, sense, watch, dash, deferred, sessions, "
-            "discord, clawhip, write, ledger."
+            "discord, clawhip, write."
         ),
     )
     parser.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
@@ -903,15 +903,6 @@ def main():
     p_placement_remove.add_argument("placement")
     p_placement_remove.add_argument("seat_ref", help="Logical seat ref, usually FLEET:SEAT")
 
-    # ledger
-    p_ledger = subparsers.add_parser("ledger", help="Query agent spawn history")
-    p_ledger.add_argument("name", nargs="?", default=None,
-                          help="Filter by agent name (substring match)")
-    p_ledger.add_argument("--fleet", help="Filter by fleet")
-    p_ledger.add_argument("--parent", help="Filter by parent session (prefix match)")
-    p_ledger.add_argument("--limit", "-n", type=int, default=20,
-                          help="Number of entries (default: 20)")
-
     hide_suppressed_subcommands(parser)
     args = parser.parse_args()
 
@@ -981,8 +972,6 @@ def main():
             result = clawhip_cmd.run(args)
         elif args.command == "discord":
             result = discord_bridge.run(args)
-        elif args.command == "ledger":
-            result = ledger.run(args)
         else:
             result = {"error": f"unknown command: {args.command}"}
     except Exception as e:
