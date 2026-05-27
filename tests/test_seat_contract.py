@@ -2054,6 +2054,7 @@ def test_capture_sense_and_watch_commands_are_public_contract_names():
     assert "stop" not in help_result.stdout
     assert "ledger" not in help_result.stdout
     assert "rename" not in help_result.stdout
+    assert "start" not in help_result.stdout
     assert "sense" in help_result.stdout
     assert "watch" in help_result.stdout
     assert "posture" in help_result.stdout

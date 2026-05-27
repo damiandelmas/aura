@@ -19,7 +19,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, start as start_cmd, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, inspect as inspect_cmd, list as list_cmd, resolve, broadcast, capture, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
+from commands import spawn, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, inspect as inspect_cmd, list as list_cmd, resolve, broadcast, capture, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
 from lib.output import output
 
 
@@ -116,19 +116,6 @@ def main():
                          help="Explicit OMX boxed-profile template under ~/.aura/runtime-profiles/omx/NAME")
     p_spawn.add_argument("--command", dest="launch_command", metavar="CMD",
                          help="Override runtime launch command for terminal-backed spawn")
-
-    # start
-    p_start = subparsers.add_parser(
-        "start",
-        help="Start a fresh Codex seat in a fleet",
-        description="Start a fresh Codex seat in a fleet",
-    )
-    p_start.add_argument("fleet", help="Fleet name")
-    p_start.add_argument("seat", help="Seat name")
-    p_start.add_argument("--cwd", metavar="PATH",
-                         help="Working directory for the seat (default: current dir)")
-    p_start.add_argument("--model", metavar="MODEL",
-                         help="Codex model option passed through to the runtime")
 
     # quick
     p_quick = subparsers.add_parser("quick", help="Launch a quick Aura-managed runtime seat from the current directory")
@@ -907,8 +894,6 @@ def main():
     try:
         if args.command == "spawn":
             result = spawn.run(args)
-        elif args.command == "start":
-            result = start_cmd.run(args)
         elif args.command == "quick":
             result = quick_cmd.run(args)
         elif args.command == "profile":
