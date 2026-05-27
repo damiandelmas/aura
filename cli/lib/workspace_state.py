@@ -80,24 +80,12 @@ def workspace_state_dir(workdir: Path) -> Path:
     return state.state_root() / "workspaces" / workspace_key(workdir)
 
 
-def legacy_workspace_state_dir(workdir: Path) -> Path:
-    return workdir / ".aura" / "state"
-
-
 def workspace_session_log(workdir: Path) -> Path:
     return workspace_state_dir(workdir) / "sessions.jsonl"
 
 
-def legacy_workspace_session_log(workdir: Path) -> Path:
-    return legacy_workspace_state_dir(workdir) / "sessions.jsonl"
-
-
 def latest_session_path(workdir: Path) -> Path:
     return workspace_state_dir(workdir) / "latest-session.json"
-
-
-def legacy_latest_session_path(workdir: Path) -> Path:
-    return legacy_workspace_state_dir(workdir) / "latest-session.json"
 
 
 def workspace_metadata_path(workdir: Path) -> Path:
@@ -138,20 +126,6 @@ def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
         f.write("\n")
 
 
-def _best_effort_legacy_append(workdir: Path, record: dict[str, Any]) -> None:
-    try:
-        _append_jsonl(legacy_workspace_session_log(workdir), record)
-    except OSError:
-        pass
-
-
-def _best_effort_legacy_latest(workdir: Path, record: dict[str, Any]) -> None:
-    try:
-        _atomic_write_json(legacy_latest_session_path(workdir), record)
-    except OSError:
-        pass
-
-
 def append_session_record(workdir: Path, record: dict[str, Any]) -> dict[str, Any]:
     enriched = {
         "timestamp": now_iso(),
@@ -162,7 +136,6 @@ def append_session_record(workdir: Path, record: dict[str, Any]) -> dict[str, An
     path = workspace_session_log(workdir)
     _write_workspace_metadata(workdir)
     _append_jsonl(path, enriched)
-    _best_effort_legacy_append(workdir, enriched)
     return enriched
 
 
@@ -170,4 +143,3 @@ def write_latest_session(workdir: Path, record: dict[str, Any]) -> None:
     path = latest_session_path(workdir)
     _write_workspace_metadata(workdir)
     _atomic_write_json(path, record)
-    _best_effort_legacy_latest(workdir, record)

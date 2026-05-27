@@ -69,7 +69,7 @@ def test_workspace_state_uses_global_state_root_with_stable_workspace_key(monkey
     assert json.loads(workspace_state.workspace_metadata_path(workdir).read_text(encoding="utf-8"))["workspace_root"] == str(workdir)
 
 
-def test_workspace_state_mirrors_legacy_local_state(monkeypatch, tmp_path):
+def test_workspace_state_does_not_write_project_local_state(monkeypatch, tmp_path):
     root = tmp_path / "state"
     workdir = tmp_path / "projects" / "runway"
     workdir.mkdir(parents=True)
@@ -80,10 +80,7 @@ def test_workspace_state_mirrors_legacy_local_state(monkeypatch, tmp_path):
     record = workspace_state.append_session_record(workdir, {"event": "spawn", "seat": "lead"})
     workspace_state.write_latest_session(workdir, record)
 
-    legacy_log = workdir / ".aura" / "state" / "sessions.jsonl"
-    legacy_latest = workdir / ".aura" / "state" / "latest-session.json"
-    assert json.loads(legacy_log.read_text(encoding="utf-8").splitlines()[-1])["seat"] == "lead"
-    assert json.loads(legacy_latest.read_text(encoding="utf-8"))["seat"] == "lead"
+    assert not (workdir / ".aura" / "state").exists()
 
 
 def test_explicit_registry_and_delivery_overrides_still_win(monkeypatch, tmp_path):
