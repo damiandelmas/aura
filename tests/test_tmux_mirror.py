@@ -58,6 +58,24 @@ def test_join_managed_marks_managed_unmanaged_and_missing():
     assert result["missing_managed"][0]["logical_ref"] == "logical:stale"
 
 
+def test_join_managed_requires_session_for_session_qualified_pane_ref():
+    from lib import tmux_mirror
+
+    panes = tmux_mirror.parse_panes(
+        "live-fleet\t@1\t1\tworker\t%12\t0\t1234\t/tmp/project\tcodex\t1\n"
+    )
+    records = [
+        {"fleet": "old-fleet", "name": "stale", "runtime": "codex", "pane_ref": "tmux:old-fleet:%12", "seat_instance_id": "si_old"},
+        {"fleet": "live-fleet", "name": "worker", "runtime": "codex", "pane_ref": "tmux:live-fleet:%12", "seat_instance_id": "si_live"},
+    ]
+
+    result = tmux_mirror.join_managed(panes, records)
+
+    managed = result["panes"][0]["managed"]
+    assert [row["logical_ref"] for row in managed] == ["live-fleet:worker"]
+    assert result["missing_managed"][0]["logical_ref"] == "old-fleet:stale"
+
+
 def test_join_managed_reports_topology_hygiene_audits():
     from lib import tmux_mirror
 

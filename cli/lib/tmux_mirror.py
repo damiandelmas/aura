@@ -34,15 +34,16 @@ def _logical_ref(record: dict[str, Any]) -> str | None:
     return f"{fleet}:{seat}" if fleet else str(seat)
 
 
-def _pane_id_from_ref(value: str | None) -> str | None:
+def _pane_ref_parts(value: str | None) -> tuple[str | None, str | None]:
     if not value:
-        return None
+        return None, None
     subject = str(value)
     if subject.startswith("tmux:"):
         subject = subject[len("tmux:"):]
     if ":" in subject:
-        subject = subject.rsplit(":", 1)[1]
-    return subject if subject.startswith("%") else None
+        session, pane_id = subject.rsplit(":", 1)
+        return session or None, pane_id if pane_id.startswith("%") else None
+    return None, subject if subject.startswith("%") else None
 
 
 def _physical_fleet_from_ref(value: str | None) -> str | None:
@@ -178,16 +179,26 @@ def list_physical_panes(*, runner: Callable[..., subprocess.CompletedProcess] | 
 
 def join_managed(panes: list[dict[str, Any]], records: list[dict[str, Any]]) -> dict[str, Any]:
     """Join physical panes to managed Aura registry rows by pane id/ref."""
-    by_pane_id: dict[str, list[dict[str, Any]]] = {}
+    by_exact_pane: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    by_legacy_pane_id: dict[str, list[dict[str, Any]]] = {}
     for record in records:
-        pane_id = _pane_id_from_ref(record.get("pane_ref"))
-        if pane_id:
-            by_pane_id.setdefault(pane_id, []).append(record)
+        session, pane_id = _pane_ref_parts(record.get("pane_ref"))
+        if not pane_id:
+            continue
+        if session:
+            by_exact_pane.setdefault((session, pane_id), []).append(record)
+        else:
+            by_legacy_pane_id.setdefault(pane_id, []).append(record)
 
     joined = []
     seen_refs: set[str] = set()
     for pane in panes:
-        matches = by_pane_id.get(str(pane.get("pane_id") or ""), [])
+        pane_id = str(pane.get("pane_id") or "")
+        session = str(pane.get("tmux_session") or pane.get("physical_fleet") or "")
+        matches = [
+            *by_exact_pane.get((session, pane_id), []),
+            *by_legacy_pane_id.get(pane_id, []),
+        ]
         managed = []
         for record in matches:
             logical_ref = _logical_ref(record)
