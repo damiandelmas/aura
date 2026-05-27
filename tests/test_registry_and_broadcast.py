@@ -259,7 +259,7 @@ def test_rename_rejects_different_incarnation_target(tmp_path, monkeypatch):
     assert set(registry.read_registry().keys()) == {"aura-refresh-test:operator", "aura-refresh-test:pilot"}
 
 
-def test_aura_rename_replaces_public_seat_rehome_command(tmp_path, monkeypatch):
+def test_aura_seat_rename_replaces_public_rehome_and_top_level_rename(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     from lib import registry
 
@@ -298,8 +298,9 @@ def test_aura_rename_replaces_public_seat_rehome_command(tmp_path, monkeypatch):
     )
 
     assert top_help.returncode == 0
-    assert "rename" in top_help.stdout
+    assert "rename" not in top_help.stdout
     assert seat_help.returncode == 0
+    assert "rename" in seat_help.stdout
     assert "rehome" not in seat_help.stdout
     assert old_command.returncode != 0
     assert "invalid choice" in old_command.stderr

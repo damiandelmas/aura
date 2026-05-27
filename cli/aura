@@ -329,21 +329,18 @@ def main():
     p_queue.add_argument("--release-report", help=argparse.SUPPRESS)
     p_queue.add_argument("--delay", default="0", help=argparse.SUPPRESS)
 
-    # rename
-    p_rename = subparsers.add_parser(
-        "rename",
-        help="Rename a live seat inside its current fleet",
-        description="Rename a live seat inside its current fleet. This preserves the runtime process and session, renames the tmux window, and updates the Aura registry row.",
-    )
-    p_rename.add_argument("source", help="Existing seat ref, usually fleet:seat")
-    p_rename.add_argument("name", help="New seat name only; this command never changes fleet")
-    p_rename.set_defaults(seat_action="rename")
-
     # seat
     p_seat = subparsers.add_parser("seat", help="Manage logical seat identity")
     seat_sub = p_seat.add_subparsers(dest="seat_action", required=True)
     p_seat_resolve = seat_sub.add_parser("resolve", help="Resolve a seat, following aliases")
     p_seat_resolve.add_argument("target")
+    p_seat_rename = seat_sub.add_parser(
+        "rename",
+        help="Rename a live seat inside its current fleet",
+        description="Rename a live seat inside its current fleet. This preserves the runtime process and session, renames the tmux window, and updates the Aura registry row.",
+    )
+    p_seat_rename.add_argument("source", help="Existing seat ref, usually fleet:seat")
+    p_seat_rename.add_argument("name", help="New seat name only; this command never changes fleet")
     p_seat_restart = seat_sub.add_parser("restart", help="Replace a seat runtime while preserving logical identity")
     p_seat_restart.add_argument("target", help="Seat ref, usually fleet:seat")
     p_seat_restart.add_argument("--cwd", help="Override relaunch working directory")
@@ -926,8 +923,6 @@ def main():
             result = send.run(args)
         elif args.command == "queue":
             result = queue_cmd.run(args)
-        elif args.command == "rename":
-            result = seat_cmd.run(args)
         elif args.command == "seat":
             result = seat_cmd.run(args)
         elif args.command == "holding":

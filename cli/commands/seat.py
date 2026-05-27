@@ -2264,7 +2264,7 @@ def _rename(args, registry) -> dict:
                     "same_fleet": True,
                     "metadata_keys": sorted(metadata.keys()),
                 },
-                source_command="aura rename",
+                source_command="aura seat rename",
                 source_ref=result.get("source"),
                 target_ref=result.get("target"),
             )
@@ -2274,7 +2274,7 @@ def _rename(args, registry) -> dict:
                     before=existing,
                     after=after,
                     evidence=result.get("alias"),
-                    source_command="aura rename",
+                    source_command="aura seat rename",
                     source_ref=result["alias"].get("source"),
                     target_ref=result["alias"].get("target"),
                 )
