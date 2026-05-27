@@ -214,11 +214,13 @@ def _derive_managed_state(record: dict[str, Any], *, liveness: str, binding: str
     return f"{prefix}_{'bound' if binding == 'bound' else 'unbound'}"
 
 
-def _base_rows(*, fleet: str | None, include_hidden: bool) -> list[dict[str, Any]]:
-    ledger_by_ref = {
-        row.get("seat_ref") or _target(row.get("fleet"), _seat_name(row)): row
-        for row in session_ledger.project_latest_from_ledger(fleet=fleet)
-    }
+def _base_rows(*, fleet: str | None, include_hidden: bool, include_ledger: bool = True) -> list[dict[str, Any]]:
+    ledger_by_ref = {}
+    if include_ledger:
+        ledger_by_ref = {
+            row.get("seat_ref") or _target(row.get("fleet"), _seat_name(row)): row
+            for row in session_ledger.project_latest_from_ledger(fleet=fleet)
+        }
     rows: list[dict[str, Any]] = []
     for agent in registry.list_agents(fleet, include_hidden=include_hidden):
         seat = _seat_name(agent)
@@ -235,6 +237,9 @@ def build_from_record(
     *,
     terminal=None,
     latest_reports: dict[str, dict[str, Any]] | None = None,
+    placements_by_target: dict[str, list[dict[str, Any]]] | None = None,
+    pending_by_target: dict[str, tuple[bool, bool]] | None = None,
+    keeper_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     seat = _seat_name(record)
     fleet = record.get("fleet")
@@ -252,9 +257,13 @@ def build_from_record(
     restore = session_ledger.restore_status(
         {**bound_record, "runtime_session_id": runtime_session_id, "session_id": runtime_session_id},
         runtimes.capabilities(record.get("runtime")),
+        keeper_ids=keeper_ids,
     )
     latest_report = (latest_reports or _latest_reports_by_target()).get(target or "")
-    pending_queue, pending_deferred = _pending_for_target(target)
+    if pending_by_target is not None:
+        pending_queue, pending_deferred = pending_by_target.get(target, (False, False))
+    else:
+        pending_queue, pending_deferred = _pending_for_target(target)
     nearby_holding = _nearby_holding(fleet)
 
     risk_flags: list[str] = []
@@ -324,7 +333,11 @@ def build_from_record(
         "identity": identity,
         "org": org,
         "latest_report": _report_summary(latest_report),
-        "placements": placements.placements_for_seat(target),
+        "placements": (
+            (placements_by_target or {}).get(target)
+            if placements_by_target is not None
+            else placements.placements_for_seat(target)
+        ) or [],
         "risk_flags": risk_flags,
         "latest_event": record.get("latest_event"),
         "latest_event_id": record.get("latest_event_id"),
@@ -357,9 +370,33 @@ def list_seat_statuses(
     *,
     include_hidden: bool = False,
     terminal=None,
+    include_ledger: bool = True,
 ) -> list[dict[str, Any]]:
     latest_reports = _latest_reports_by_target()
+    placements_by_target = placements.placements_by_seat()
+    keeper_ids = session_ledger.keeper_thread_ids()
+    pending_queue_targets = {
+        row.get("target")
+        for row in queued_messages.list_records(status="pending")
+        if row.get("target")
+    }
+    pending_deferred_targets = {
+        row.get("target")
+        for row in deferred.list_records(status="pending")
+        if row.get("target")
+    }
+    pending_by_target = {
+        target: (target in pending_queue_targets, target in pending_deferred_targets)
+        for target in pending_queue_targets | pending_deferred_targets
+    }
     return [
-        build_from_record(record, terminal=terminal, latest_reports=latest_reports)
-        for record in _base_rows(fleet=fleet, include_hidden=include_hidden)
+        build_from_record(
+            record,
+            terminal=terminal,
+            latest_reports=latest_reports,
+            placements_by_target=placements_by_target,
+            pending_by_target=pending_by_target,
+            keeper_ids=keeper_ids,
+        )
+        for record in _base_rows(fleet=fleet, include_hidden=include_hidden, include_ledger=include_ledger)
     ]

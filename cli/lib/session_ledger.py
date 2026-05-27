@@ -246,6 +246,35 @@ def read_ledger(limit: int | None = None) -> list[dict[str, Any]]:
     return iter_records(limit=limit)
 
 
+def keeper_thread_ids() -> set[str]:
+    root = state.state_root() / "keeper-jobs"
+    if not root.is_dir():
+        return set()
+    ids: set[str] = set()
+    for result_path in root.glob("memory.*/result.json"):
+        try:
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for key in ("thread_id", "keeper_thread_id"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                ids.add(value.strip())
+    return ids
+
+
+def is_keeper_thread_id(session_id: Any, keeper_ids: set[str] | None = None) -> bool:
+    ids = keeper_thread_ids() if keeper_ids is None else keeper_ids
+    return isinstance(session_id, str) and session_id in ids
+
+
+def is_keeper_thread_row(row: dict[str, Any]) -> bool:
+    session_id = row.get("session_id") or row.get("runtime_session_id")
+    return is_keeper_thread_id(session_id)
+
+
 def _row_refs(row: dict[str, Any]) -> set[str]:
     refs = set()
     for key in ("seat_ref", "source_ref", "target_ref"):
@@ -363,7 +392,12 @@ def project_latest_from_ledger(*, fleet: str | None = None) -> list[dict[str, An
     return sorted(rows, key=lambda row: (row.get("fleet") or "", row.get("seat") or row.get("name") or ""))
 
 
-def restore_status(row: dict[str, Any], capability: dict[str, Any] | None = None) -> dict[str, Any]:
+def restore_status(
+    row: dict[str, Any],
+    capability: dict[str, Any] | None = None,
+    *,
+    keeper_ids: set[str] | None = None,
+) -> dict[str, Any]:
     capability = capability or {}
     if row.get("restore_suppressed") or row.get("terminal_state") == "terminal":
         return {
@@ -372,6 +406,11 @@ def restore_status(row: dict[str, Any], capability: dict[str, Any] | None = None
         }
     binding = runtime_session.mark_binding(dict(row))
     session_id = binding.get("session_id") or binding.get("runtime_session_id")
+    if is_keeper_thread_id(session_id, keeper_ids=keeper_ids):
+        return {
+            "restore_ready": False,
+            "restore_reason": "keeper-worker-session",
+        }
     supports_resume = bool(capability.get("supports_resume"))
     if not session_id and binding.get("runtime_session_possible_matches"):
         return {

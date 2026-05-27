@@ -153,16 +153,25 @@ def placements_for_seat(seat_ref: str | None) -> list[dict[str, Any]]:
         return []
     resolved = registry.get_agent(seat_ref)
     canonical = (resolved or {}).get("seat_ref") or seat_ref
-    found: list[dict[str, Any]] = []
+    return (placements_by_seat()).get(canonical, [])
+
+
+def placements_by_seat() -> dict[str, list[dict[str, Any]]]:
+    """Return placement summaries keyed by canonical stored seat_ref."""
+    indexed: dict[str, list[dict[str, Any]]] = {}
     for record in list_placements():
+        summary_base = {
+            "placement_id": record.get("placement_id"),
+            "kind": record.get("kind"),
+            "name": record.get("name"),
+            "label": record.get("label"),
+        }
         for member in record.get("members", []):
-            if member.get("seat_ref") != canonical:
+            seat_ref = member.get("seat_ref")
+            if not seat_ref:
                 continue
-            found.append({
-                "placement_id": record.get("placement_id"),
-                "kind": record.get("kind"),
-                "name": record.get("name"),
-                "label": record.get("label"),
+            indexed.setdefault(seat_ref, []).append({
+                **summary_base,
                 "role": member.get("role"),
             })
-    return found
+    return indexed

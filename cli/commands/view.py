@@ -183,10 +183,24 @@ def _resolve_self(rows: list[dict], context: dict) -> dict:
     return {"ok": False, "source": "none", "error": "self-not-resolved", "match_count": 0}
 
 
-def _status_rows(*, include_hidden: bool, fleet: str | None = None):
-    from lib import terminal
+def _status_rows(
+    *,
+    include_hidden: bool,
+    fleet: str | None = None,
+    terminal_probe: bool = True,
+    include_ledger: bool = True,
+):
+    terminal = None
+    if terminal_probe:
+        from lib import terminal as terminal_module
 
-    return seat_status.list_seat_statuses(fleet=fleet, include_hidden=include_hidden, terminal=terminal)
+        terminal = terminal_module
+    return seat_status.list_seat_statuses(
+        fleet=fleet,
+        include_hidden=include_hidden,
+        terminal=terminal,
+        include_ledger=include_ledger,
+    )
 
 
 def _physical_refs(panes: list[dict]) -> set[str]:
@@ -293,7 +307,7 @@ def _live_status_rows(*, include_hidden: bool) -> dict:
     records = registry.list_agents(include_hidden=include_hidden)
     status_by_target = {
         _row_target(row): row
-        for row in _status_rows(include_hidden=include_hidden)
+        for row in _status_rows(include_hidden=include_hidden, terminal_probe=False, include_ledger=False)
         if _row_target(row)
     }
     rows = []
@@ -487,7 +501,18 @@ def _placement_summary(record: dict) -> dict:
 
 def _run_placement(*, include_hidden: bool, placement_name: str | None = None) -> dict:
     context = reports.infer_context()
-    rows = _status_rows(include_hidden=include_hidden)
+    live = _live_status_rows(include_hidden=include_hidden)
+    if not live.get("ok"):
+        failure = _live_view_failure(
+            schema="aura.view.placement.v1",
+            detail=live.get("error"),
+            placement=placement_name,
+            counts={"members": 0, "seats": 0, "hidden_non_live_members": 0, "missing_members": 0},
+            seats=[],
+        )
+        failure["view_scope"] = "placement"
+        return failure
+    rows = live.get("rows") or []
     resolved = _resolve_self(rows, context)
     self_row = resolved.get("row") if resolved.get("ok") else None
 

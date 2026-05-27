@@ -691,10 +691,14 @@ def test_view_placement_returns_live_members_and_hides_stale(monkeypatch, tmp_pa
 
     from commands import view
 
-    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
-        {"target": "flexgraph-chatbot:pipeline", "seat_ref": "flexgraph-chatbot:pipeline", "seat": "pipeline", "fleet": "flexgraph-chatbot", "runtime": "omx", "liveness": "alive", "managed_state": "spawned_bound"},
-        {"target": "flexgraph-chatbot:stale", "seat_ref": "flexgraph-chatbot:stale", "seat": "stale", "fleet": "flexgraph-chatbot", "runtime": "omx", "liveness": "missing", "managed_state": "missing_pane"},
-    ])
+    monkeypatch.setattr(view, "_live_status_rows", lambda include_hidden=False: {
+        "ok": True,
+        "historical_count": 3,
+        "rows": [
+            {"target": "flexgraph-chatbot:pipeline", "seat_ref": "flexgraph-chatbot:pipeline", "seat": "pipeline", "fleet": "flexgraph-chatbot", "runtime": "omx", "liveness": "alive", "managed_state": "spawned_bound"},
+            {"target": "flexgraph-chatbot:stale", "seat_ref": "flexgraph-chatbot:stale", "seat": "stale", "fleet": "flexgraph-chatbot", "runtime": "omx", "liveness": "missing", "managed_state": "missing_pane"},
+        ],
+    })
     monkeypatch.setattr(view.placements, "get_placement", lambda name: {
         "placement_id": "pl_factory",
         "kind": "workstream",
@@ -724,17 +728,21 @@ def test_view_placement_infers_single_self_placement(monkeypatch, tmp_path):
 
     from commands import view
 
-    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
-        {
-            "target": "flexgraph-chatbot:pipeline",
-            "seat_ref": "flexgraph-chatbot:pipeline",
-            "seat": "pipeline",
-            "fleet": "flexgraph-chatbot",
-            "liveness": "alive",
-            "managed_state": "spawned_bound",
-            "placements": [{"placement_id": "pl_factory", "name": "factory-quality"}],
-        },
-    ])
+    monkeypatch.setattr(view, "_live_status_rows", lambda include_hidden=False: {
+        "ok": True,
+        "historical_count": 1,
+        "rows": [
+            {
+                "target": "flexgraph-chatbot:pipeline",
+                "seat_ref": "flexgraph-chatbot:pipeline",
+                "seat": "pipeline",
+                "fleet": "flexgraph-chatbot",
+                "liveness": "alive",
+                "managed_state": "spawned_bound",
+                "placements": [{"placement_id": "pl_factory", "name": "factory-quality"}],
+            },
+        ],
+    })
     monkeypatch.setattr(view.placements, "get_placement", lambda name: {
         "placement_id": "pl_factory",
         "kind": "workstream",
@@ -756,9 +764,13 @@ def test_view_placement_requires_target_when_not_resolved(monkeypatch, tmp_path)
 
     from commands import view
 
-    monkeypatch.setattr(view, "_status_rows", lambda include_hidden=False: [
-        {"target": "flexgraph-chatbot:pipeline", "seat": "pipeline", "fleet": "flexgraph-chatbot", "liveness": "alive", "managed_state": "spawned_bound"},
-    ])
+    monkeypatch.setattr(view, "_live_status_rows", lambda include_hidden=False: {
+        "ok": True,
+        "historical_count": 1,
+        "rows": [
+            {"target": "flexgraph-chatbot:pipeline", "seat": "pipeline", "fleet": "flexgraph-chatbot", "liveness": "alive", "managed_state": "spawned_bound"},
+        ],
+    })
 
     result = view.run(argparse.Namespace(view_action="placement", view_target=None, scope=None, limit=10, include_hidden=False))
 
