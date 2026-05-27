@@ -25,7 +25,7 @@ def _runtime_profile_root(runtime: str, profile: str) -> Path:
     if runtime == "codex":
         return runtime_boxes.runtime_profile_root("codex", profile)
     if runtime == "omx":
-        return runtime_boxes.runtime_profile_root("omx", profile, legacy_omx=True)
+        return runtime_boxes.runtime_profile_root("omx", profile)
     if runtime == "hermes":
         if profile == "default":
             return (Path.home() / ".hermes").resolve()
@@ -37,7 +37,7 @@ def _profile_parent(runtime: str) -> Path:
     if runtime == "codex":
         return runtime_boxes.runtime_profile_root("codex", "__placeholder__").parent
     if runtime == "omx":
-        return runtime_boxes.runtime_profile_root("omx", "__placeholder__", legacy_omx=True).parent
+        return runtime_boxes.runtime_profile_root("omx", "__placeholder__").parent
     if runtime == "hermes":
         return (Path.home() / ".hermes" / "profiles").resolve()
     raise ValueError(f"runtime profile unsupported for {runtime}")

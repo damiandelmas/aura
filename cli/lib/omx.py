@@ -137,11 +137,11 @@ def _now_iso() -> str:
 
 
 def box_root(fleet: str, seat: str) -> Path:
-    return runtime_boxes.runtime_home_root("omx", fleet, seat, legacy_omx=True)
+    return runtime_boxes.runtime_home_root("omx", fleet, seat)
 
 
 def profile_root(profile: str) -> Path:
-    return runtime_boxes.runtime_profile_root("omx", profile, legacy_omx=True)
+    return runtime_boxes.runtime_profile_root("omx", profile)
 
 
 def _source_codex_home() -> Path:
@@ -168,7 +168,7 @@ def _copy_if_present(source: Path, destination: Path, *, replace: bool = False) 
 def _apply_profile_template(profile: str | None, *, home: Path, codex_home: Path, omx_root: Path, package_layout: bool = False) -> tuple[Path | None, bool, tuple[str, ...]]:
     """Apply an explicit reusable OMX profile template into a per-seat box.
 
-    Profiles are opt-in templates under ~/.aura/omx-profiles/<profile>/.
+    Profiles are opt-in templates under ~/.aura/runtime-profiles/omx/<profile>/.
     They seed a seat-local box; they are not shared mutable runtime homes.
     """
     if not profile:

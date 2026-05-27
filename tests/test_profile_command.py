@@ -51,14 +51,14 @@ def test_profile_create_codex_from_aura_base_without_auth_or_global_config(monke
     assert not (root / "codex-home-template" / "credentials.json").exists()
 
 
-def test_profile_create_omx_uses_legacy_omx_profile_root(monkeypatch, tmp_path):
+def test_profile_create_omx_uses_unified_omx_profile_root(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
     from commands import profile
 
     result = profile.run(_args("create", profile_ref="omx/dev"))
 
-    root = tmp_path / "state" / "omx-profiles" / "dev"
+    root = tmp_path / "state" / "runtime-profiles" / "omx" / "dev"
     assert result["ok"] is True
     assert result["profile"]["root"] == str(root)
     assert (root / "codex-home-template" / "config.toml").is_file()
@@ -99,7 +99,7 @@ def test_profile_create_from_existing_omx_profile_with_aura_operator_preset(monk
         )
     )
 
-    root = tmp_path / "state" / "omx-profiles" / "aura-operator"
+    root = tmp_path / "state" / "runtime-profiles" / "omx" / "aura-operator"
     skill_root = root / "codex-home-template" / "skills"
     assert result["ok"] is True
     assert result["source_profile_ref"] == "omx/default"
@@ -135,7 +135,7 @@ def test_profile_create_preset_rejects_symlink_before_publish(monkeypatch, tmp_p
 
     assert result["ok"] is False
     assert result["error"] == "unsafe-template"
-    assert not (tmp_path / "state" / "omx-profiles" / "aura-operator").exists()
+    assert not (tmp_path / "state" / "runtime-profiles" / "omx" / "aura-operator").exists()
 
 
 def test_profile_create_from_rejects_source_root_symlink_before_publish(monkeypatch, tmp_path):
@@ -144,14 +144,14 @@ def test_profile_create_from_rejects_source_root_symlink_before_publish(monkeypa
     from commands import profile
 
     assert profile.run(_args("create", profile_ref="omx/default"))["ok"] is True
-    source_root = tmp_path / "state" / "omx-profiles" / "default"
+    source_root = tmp_path / "state" / "runtime-profiles" / "omx" / "default"
     (source_root / "README.md").symlink_to(tmp_path)
 
     result = profile.run(_args("create", profile_ref="omx/aura-operator", source_profile="omx/default"))
 
     assert result["ok"] is False
     assert result["error"] == "unsafe-template"
-    assert not (tmp_path / "state" / "omx-profiles" / "aura-operator").exists()
+    assert not (tmp_path / "state" / "runtime-profiles" / "omx" / "aura-operator").exists()
 
 
 def test_profile_list_includes_profiles_and_future_classifications(monkeypatch, tmp_path):

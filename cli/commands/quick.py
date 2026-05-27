@@ -73,7 +73,7 @@ def _profile_root(runtime: str, profile: str) -> Path:
     if runtime == "codex":
         return runtime_boxes.runtime_profile_root("codex", profile)
     if runtime == "omx":
-        return runtime_boxes.runtime_profile_root("omx", profile, legacy_omx=True)
+        return runtime_boxes.runtime_profile_root("omx", profile)
     if runtime == "hermes":
         if profile == "default":
             return (Path.home() / ".hermes").resolve()

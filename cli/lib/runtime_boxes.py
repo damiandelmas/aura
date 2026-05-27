@@ -47,18 +47,12 @@ def runtime_home_root(
     runtime: str,
     fleet: str,
     seat: str,
-    *,
-    legacy_omx: bool = False,
 ) -> Path:
     """Return the Aura-owned per-seat runtime home root.
 
-    New boxed runtimes use ``runtime-homes/<runtime>/<fleet>/<seat>``.  OMX
-    keeps its historical ``omx-homes/<fleet>/<seat>`` path until a separate
-    migration explicitly changes that operator contract.
+    Boxed runtimes use ``runtime-homes/<runtime>/<fleet>/<seat>``.
     """
 
-    if legacy_omx and runtime == "omx":
-        return state.state_root() / "omx-homes" / safe_segment(fleet) / safe_segment(seat)
     return (
         state.state_root()
         / "runtime-homes"
@@ -68,11 +62,9 @@ def runtime_home_root(
     )
 
 
-def runtime_profile_root(runtime: str, profile: str, *, legacy_omx: bool = False) -> Path:
+def runtime_profile_root(runtime: str, profile: str) -> Path:
     """Return the reusable runtime profile template root."""
 
-    if legacy_omx and runtime == "omx":
-        return state.state_root() / "omx-profiles" / safe_segment(profile)
     return state.state_root() / "runtime-profiles" / safe_segment(runtime) / safe_segment(profile)
 
 

@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "cli"))
 
 
-def test_runtime_box_paths_use_safe_segments_and_legacy_omx(monkeypatch, tmp_path):
+def test_runtime_box_paths_use_safe_segments(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
     from lib import runtime_boxes
@@ -21,11 +21,11 @@ def test_runtime_box_paths_use_safe_segments_and_legacy_omx(monkeypatch, tmp_pat
     assert runtime_boxes.runtime_profile_root("codex", "dev profile") == (
         tmp_path / "state" / "runtime-profiles" / "codex" / "dev-profile"
     )
-    assert runtime_boxes.runtime_home_root("omx", "my fleet", "seat/one", legacy_omx=True) == (
-        tmp_path / "state" / "omx-homes" / "my-fleet" / "seat-one"
+    assert runtime_boxes.runtime_home_root("omx", "my fleet", "seat/one") == (
+        tmp_path / "state" / "runtime-homes" / "omx" / "my-fleet" / "seat-one"
     )
-    assert runtime_boxes.runtime_profile_root("omx", "dev", legacy_omx=True) == (
-        tmp_path / "state" / "omx-profiles" / "dev"
+    assert runtime_boxes.runtime_profile_root("omx", "dev") == (
+        tmp_path / "state" / "runtime-profiles" / "omx" / "dev"
     )
 
 

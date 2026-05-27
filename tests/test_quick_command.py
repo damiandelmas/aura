@@ -89,7 +89,7 @@ def test_quick_default_omx_uses_package_body_and_runtime_profile(monkeypatch, tm
 
     result = quick.run(_args("omx", default=True, cwd=str(tmp_path / "project")))
 
-    profile_root = tmp_path / "state" / "omx-profiles" / "default"
+    profile_root = tmp_path / "state" / "runtime-profiles" / "omx" / "default"
     assert result["ok"] is True
     assert (profile_root / "codex-home-template").is_dir()
     assert captured["runtime"] == "omx"

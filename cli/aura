@@ -113,7 +113,7 @@ def main():
     p_spawn.add_argument("--boxed", action="store_true",
                          help="Request an Aura-managed boxed runtime home when supported by the selected runtime")
     p_spawn.add_argument("--omx-profile", metavar="NAME",
-                         help="Explicit OMX boxed-profile template under ~/.aura/omx-profiles/NAME")
+                         help="Explicit OMX boxed-profile template under ~/.aura/runtime-profiles/omx/NAME")
     p_spawn.add_argument("--command", dest="launch_command", metavar="CMD",
                          help="Override runtime launch command for terminal-backed spawn")
 

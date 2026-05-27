@@ -901,7 +901,7 @@ def test_spawn_omx_uses_aura_seat_box_without_project_mutation(monkeypatch, tmp_
     assert result["omx_profile_applied"] is False
     assert result["omx_profile_templates_applied"] == []
     assert result["omx_box_team_state_root"] == str(
-        tmp_path / "state" / "omx-homes" / "unitfleet" / "omx-seat" / "omx-root" / ".omx" / "state"
+        tmp_path / "state" / "runtime-homes" / "omx" / "unitfleet" / "omx-seat" / "omx-root" / ".omx" / "state"
     )
     assert result["runtime_home"] == result["omx_box_root"]
     assert result["native_state_ref"] == result["omx_box_omx_state"]
@@ -918,15 +918,15 @@ def test_spawn_omx_uses_aura_seat_box_without_project_mutation(monkeypatch, tmp_
     assert env["OMX_SOURCE_CWD"] == str(unit)
     assert "AURA_OMX_PROFILE" not in env
     assert env["OMX_TEAM_STATE_ROOT"] == str(
-        tmp_path / "state" / "omx-homes" / "unitfleet" / "omx-seat" / "omx-root" / ".omx" / "state"
+        tmp_path / "state" / "runtime-homes" / "omx" / "unitfleet" / "omx-seat" / "omx-root" / ".omx" / "state"
     )
-    assert env["HOME"].startswith(str(tmp_path / "state" / "omx-homes" / "unitfleet" / "omx-seat"))
-    assert env["CODEX_HOME"] == str(tmp_path / "state" / "omx-homes" / "unitfleet" / "omx-seat" / "codex-home")
-    assert env["OMX_ROOT"] == str(tmp_path / "state" / "omx-homes" / "unitfleet" / "omx-seat" / "omx-root")
+    assert env["HOME"].startswith(str(tmp_path / "state" / "runtime-homes" / "omx" / "unitfleet" / "omx-seat"))
+    assert env["CODEX_HOME"] == str(tmp_path / "state" / "runtime-homes" / "omx" / "unitfleet" / "omx-seat" / "codex-home")
+    assert env["OMX_ROOT"] == str(tmp_path / "state" / "runtime-homes" / "omx" / "unitfleet" / "omx-seat" / "omx-root")
     assert result["omx_box_star_prompt_preseeded"] is True
     assert result["omx_box_source_cwd_trusted"] is True
 
-    box = tmp_path / "state" / "omx-homes" / "unitfleet" / "omx-seat"
+    box = tmp_path / "state" / "runtime-homes" / "omx" / "unitfleet" / "omx-seat"
     assert (box / "home" / ".omx" / "state" / "star-prompt.json").is_file()
     config = (box / "codex-home" / "config.toml").read_text(encoding="utf-8")
     assert f'[projects."{unit}"]' in config
@@ -977,7 +977,7 @@ def test_spawn_omx_trusts_effective_git_root_for_source_subdir(monkeypatch, tmp_
     config = (
         tmp_path
         / "state"
-        / "omx-homes"
+        / "runtime-homes" / "omx"
         / "unitfleet"
         / "omx-git-root-seat"
         / "codex-home"
@@ -1032,7 +1032,7 @@ def test_spawn_omx_trusts_ancestor_codex_project_config_root(monkeypatch, tmp_pa
     config = (
         tmp_path
         / "state"
-        / "omx-homes"
+        / "runtime-homes" / "omx"
         / "unitfleet"
         / "omx-codex-root-seat"
         / "codex-home"
@@ -1055,7 +1055,7 @@ def test_spawn_omx_applies_explicit_profile_template_to_seat_box(monkeypatch, tm
     unit = tmp_path / "project"
     unit.mkdir()
 
-    profile_root = state_dir / "omx-profiles" / "dev"
+    profile_root = state_dir / "runtime-profiles" / "omx" / "dev"
     codex_template = profile_root / "codex-home-template"
     omx_template = profile_root / "omx-root-template"
     codex_template.mkdir(parents=True)
@@ -1064,7 +1064,7 @@ def test_spawn_omx_applies_explicit_profile_template_to_seat_box(monkeypatch, tm
     (codex_template / "keep-existing.md").write_text("template value\n", encoding="utf-8")
     (omx_template / "seed.txt").write_text("omx seed\n", encoding="utf-8")
 
-    box_codex_home = state_dir / "omx-homes" / "unitfleet" / "omx-profile-seat" / "codex-home"
+    box_codex_home = state_dir / "runtime-homes" / "omx" / "unitfleet" / "omx-profile-seat" / "codex-home"
     box_codex_home.mkdir(parents=True)
     (box_codex_home / "keep-existing.md").write_text("existing value\n", encoding="utf-8")
 
@@ -1107,7 +1107,7 @@ def test_spawn_omx_applies_explicit_profile_template_to_seat_box(monkeypatch, tm
     assert (box_codex_home / "keep-existing.md").read_text(encoding="utf-8") == "existing value\n"
     assert (
         state_dir
-        / "omx-homes"
+        / "runtime-homes" / "omx"
         / "unitfleet"
         / "omx-profile-seat"
         / "omx-root"
@@ -1122,7 +1122,7 @@ def test_spawn_omx_applies_explicit_profile_template_to_seat_box(monkeypatch, tm
     assert env["AURA_OMX_PROFILE"] == "dev"
     assert env["CODEX_HOME"] == str(box_codex_home)
     assert env["OMX_TEAM_STATE_ROOT"] == str(
-        state_dir / "omx-homes" / "unitfleet" / "omx-profile-seat" / "omx-root" / ".omx" / "state"
+        state_dir / "runtime-homes" / "omx" / "unitfleet" / "omx-profile-seat" / "omx-root" / ".omx" / "state"
     )
 
 
@@ -1180,7 +1180,7 @@ def test_spawn_omx_rejects_profile_template_symlink(monkeypatch, tmp_path):
     unit.mkdir()
     outside = tmp_path / "outside-secret.txt"
     outside.write_text("do not copy\n", encoding="utf-8")
-    profile_template = tmp_path / "state" / "omx-profiles" / "unsafe" / "codex-home-template"
+    profile_template = tmp_path / "state" / "runtime-profiles" / "omx" / "unsafe" / "codex-home-template"
     profile_template.mkdir(parents=True)
     os.symlink(outside, profile_template / "leak.txt")
 
@@ -1214,7 +1214,7 @@ def test_spawn_omx_rejects_profile_template_symlink(monkeypatch, tmp_path):
     assert not (
         tmp_path
         / "state"
-        / "omx-homes"
+        / "runtime-homes" / "omx"
         / "unitfleet"
         / "omx-seat"
         / "codex-home"
