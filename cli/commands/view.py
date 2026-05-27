@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lib import deferred, placements, queued_messages, registry, reports, seat_status, tmux_mirror
+from lib import deferred, live_topology, placements, queued_messages, registry, reports, seat_status, tmux_mirror
 
 
 def _compact_identity(row: dict) -> dict | None:
@@ -203,53 +203,6 @@ def _status_rows(
     )
 
 
-def _physical_refs(panes: list[dict]) -> set[str]:
-    refs: set[str] = set()
-    for pane in panes:
-        for key in ("pane_ref", "terminal_ref"):
-            value = pane.get(key)
-            if value:
-                refs.add(str(value))
-                if str(value).startswith("tmux:"):
-                    refs.add(str(value)[len("tmux:"):])
-        session = pane.get("tmux_session") or pane.get("physical_fleet")
-        pane_id = pane.get("pane_id")
-        window = pane.get("window_name")
-        if pane_id:
-            refs.add(str(pane_id))
-            if session:
-                refs.add(f"{session}:{pane_id}")
-                refs.add(f"tmux:{session}:{pane_id}")
-        if window and session:
-            refs.add(f"{session}:{window}")
-            refs.add(f"tmux:{session}:{window}")
-    return refs
-
-
-def _record_refs(record: dict) -> set[str]:
-    refs = set()
-    for key in ("pane_ref", "terminal_ref", "backend_ref"):
-        value = record.get(key)
-        if value:
-            refs.add(str(value))
-            if str(value).startswith("tmux:"):
-                refs.add(str(value)[len("tmux:"):])
-    target = _target_for(record)
-    if target:
-        refs.add(target)
-        refs.add(f"tmux:{target}")
-    return refs
-
-
-def _record_hidden_from_live(record: dict) -> bool:
-    if record.get("terminal_state") == "terminal" or record.get("restore_suppressed"):
-        return True
-    if record.get("managed_state") == "stopped":
-        return True
-    status = str(record.get("status") or "").lower()
-    return status in {"dead", "killed", "cut", "quarantined", "archived"}
-
-
 def _live_view_failure(*, schema: str, detail: str | None = None, **extra) -> dict:
     return {
         "ok": False,
@@ -262,87 +215,8 @@ def _live_view_failure(*, schema: str, detail: str | None = None, **extra) -> di
     }
 
 
-def _pane_ref_parts(value: str | None) -> tuple[str | None, str | None]:
-    if not value:
-        return None, None
-    parts = str(value).split(":")
-    pane_id = next((part for part in parts if part.startswith("%")), None)
-    if not pane_id:
-        return None, None
-    pane_index = parts.index(pane_id)
-    session = parts[pane_index - 1] if pane_index > 0 and parts[pane_index - 1] != "tmux" else None
-    return session, pane_id
-
-
-def _record_matches_physical_pane(record: dict, pane: dict) -> bool:
-    pane_ref_session, pane_ref_id = _pane_ref_parts(record.get("pane_ref"))
-    if pane_ref_id:
-        pane_session = pane.get("tmux_session") or pane.get("physical_fleet")
-        if pane_ref_session and pane_session and pane_ref_session != pane_session:
-            return False
-        return pane_ref_id == pane.get("pane_id")
-    return bool(_record_refs(record) & _physical_refs([pane]))
-
-
-def _live_projected_managed_state(row: dict) -> str:
-    state = row.get("managed_state")
-    if state and state not in {"missing_pane", "stopped"}:
-        return state
-    binding = row.get("runtime_session_binding")
-    if binding in {"bound", "argv-resume", "runtime-session-bound"} or row.get("runtime_session_id") or row.get("session_id"):
-        return "spawned_bound"
-    return "spawned_unbound"
-
-
 def _live_status_rows(*, include_hidden: bool) -> dict:
-    mirror = tmux_mirror.list_physical_panes()
-    if not mirror.get("ok"):
-        return {
-            "ok": False,
-            "error": mirror.get("error") or "tmux mirror unavailable",
-            "rows": [],
-            "historical_count": len(registry.list_agents(include_hidden=include_hidden)),
-        }
-
-    records = registry.list_agents(include_hidden=include_hidden)
-    status_by_target = {
-        _row_target(row): row
-        for row in _status_rows(include_hidden=include_hidden, terminal_probe=False, include_ledger=False)
-        if _row_target(row)
-    }
-    rows = []
-    seen_targets: set[str] = set()
-    for pane in mirror.get("panes") or []:
-        for record in records:
-            if _record_hidden_from_live(record):
-                continue
-            if not _record_matches_physical_pane(record, pane):
-                continue
-            target = _row_target(record)
-            if not target or target in seen_targets:
-                continue
-            seen_targets.add(target)
-            enriched = {
-                **(status_by_target.get(target) or {}),
-                **record,
-                "target": target,
-                "fleet": record.get("fleet"),
-                "seat": record.get("seat") or record.get("name"),
-                "pane_ref": pane.get("pane_ref") or record.get("pane_ref"),
-                "terminal_ref": pane.get("terminal_ref") or record.get("terminal_ref"),
-                "physical_fleet": pane.get("physical_fleet"),
-                "physical_seat": pane.get("window_name"),
-                "pane_id": pane.get("pane_id"),
-                "liveness": "alive",
-            }
-            enriched["managed_state"] = _live_projected_managed_state(enriched)
-            rows.append(enriched)
-
-    return {
-        "ok": True,
-        "rows": rows,
-        "historical_count": len(records),
-    }
+    return live_topology.live_status_rows(include_hidden=include_hidden)
 
 
 def _run_self(*, include_hidden: bool) -> dict:

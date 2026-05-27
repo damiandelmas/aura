@@ -294,6 +294,59 @@ def test_view_fleets_reports_tmux_mirror_failure(monkeypatch, tmp_path):
     }
 
 
+def test_live_views_do_not_parse_session_ledger(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from lib import registry, session_ledger
+    from commands import view
+
+    def fail_ledger(*args, **kwargs):
+        raise AssertionError("live topology must not parse session ledger")
+
+    monkeypatch.setattr(session_ledger, "project_latest_from_ledger", fail_ledger)
+    monkeypatch.setattr(session_ledger, "iter_records", fail_ledger)
+    registry.write_registry({
+        "fitcert:pipeline": {
+            "fleet": "fitcert",
+            "name": "pipeline",
+            "runtime": "codex",
+            "runtime_session_id": "session-fitcert",
+            "pane_ref": "tmux:fitcert:%11",
+        },
+    })
+    monkeypatch.setattr(view.tmux_mirror, "list_physical_panes", lambda: {
+        "ok": True,
+        "panes": [
+            {
+                "tmux_session": "fitcert",
+                "physical_fleet": "fitcert",
+                "window_name": "pipeline",
+                "pane_id": "%11",
+                "pane_ref": "tmux:fitcert:%11",
+                "terminal_ref": "tmux:fitcert:pipeline",
+            },
+        ],
+    })
+    monkeypatch.setattr(view.placements, "get_placement", lambda name: {
+        "placement_id": "pl_fitcert",
+        "kind": "workstream",
+        "name": "fitcert-sales-handoff",
+        "members": [{"seat_ref": "fitcert:pipeline"}],
+    })
+
+    fleets = view.run(argparse.Namespace(view_action="fleets", view_target=None, scope=None, limit=10, include_hidden=False))
+    fleet = view.run(argparse.Namespace(view_action="fleet", view_target="fitcert", scope=None, limit=10, include_hidden=False))
+    roster = view.run(argparse.Namespace(view_action="roster", view_target=None, scope=None, limit=10, include_hidden=False))
+    live = view.run(argparse.Namespace(view_action="live", view_target=None, scope=None, limit=10, include_hidden=False))
+    placement = view.run(argparse.Namespace(view_action="placement", view_target="fitcert-sales-handoff", scope=None, limit=10, include_hidden=False))
+
+    assert fleets["fleets"] == [{"fleet": "fitcert", "seats": 1}]
+    assert [row["target"] for row in fleet["seats"]] == ["fitcert:pipeline"]
+    assert [row["target"] for row in roster["seats"]] == ["fitcert:pipeline"]
+    assert [row["target"] for row in live["seats"]] == ["fitcert:pipeline"]
+    assert [row["target"] for row in placement["seats"]] == ["fitcert:pipeline"]
+
+
 def test_view_fleet_reports_tmux_mirror_failure_instead_of_empty_roster(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
 
