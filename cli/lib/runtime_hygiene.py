@@ -16,6 +16,7 @@ DEFAULT_CODEX_WAL_CRITICAL_BYTES = 10 * GIB
 
 CAPSULE_RESIDUE = (
     "agent.json",
+    "aura-launch.json",
     "runtime-session.json",
     "receipts",
     "artifacts",

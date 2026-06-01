@@ -261,6 +261,66 @@ def test_restart_rehydrates_boxed_codex_capsule_env_and_manifest(monkeypatch, tm
     assert body["env_roots"]["CODEX_HOME"] == str(capsule / "codex-home")
 
 
+def test_restart_package_codex_does_not_write_capsule_residue(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import seat
+    from commands import spawn
+    from lib import registry
+
+    package = tmp_path / "agents" / "i_pkg"
+    (package / ".codex").mkdir(parents=True)
+    (package / "manifest.json").write_text(
+        json.dumps({
+            "schema": "aura.agent_manifest.v1",
+            "id": "i_pkg",
+            "runtime": "codex",
+            "env": {"CODEX_HOME": ".codex"},
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        spawn,
+        "_observe_spawn_session",
+        lambda **_kwargs: {
+            "runtime_session_id": "new-session",
+            "session_id": "new-session",
+            "runtime_session_source": "unit-observation",
+            "runtime_session_confidence": "exact",
+        },
+    )
+
+    RestartTerminal.reset()
+    registry.upsert_agent(_record(
+        tmp_path,
+        runtime="codex",
+        command="codex --dangerously-bypass-approvals-and-sandbox",
+        runtime_home=str(package),
+        agent_package_id="i_pkg",
+        agent_package_root=str(package),
+        codex_package_root=str(package),
+        codex_box_root=str(package),
+        codex_box_codex_home=str(package / ".codex"),
+    ))
+
+    result = seat._restart(_args(prompt="fresh start"), registry, RestartTerminal)
+
+    assert result["ok"] is True
+    assert result["new"]["runtime_session_id"] == "new-session"
+    assert result.get("runtime_capsule_launch") is None
+    assert result.get("runtime_capsule_session") is None
+    updated = registry.get_agent("engineer", fleet="unitfleet")
+    assert updated["runtime_session_id"] == "new-session"
+    assert updated.get("runtime_capsule_launch") is None
+    assert updated.get("runtime_capsule_session") is None
+    assert not (package / "aura-launch.json").exists()
+    assert not (package / "runtime-session.json").exists()
+    assert not (package / "receipts").exists()
+    assert not (package / "artifacts").exists()
+
+
 def test_restart_rehydrates_boxed_omx_capsule_env_and_manifest(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))

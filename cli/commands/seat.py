@@ -860,6 +860,32 @@ def _session_fields(session: dict) -> dict:
     return fields
 
 
+def _restart_record_is_package_agent(record: dict) -> bool:
+    if record.get("agent_package_id") or record.get("package_agent_id"):
+        return True
+    for key in (
+        "agent_package_root",
+        "package_root",
+        "codex_package_root",
+        "omx_package_root",
+        "runtime_home",
+        "runtime_capsule_root",
+        "codex_box_root",
+        "omx_box_root",
+    ):
+        value = record.get(key)
+        if not value:
+            continue
+        try:
+            root = Path(str(value)).expanduser()
+            manifest = root / "manifest.json"
+        except (TypeError, ValueError):
+            continue
+        if manifest.exists():
+            return True
+    return False
+
+
 def _restart(args, registry, terminal) -> dict:
     record = registry.get_agent(args.target)
     if not record:
@@ -1091,20 +1117,22 @@ def _restart(args, registry, terminal) -> dict:
         "status": "starting",
         "registered": True,
     })
+    package_agent = _restart_record_is_package_agent(updated)
 
     capsule_launch = {}
-    try:
-        from lib import runtime_capsules
+    if not package_agent:
+        try:
+            from lib import runtime_capsules
 
-        capsule_launch = runtime_capsules.write_aura_launch(updated, env_roots=launch_env)
-        if capsule_launch.get("ok"):
-            updated = registry.upsert_agent({
-                **updated,
-                "runtime_capsule_ref": capsule_launch.get("capsule_root"),
-                "runtime_capsule_launch": capsule_launch.get("path"),
-            })
-    except Exception as exc:
-        capsule_launch = {"ok": False, "reason": "capsule-launch-write-failed", "error": str(exc)}
+            capsule_launch = runtime_capsules.write_aura_launch(updated, env_roots=launch_env)
+            if capsule_launch.get("ok"):
+                updated = registry.upsert_agent({
+                    **updated,
+                    "runtime_capsule_ref": capsule_launch.get("capsule_root"),
+                    "runtime_capsule_launch": capsule_launch.get("path"),
+                })
+        except Exception as exc:
+            capsule_launch = {"ok": False, "reason": "capsule-launch-write-failed", "error": str(exc)}
 
     cwd_choice = None
     try:
@@ -1145,18 +1173,19 @@ def _restart(args, registry, terminal) -> dict:
         )
         if session_observation.get("runtime_session_id"):
             updated = registry.upsert_agent({**updated, **_session_fields(session_observation)})
-            try:
-                from lib import runtime_capsules
+            if not package_agent:
+                try:
+                    from lib import runtime_capsules
 
-                capsule_session = runtime_capsules.write_runtime_session(updated)
-                if capsule_session.get("ok"):
-                    updated = registry.upsert_agent({
-                        **updated,
-                        "runtime_capsule_ref": capsule_session.get("capsule_root"),
-                        "runtime_capsule_session": capsule_session.get("path"),
-                    })
-            except Exception:
-                pass
+                    capsule_session = runtime_capsules.write_runtime_session(updated)
+                    if capsule_session.get("ok"):
+                        updated = registry.upsert_agent({
+                            **updated,
+                            "runtime_capsule_ref": capsule_session.get("capsule_root"),
+                            "runtime_capsule_session": capsule_session.get("path"),
+                        })
+                except Exception:
+                    pass
     except Exception as exc:
         session_observation = {"status": "error", "reason": "session-discovery-error", "error": str(exc)}
 

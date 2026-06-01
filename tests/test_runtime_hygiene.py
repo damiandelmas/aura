@@ -15,6 +15,7 @@ def test_package_runtime_findings_report_residue_and_env_drift(tmp_path):
 
     root = tmp_path / "agents" / "i_pkg"
     (root / ".codex").mkdir(parents=True)
+    (root / "aura-launch.json").write_text("{}\n", encoding="utf-8")
     (root / "runtime-session.json").write_text("{}\n", encoding="utf-8")
     (root / "agent.json").write_text("{}\n", encoding="utf-8")
     manifest = {
@@ -34,6 +35,7 @@ def test_package_runtime_findings_report_residue_and_env_drift(tmp_path):
     assert by_code["package-runtime-residue"][0]["severity"] == "error"
     assert {finding["residue"] for finding in by_code["package-runtime-residue"]} == {
         "agent.json",
+        "aura-launch.json",
         "runtime-session.json",
     }
     assert {finding["env"] for finding in by_code["package-runtime-env-drift"]} == {
@@ -41,6 +43,7 @@ def test_package_runtime_findings_report_residue_and_env_drift(tmp_path):
         "OMX_TEAM_STATE_ROOT",
     }
     assert [finding["code"] for finding in runtime_hygiene.severe_findings(findings)] == [
+        "package-runtime-residue",
         "package-runtime-residue",
         "package-runtime-residue",
         "package-runtime-env-drift",
