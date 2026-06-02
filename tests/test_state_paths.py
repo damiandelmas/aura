@@ -81,6 +81,7 @@ def test_workspace_state_does_not_write_project_local_state(monkeypatch, tmp_pat
     workspace_state.write_latest_session(workdir, record)
 
     assert not (workdir / ".aura" / "state").exists()
+    assert not (workdir / ".aura").exists()
 
 
 def test_explicit_registry_and_delivery_overrides_still_win(monkeypatch, tmp_path):

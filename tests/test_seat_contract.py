@@ -810,6 +810,7 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
     assert workspace_metadata["workspace_key"] == workspace_state.workspace_key(unit)
     assert json.loads(workspace_state.latest_session_path(unit).read_text(encoding="utf-8"))["seat"] == "codex-seat"
     assert not (unit / ".aura" / "state").exists()
+    assert not (unit / ".aura").exists()
 
 
 def test_spawn_non_codex_does_not_claim_agent_map_injected(monkeypatch, tmp_path):
