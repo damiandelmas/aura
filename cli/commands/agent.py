@@ -15,6 +15,13 @@ def _profile_name(ref: str | None) -> str | None:
     return ref.split("/", 1)[1] if "/" in ref else ref
 
 
+def _package_runtime_profile(record: dict) -> str | None:
+    profile = record.get("profile")
+    if record.get("runtime") == "omx" and profile == "omx/default":
+        return None
+    return profile
+
+
 def _resume_session(record: dict, args) -> str | None:
     requested = getattr(args, "resume_session", None)
     fresh = bool(getattr(args, "fresh", False))
@@ -65,7 +72,8 @@ def _session_sort_key(row: dict) -> tuple[int, float | str]:
 
 def _spawn_args(record: dict, args) -> argparse.Namespace:
     runtime = record["runtime"]
-    profile = _profile_name(record.get("profile"))
+    runtime_profile = _package_runtime_profile(record)
+    profile = _profile_name(runtime_profile)
     cwd = getattr(args, "cwd", None) or record["cwd"]
     fleet = getattr(args, "fleet", None) or record["fleet"]
     seat = getattr(args, "seat", None) or record["seat"]
@@ -92,7 +100,7 @@ def _spawn_args(record: dict, args) -> argparse.Namespace:
         silent=False,
         runtime=runtime,
         profile=None,
-        runtime_profile=record.get("profile"),
+        runtime_profile=runtime_profile,
         boxed=runtime == "codex",
         omx_profile=None,
         launch_command=None,

@@ -416,6 +416,59 @@ def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
     assert "spawn_history" not in body
 
 
+def test_agent_spawn_omx_default_manifest_profile_is_not_required_overlay(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import agent as agent_cmd
+    from commands import spawn
+    from lib import agent_packages
+
+    created = agent_packages.create(
+        address="aura:engine:hands:engineer",
+        runtime="omx",
+        profile="omx/default",
+        cwd=str(tmp_path / "unit"),
+        fleet="aura-engine",
+        seat="hands-engineer",
+        alias=None,
+    )
+    captured = {}
+
+    def fake_spawn(args):
+        captured.update(vars(args))
+        return {
+            "ok": True,
+            "name": args.name,
+            "fleet": args.fleet,
+            "runtime": args.runtime,
+            "runtime_capsule_ref": args._agent_package["root"],
+        }
+
+    monkeypatch.setattr(spawn, "run", fake_spawn)
+    result = agent_cmd.run(
+        argparse.Namespace(
+            agent_action="spawn",
+            ref="aura:engine:hands:engineer",
+            cwd=None,
+            fleet=None,
+            seat=None,
+            prompt=None,
+            resume_session=None,
+            fresh=True,
+            model=None,
+            wait=False,
+            timeout=30,
+            as_pane=True,
+        )
+    )
+
+    assert result["ok"] is True
+    assert captured["runtime"] == "omx"
+    assert captured["runtime_profile"] is None
+    assert captured["omx_profile"] is None
+    assert captured["_agent_package"]["root"] == created["agent"]["root"]
+
+
 def test_agent_spawn_defaults_to_latest_valid_package_runtime_session(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
