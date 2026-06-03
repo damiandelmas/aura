@@ -12,7 +12,7 @@ from pathlib import Path
 from commands import spawn
 from lib import agent_packages, runtime_bases, runtime_boxes
 
-SUPPORTED_RUNTIMES = {"codex", "omx", "hermes"}
+SUPPORTED_RUNTIMES = {"codex", "gajae-code", "hermes", "omx"}
 
 PRESET_SKILLS = {
     "minimal": (),
@@ -78,6 +78,8 @@ def _profile_root(runtime: str, profile: str) -> Path:
         if profile == "default":
             return (Path.home() / ".hermes").resolve()
         return (Path.home() / ".hermes" / "profiles" / profile).resolve()
+    if runtime == "gajae-code":
+        raise ValueError("gajae-code quick launches use package bodies, not runtime profiles")
     raise ValueError(f"unsupported quick runtime: {runtime}")
 
 
@@ -86,6 +88,8 @@ def _skill_destination(runtime: str, profile_root: Path) -> Path:
         return profile_root / "codex-home-template" / "skills"
     if runtime == "hermes":
         return profile_root / "skills"
+    if runtime == "gajae-code":
+        raise ValueError("gajae-code quick launches do not use runtime profile skill templates")
     raise ValueError(f"unsupported quick runtime: {runtime}")
 
 
@@ -146,6 +150,10 @@ def _resolve_profile(args) -> tuple[str | None, dict[str, object] | None]:
     profile_modes = [bool(args.default), args.new is not None, bool(args.profile)]
     if sum(profile_modes) > 1:
         raise ValueError("use only one of --default, --new, or --profile")
+    if runtime == "gajae-code":
+        if any(profile_modes) or args.preset:
+            raise ValueError("gajae-code quick launches do not support runtime profiles or presets")
+        return None, None
     if args.preset and not any(profile_modes):
         raise ValueError("--preset requires --default, --new, or --profile")
     if args.default:
@@ -165,7 +173,9 @@ def _resolve_profile(args) -> tuple[str | None, dict[str, object] | None]:
 def _profile_ref(runtime: str, profile: str | None) -> str | None:
     if not profile:
         return None
-    if runtime in {"codex", "omx", "hermes"}:
+    if runtime in {"codex", "gajae-code", "omx", "hermes"}:
+        if runtime == "gajae-code":
+            return None
         return f"{runtime}/{profile}"
     return None
 
@@ -188,7 +198,7 @@ def _ensure_quick_agent(
 ) -> dict[str, object] | None:
     """Create or reuse the canonical package-native quick body for a runtime."""
 
-    if runtime not in {"codex", "omx"}:
+    if runtime not in {"codex", "gajae-code", "omx"}:
         return None
     alias = _quick_agent_alias(runtime)
     try:
@@ -214,6 +224,9 @@ def _ensure_quick_agent(
         "address": record["address"],
         "alias": record.get("alias"),
         "root": record["root"],
+        "runtime": record.get("runtime"),
+        "argv": record.get("argv"),
+        "env": record.get("env"),
     }
 
 def attach_to_result(result: dict[str, object]) -> str | None:

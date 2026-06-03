@@ -104,6 +104,11 @@ def package_runtime_findings(
             "OMX_ROOT": ".",
             "OMX_TEAM_STATE_ROOT": ".omx/state",
         }
+    elif runtime_name == "gajae-code":
+        expected_env = {
+            "GJC_CONFIG_DIR": ".gjc",
+            "GJC_CODING_AGENT_DIR": ".gjc/agent",
+        }
 
     for key, expected in expected_env.items():
         if key not in env:

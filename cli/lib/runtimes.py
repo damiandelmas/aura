@@ -88,6 +88,18 @@ RUNTIMES: dict[str, dict] = {
             "resume_command": "omx resume --dangerously-bypass-approvals-and-sandbox{cwd_arg} {session_id}",
         },
     },
+    "gajae-code": {
+        "command": "gjc",
+        "graceful_exit": "/exit",
+        "submit_key": "Enter",
+        "native_state": ".gjc",
+        "context_candidates": ["AGENTS.md"],
+        "capabilities": {
+            "supports_resume": False,
+            "supports_fork": False,
+            "session_id_source": "package-gjc-state",
+        },
+    },
     "opencode": {
         "command": "opencode",
         "graceful_exit": "/exit",

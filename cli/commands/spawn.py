@@ -67,6 +67,34 @@ def _infer_fleet_from_caller():
     return None
 
 
+def _resolve_package_env(agent_package: dict, runtime: str) -> tuple[dict[str, str], dict[str, str]]:
+    if runtime in {"codex", "omx"}:
+        return {}, {}
+    root = agent_package.get("root")
+    env = agent_package.get("env")
+    if not root or not isinstance(env, dict):
+        return {}, {}
+    root_path = Path(str(root)).expanduser().resolve()
+    resolved: dict[str, str] = {}
+    meta: dict[str, str] = {}
+    for key, value in env.items():
+        if value is None:
+            continue
+        value_text = str(value)
+        value_path = Path(value_text).expanduser()
+        if value_path.is_absolute():
+            resolved_value = str(value_path)
+        else:
+            resolved_value = str((root_path / value_text).resolve())
+        resolved[str(key)] = resolved_value
+    if runtime == "gajae-code":
+        if resolved.get("GJC_CONFIG_DIR"):
+            meta["gajae_code_package_gjc_config"] = resolved["GJC_CONFIG_DIR"]
+        if resolved.get("GJC_CODING_AGENT_DIR"):
+            meta["gajae_code_package_gjc_agent"] = resolved["GJC_CODING_AGENT_DIR"]
+    return resolved, meta
+
+
 def run(args):
     """Spawn a new agent."""
     if not getattr(args, 'name', None):
@@ -588,6 +616,9 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             launch_env["AURA_AGENT_PACKAGE_ADDRESS"] = str(agent_package_meta["agent_package_address"])
         if agent_package_meta.get("agent_package_alias"):
             launch_env["AURA_AGENT_PACKAGE_ALIAS"] = str(agent_package_meta["agent_package_alias"])
+    package_env, package_env_meta = _resolve_package_env(agent_package, runtime)
+    if package_env:
+        launch_env.update(package_env)
     if role_meta:
         if role_meta.get("identity_provider"):
             launch_env["AURA_IDENTITY_PROVIDER"] = str(role_meta["identity_provider"])
@@ -602,6 +633,10 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     omx_box_meta = {}
     codex_box_meta = {}
     runtime_home = _runtime_home(runtime, profile)
+    if agent_package.get("root") and runtime not in {"codex", "omx"}:
+        runtime_home = str(Path(str(agent_package["root"])).expanduser().resolve())
+        if runtime == "gajae-code":
+            native_state_ref = package_env.get("GJC_CONFIG_DIR") or native_state_ref
     if runtime == "omx":
         try:
             from lib import omx as omx_lib
@@ -795,6 +830,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "status": "starting",
         "registered": True,
         **agent_package_meta,
+        **package_env_meta,
         **flex_meta,
         **runtime_profile_meta,
         **omx_box_meta,
@@ -857,6 +893,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "pane_ref": pane_ref,
             "status": "starting",
             **agent_package_meta,
+            **package_env_meta,
             **flex_meta,
             **runtime_profile_meta,
             **omx_box_meta,
@@ -904,6 +941,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "status": "starting",
         "registered": True,
         **agent_package_meta,
+        **package_env_meta,
         **({"spawn_preflight": spawn_preflight} if spawn_preflight.get("warnings") else {}),
         "fleet": fleet,
         "trace_cell": registered.get("trace_cell"),

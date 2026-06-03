@@ -27,6 +27,10 @@ def _resume_session(record: dict, args) -> str | None:
     fresh = bool(getattr(args, "fresh", False))
     if fresh and requested:
         raise ValueError("use either --fresh or --resume-session, not both")
+    if record.get("runtime") == "gajae-code":
+        if requested:
+            raise ValueError("gajae-code package resume is not supported by Aura yet")
+        return None
     if fresh:
         return None
     if not requested:
@@ -109,6 +113,9 @@ def _spawn_args(record: dict, args) -> argparse.Namespace:
             "address": record.get("address"),
             "alias": record.get("alias"),
             "root": record["root"],
+            "runtime": runtime,
+            "argv": record.get("argv"),
+            "env": record.get("env"),
         },
     )
 

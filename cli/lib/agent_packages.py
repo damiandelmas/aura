@@ -3,8 +3,9 @@
 Agent packages are durable runtime bodies under ``~/.aura/agents/i_*``.  The
 body intentionally contains only Aura's spawn recipe plus native runtime homes.
 Pure Codex bodies contain ``manifest.json`` and ``.codex/``. OMX bodies contain
-``manifest.json``, ``.codex/``, and ``.omx/``. Lookup names live in the external
-agent index; launch/session evidence lives in Aura registry/runtime state.
+``manifest.json``, ``.codex/``, and ``.omx/``. Gajae-Code bodies contain
+``manifest.json`` and ``.gjc/``. Lookup names live in the external agent index;
+launch/session evidence lives in Aura registry/runtime state.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from lib import runtime_boxes, runtime_profiles, state
 AGENT_SCHEMA = "aura.agent_manifest.v1"
 INDEX_SCHEMA = "aura.agent_package.index.v1"
 
-SUPPORTED_RUNTIMES = {"codex", "omx"}
+SUPPORTED_RUNTIMES = {"codex", "gajae-code", "omx"}
 
 
 def _empty_index() -> dict[str, Any]:
@@ -73,6 +74,8 @@ def normalize_profile_ref(profile: str | None, *, runtime: str) -> str | None:
     raw = str(profile or "").strip()
     if not raw:
         return None
+    if runtime == "gajae-code":
+        raise ValueError("runtime profiles are not supported for gajae-code packages")
     if "/" not in raw:
         raw = f"{runtime}/{raw}"
     return runtime_profiles.normalize_runtime_profile_ref(raw, expected_runtime=runtime).canonical
@@ -202,20 +205,29 @@ def resolve(ref: str) -> dict[str, Any]:
 
 
 def package_dirs(root: Path, runtime: str | None = None) -> dict[str, str]:
-    dirs = {
-        "root": str(root),
-        "codex_home": str(root / ".codex"),
-    }
+    dirs = {"root": str(root)}
+    if runtime in {None, "codex", "omx"}:
+        dirs["codex_home"] = str(root / ".codex")
     if runtime == "omx":
         dirs.update({
             "omx_root": str(root),
             "omx_state": str(root / ".omx"),
             "omx_team_state": str(root / ".omx" / "state"),
         })
+    if runtime == "gajae-code":
+        dirs.update({
+            "gjc_config": str(root / ".gjc"),
+            "gjc_agent": str(root / ".gjc" / "agent"),
+        })
     return dirs
 
 
 def _spawn_env(runtime: str) -> dict[str, str]:
+    if runtime == "gajae-code":
+        return {
+            "GJC_CONFIG_DIR": ".gjc",
+            "GJC_CODING_AGENT_DIR": ".gjc/agent",
+        }
     env = {"CODEX_HOME": ".codex"}
     if runtime == "omx":
         env["OMX_ROOT"] = "."
@@ -224,6 +236,8 @@ def _spawn_env(runtime: str) -> dict[str, str]:
 
 
 def _spawn_argv(runtime: str) -> list[str]:
+    if runtime == "gajae-code":
+        return ["gjc"]
     return [runtime]
 
 
@@ -265,7 +279,7 @@ def create(
     agent_id = new_agent_id()
     root = package_root(agent_id)
     dirs = package_dirs(root, runtime)
-    for key in ("codex_home", "omx_team_state"):
+    for key in ("codex_home", "omx_team_state", "gjc_agent"):
         if key in dirs:
             Path(dirs[key]).mkdir(parents=True, exist_ok=True)
 
@@ -275,11 +289,12 @@ def create(
         "cwd": str(cwd_path),
         "argv": _spawn_argv(runtime),
         "env": _spawn_env(runtime),
-        "resume": {"default": "latest"},
         "fleet": fleet,
         "seat": seat,
         **({"profile": profile_ref} if profile_ref else {}),
     }
+    if runtime in {"codex", "omx"}:
+        record["resume"] = {"default": "latest"}
     _atomic_write_json(manifest_path(root), record)
 
     index.setdefault("agents", {})[agent_id] = {
@@ -460,17 +475,25 @@ def promote_seat(
                 root / ".omx",
                 label="omx state",
             )
+        elif runtime == "gajae-code":
+            _copy_required_dir(
+                row.get("gajae_code_package_gjc_config")
+                or row.get("native_state_ref"),
+                root / ".gjc",
+                label="gajae-code config",
+            )
         manifest = {
             "schema": AGENT_SCHEMA,
             "runtime": runtime,
             "cwd": str(Path(row.get("cwd") or row.get("runtime_process_cwd") or Path.cwd()).expanduser().resolve()),
             "argv": _spawn_argv(runtime),
             "env": _spawn_env(runtime),
-            "resume": {"default": "latest"},
             "fleet": row.get("fleet"),
             "seat": row.get("name") or row.get("seat"),
             **({"profile": row.get("runtime_profile")} if row.get("runtime_profile") else {}),
         }
+        if runtime in {"codex", "omx"}:
+            manifest["resume"] = {"default": "latest"}
         _atomic_write_json(manifest_path(root), manifest)
         index.setdefault("agents", {})[agent_id] = {
             "root": str(root),
@@ -641,10 +664,11 @@ def _hook_presence(codex_home: Path) -> tuple[list[str], dict[str, bool]]:
 
 def _hook_records(ref: str | None) -> list[dict[str, Any]]:
     if ref:
-        return [resolve(ref)]
+        record = resolve(ref)
+        return [record] if record.get("runtime") in {"codex", "omx"} else []
     records: list[dict[str, Any]] = []
     for row in census()["packages"]:
-        if row.get("runtime") not in SUPPORTED_RUNTIMES:
+        if row.get("runtime") not in {"codex", "omx"}:
             continue
         if "missing-package-root" in row.get("findings", []) or "missing-manifest" in row.get("findings", []):
             continue
@@ -781,6 +805,8 @@ def _runtime_root_findings(root: Path, manifest: dict[str, Any] | None) -> list[
         findings.append("missing-runtime-root:.codex")
     if runtime == "omx" and not (root / ".omx").is_dir():
         findings.append("missing-runtime-root:.omx")
+    if runtime == "gajae-code" and not (root / ".gjc" / "agent").is_dir():
+        findings.append("missing-runtime-root:.gjc/agent")
     return findings
 
 
