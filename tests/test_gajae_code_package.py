@@ -40,7 +40,7 @@ def _spawn_args(tmp_path, package, **overrides):
         fork_session=None,
         identity_provider="aura-agent",
         identity_id=package["agent_id"],
-        identity_label=package["address"],
+        identity_label=package.get("alias") or package["agent_id"],
         at=None,
         prompt=None,
         work=None,
@@ -59,7 +59,6 @@ def _spawn_args(tmp_path, package, **overrides):
         launch_command=None,
         _agent_package={
             "agent_id": package["agent_id"],
-            "address": package["address"],
             "alias": package.get("alias"),
             "root": package["root"],
             "runtime": package["runtime"],
@@ -179,7 +178,7 @@ def test_quick_gajae_code_uses_canonical_package_without_runtime_profile(monkeyp
     package_root = Path(captured["_agent_package"]["root"])
     assert (package_root / ".gjc" / "agent").is_dir()
     assert sorted(path.name for path in package_root.iterdir()) == [".gjc", "manifest.json"]
-    assert result["quick_agent_package_address"] == "aura:quick:gajae-code"
+    assert "quick_agent_package_address" not in result
 
 
 def test_quick_gajae_code_rejects_runtime_profile_flags(monkeypatch, tmp_path):

@@ -30,7 +30,7 @@ SUPPORTED_RUNTIMES = {"codex", "gajae-code", "omx"}
 
 
 def _empty_index() -> dict[str, Any]:
-    return {"schema": INDEX_SCHEMA, "agents": {}, "addresses": {}, "aliases": {}}
+    return {"schema": INDEX_SCHEMA, "agents": {}, "aliases": {}}
 
 
 def now_iso() -> str:
@@ -126,7 +126,6 @@ def read_index() -> dict[str, Any]:
         raise ValueError(f"invalid agent package index: {path}: expected object")
     payload.setdefault("schema", INDEX_SCHEMA)
     payload.setdefault("agents", {})
-    payload.setdefault("addresses", {})
     payload.setdefault("aliases", {})
     return payload
 
@@ -135,6 +134,16 @@ def write_index(index: dict[str, Any]) -> None:
     index = dict(index)
     index["schema"] = INDEX_SCHEMA
     index["updated_at"] = now_iso()
+    index.pop("addresses", None)
+    agents = {}
+    for agent_id, meta in (index.get("agents") or {}).items():
+        if isinstance(meta, dict):
+            row = dict(meta)
+            row.pop("address", None)
+            agents[agent_id] = row
+        else:
+            agents[agent_id] = meta
+    index["agents"] = agents
     _atomic_write_json(index_path(), index)
 
 
@@ -299,10 +308,8 @@ def create(
 
     index.setdefault("agents", {})[agent_id] = {
         "root": str(root),
-        "address": address,
         **({"alias": alias_value} if alias_value else {}),
     }
-    index.setdefault("addresses", {})[address] = agent_id
     if alias_value:
         index.setdefault("aliases", {})[alias_value] = agent_id
     write_index(index)
@@ -347,10 +354,8 @@ def adopt_root(
 
     index.setdefault("agents", {})[package_id] = {
         "root": str(root_path),
-        "address": address,
         **({"alias": alias_value} if alias_value else {}),
     }
-    index.setdefault("addresses", {})[address] = package_id
     if alias_value:
         index.setdefault("aliases", {})[alias_value] = package_id
     write_index(index)
@@ -402,11 +407,9 @@ def clone(
 
     index.setdefault("agents", {})[target_id] = {
         "root": str(target_root),
-        "address": address,
         **({"alias": alias_value} if alias_value else {}),
         "cloned_from": source["agent_id"],
     }
-    index.setdefault("addresses", {})[address] = target_id
     if alias_value:
         index.setdefault("aliases", {})[alias_value] = target_id
     write_index(index)
@@ -497,11 +500,9 @@ def promote_seat(
         _atomic_write_json(manifest_path(root), manifest)
         index.setdefault("agents", {})[agent_id] = {
             "root": str(root),
-            "address": address,
             **({"alias": alias_value} if alias_value else {}),
             "promoted_from": registry.seat_ref(row.get("fleet"), row.get("name") or row.get("seat")),
         }
-        index.setdefault("addresses", {})[address] = agent_id
         if alias_value:
             index.setdefault("aliases", {})[alias_value] = agent_id
         write_index(index)
@@ -590,13 +591,13 @@ def rename(
     if current_alias and current_alias != alias_value:
         index.get("aliases", {}).pop(current_alias, None)
     meta = dict(_index_agent_meta(index, agent_id))
-    meta.update({"root": str(root), "address": address})
+    meta.update({"root": str(root)})
+    meta.pop("address", None)
     if alias_value:
         meta["alias"] = alias_value
     else:
         meta.pop("alias", None)
     index.setdefault("agents", {})[agent_id] = meta
-    index.setdefault("addresses", {})[address] = agent_id
     if alias_value:
         index.setdefault("aliases", {})[alias_value] = agent_id
     write_index(index)

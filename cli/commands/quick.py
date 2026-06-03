@@ -221,7 +221,6 @@ def _ensure_quick_agent(
         )
     return {
         "agent_id": record["agent_id"],
-        "address": record["address"],
         "alias": record.get("alias"),
         "root": record["root"],
         "runtime": record.get("runtime"),
@@ -284,7 +283,7 @@ def _spawn_args(args, *, profile: str | None, quick_agent: dict[str, object] | N
         launch_command=None,
         identity_provider="aura-agent" if quick_agent else None,
         identity_id=quick_agent.get("agent_id") if quick_agent else None,
-        identity_label=quick_agent.get("address") if quick_agent else None,
+        identity_label=(quick_agent.get("alias") or quick_agent.get("agent_id")) if quick_agent else None,
         fork_session=None,
         _agent_package=quick_agent,
     )
@@ -319,7 +318,6 @@ def run(args):
         result["quick_profile"] = profile
         if quick_agent:
             result["quick_agent_package_id"] = quick_agent.get("agent_id")
-            result["quick_agent_package_address"] = quick_agent.get("address")
             result["quick_agent_package_alias"] = quick_agent.get("alias")
             result["quick_agent_package_root"] = quick_agent.get("root")
         if profile_meta:

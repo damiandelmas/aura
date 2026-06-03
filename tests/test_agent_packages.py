@@ -10,6 +10,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "cli"))
 
 
+def _assert_thin_agent_index(agent_packages):
+    index = json.loads(agent_packages.index_path().read_text(encoding="utf-8"))
+    assert "addresses" not in index
+    for meta in index.get("agents", {}).values():
+        if isinstance(meta, dict):
+            assert "address" not in meta
+    return index
+
+
 def test_agent_create_writes_minimal_package(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
@@ -29,7 +38,8 @@ def test_agent_create_writes_minimal_package(monkeypatch, tmp_path):
     agent = result["agent"]
     root = Path(agent["root"])
     assert agent["agent_id"].startswith("i_")
-    assert agent["address"] == "flexgraph:chatbot:pipeline:conductor"
+    assert "address" not in agent
+    assert agent["alias"] == "pipeline-conductor"
     assert agent["profile"] == "omx/aura-operator"
     assert (root / "manifest.json").is_file()
     assert not (root / "agent.json").exists()
@@ -52,9 +62,14 @@ def test_agent_create_writes_minimal_package(monkeypatch, tmp_path):
         "schema": "aura.agent_manifest.v1",
         "seat": "pipeline",
     }
+    index = _assert_thin_agent_index(agent_packages)
+    assert index["agents"][agent["agent_id"]] == {
+        "alias": "pipeline-conductor",
+        "root": agent["root"],
+    }
 
 
-def test_agent_inspect_resolves_address_and_alias(monkeypatch, tmp_path):
+def test_agent_inspect_resolves_alias_and_id(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
     from lib import agent_packages
@@ -69,14 +84,14 @@ def test_agent_inspect_resolves_address_and_alias(monkeypatch, tmp_path):
         alias="eng-runtime",
     )
 
-    by_address = agent_packages.inspect("flexgraph:chatbot:engineer:runtime")
+    by_id = agent_packages.inspect(created["agent"]["agent_id"])
     by_alias = agent_packages.inspect("eng-runtime")
 
-    assert by_address["ok"] is True
-    assert by_address["agent"]["agent_id"] == created["agent"]["agent_id"]
+    assert by_id["ok"] is True
+    assert by_id["agent"]["agent_id"] == created["agent"]["agent_id"]
     assert by_alias["agent"]["root"] == created["agent"]["root"]
-    assert by_address["agent"]["profile"] == "codex/worker"
-    assert "manifest" in by_address["files"]
+    assert by_id["agent"]["profile"] == "codex/worker"
+    assert "manifest" in by_id["files"]
     root = Path(created["agent"]["root"])
     assert (root / ".codex").is_dir()
     assert not (root / ".omx").exists()
@@ -116,6 +131,7 @@ def test_agent_adopt_root_indexes_existing_package_body(monkeypatch, tmp_path):
     assert resolved["root"] == str(root.resolve())
     assert census["packages"][0]["indexed"] is True
     assert census["packages"][0]["classification"] == "durable-package-unbound"
+    _assert_thin_agent_index(agent_packages)
 
 
 def test_agent_adopt_root_refuses_broken_body(monkeypatch, tmp_path):
@@ -192,6 +208,7 @@ def test_agent_clone_preserves_package_body_and_updates_manifest(monkeypatch, tm
     assert (clone_root / "aura.json").is_file()
     assert agent_packages.resolve("ops-manager-clone")["agent_id"] == cloned["agent_id"]
     assert agent_packages.resolve("ops-manager")["agent_id"] == source["agent_id"]
+    _assert_thin_agent_index(agent_packages)
 
 
 def test_agent_promote_seat_copies_runtime_home_and_binds_registry(monkeypatch, tmp_path):
@@ -233,6 +250,7 @@ def test_agent_promote_seat_copies_runtime_home_and_binds_registry(monkeypatch, 
     assert record["codex_box_codex_home"] == str(codex_home)
     assert promoted["registry"]["runtime_process_still_uses_original_home"] is True
     assert agent_packages.resolve("ops-manager")["agent_id"] == promoted["agent"]["agent_id"]
+    _assert_thin_agent_index(agent_packages)
 
 
 def test_agent_rename_updates_index_manifest_and_registry_binding(monkeypatch, tmp_path):
@@ -271,7 +289,7 @@ def test_agent_rename_updates_index_manifest_and_registry_binding(monkeypatch, t
 
     assert renamed["ok"] is True
     assert renamed["previous"] == {
-        "address": "flexgraph:chatbot:ops:manager",
+        "address": None,
         "alias": "ops-manager",
     }
     assert agent_packages.resolve("ops-lead")["agent_id"] == agent["agent_id"]
@@ -285,6 +303,7 @@ def test_agent_rename_updates_index_manifest_and_registry_binding(monkeypatch, t
     assert record["identity_label"] == "flexgraph:chatbot:ops:lead"
     assert manifest["fleet"] == "flexgraph-chatbot"
     assert manifest["seat"] == "manager"
+    _assert_thin_agent_index(agent_packages)
 
 
 def test_agent_rename_refuses_live_fleet_default_drift(monkeypatch, tmp_path):
@@ -388,7 +407,7 @@ def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
     result = agent_cmd.run(
         argparse.Namespace(
             agent_action="spawn",
-            ref="flexgraph:chatbot:pipeline:conductor",
+            ref=created["agent"]["agent_id"],
             cwd=None,
             fleet=None,
             seat=None,
@@ -448,7 +467,7 @@ def test_agent_spawn_omx_default_manifest_profile_is_not_required_overlay(monkey
     result = agent_cmd.run(
         argparse.Namespace(
             agent_action="spawn",
-            ref="aura:engine:hands:engineer",
+            ref=created["agent"]["agent_id"],
             cwd=None,
             fleet=None,
             seat=None,
@@ -881,7 +900,8 @@ def test_agent_cli_create_and_inspect_public_argv(tmp_path):
     )
     inspected = json.loads(inspect.stdout)
     assert inspected["ok"] is True
-    assert inspected["agent"]["address"] == "flexgraph:chatbot:pipeline:conductor"
+    assert "address" not in inspected["agent"]
+    assert inspected["agent"]["alias"] == "pipeline-conductor"
     assert inspected["agent"]["root"] == created["agent"]["root"]
     assert Path(inspected["agent"]["root"], ".codex").is_dir()
 
@@ -923,6 +943,63 @@ def test_agent_resolve_requires_manifest_json(monkeypatch, tmp_path):
         assert "missing manifest.json" in str(exc)
     else:
         raise AssertionError("agent.json must not satisfy package manifest resolution")
+
+
+def test_agent_legacy_address_map_resolves_until_rewritten(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from lib import agent_packages
+
+    root = agent_packages.agents_root() / "i_package"
+    (root / ".codex").mkdir(parents=True)
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": "aura.agent_manifest.v1",
+                "runtime": "codex",
+                "cwd": str(tmp_path),
+                "fleet": "unit",
+                "seat": "agent",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    agent_packages.index_path().parent.mkdir(parents=True, exist_ok=True)
+    agent_packages.index_path().write_text(
+        json.dumps(
+            {
+                "schema": agent_packages.INDEX_SCHEMA,
+                "agents": {
+                    "i_package": {
+                        "root": str(root),
+                        "address": "unit:agent",
+                        "alias": "unit-agent",
+                    }
+                },
+                "addresses": {"unit:agent": "i_package"},
+                "aliases": {"unit-agent": "i_package"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    legacy = agent_packages.resolve("unit:agent")
+    assert legacy["agent_id"] == "i_package"
+    assert legacy["address"] == "unit:agent"
+
+    agent_packages.write_index(agent_packages.read_index())
+    rewritten = json.loads(agent_packages.index_path().read_text(encoding="utf-8"))
+    assert "addresses" not in rewritten
+    assert "address" not in rewritten["agents"]["i_package"]
+    assert agent_packages.resolve("unit-agent")["agent_id"] == "i_package"
+    try:
+        agent_packages.resolve("unit:agent")
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("rewritten thin index should not keep address resolution")
 
 
 def test_agent_index_corruption_fails_loudly(monkeypatch, tmp_path):
