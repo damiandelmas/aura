@@ -30,7 +30,7 @@ SUPPORTED_RUNTIMES = {"codex", "gajae-code", "omx"}
 
 
 def _empty_index() -> dict[str, Any]:
-    return {"schema": INDEX_SCHEMA, "agents": {}, "aliases": {}}
+    return {"schema": INDEX_SCHEMA, "agents": {}}
 
 
 def now_iso() -> str:
@@ -126,7 +126,6 @@ def read_index() -> dict[str, Any]:
         raise ValueError(f"invalid agent package index: {path}: expected object")
     payload.setdefault("schema", INDEX_SCHEMA)
     payload.setdefault("agents", {})
-    payload.setdefault("aliases", {})
     return payload
 
 
@@ -135,6 +134,7 @@ def write_index(index: dict[str, Any]) -> None:
     index["schema"] = INDEX_SCHEMA
     index["updated_at"] = now_iso()
     index.pop("addresses", None)
+    index.pop("aliases", None)
     agents = {}
     for agent_id, meta in (index.get("agents") or {}).items():
         if isinstance(meta, dict):
@@ -142,7 +142,7 @@ def write_index(index: dict[str, Any]) -> None:
             row.pop("address", None)
             agents[agent_id] = row
         else:
-            agents[agent_id] = meta
+            agents[agent_id] = {"root": str(meta)}
     index["agents"] = agents
     _atomic_write_json(index_path(), index)
 
@@ -177,6 +177,16 @@ def _find_index_key(mapping: dict[str, Any], agent_id: str) -> str | None:
     return None
 
 
+def _agent_id_for_alias(index: dict[str, Any], alias: str) -> str | None:
+    for agent_id, meta in (index.get("agents") or {}).items():
+        if isinstance(meta, dict) and meta.get("alias") == alias:
+            return str(agent_id)
+    legacy = index.get("aliases", {})
+    if isinstance(legacy, dict) and alias in legacy:
+        return str(legacy[alias])
+    return None
+
+
 def _enrich_record(record: dict[str, Any], *, index: dict[str, Any], agent_id: str, root: Path) -> dict[str, Any]:
     meta = _index_agent_meta(index, agent_id)
     enriched = dict(record)
@@ -201,8 +211,8 @@ def resolve(ref: str) -> dict[str, Any]:
         agent_id = raw
     elif raw in index.get("addresses", {}):
         agent_id = index["addresses"][raw]
-    elif raw in index.get("aliases", {}):
-        agent_id = index["aliases"][raw]
+    else:
+        agent_id = _agent_id_for_alias(index, raw)
     if not agent_id:
         raise FileNotFoundError(f"unknown agent package: {raw}")
     root = package_root(agent_id)
@@ -282,7 +292,7 @@ def create(
     existing_id = index.get("addresses", {}).get(address)
     if existing_id:
         raise FileExistsError(f"agent address already exists: {address} -> {existing_id}")
-    if alias_value and alias_value in index.get("aliases", {}):
+    if alias_value and _agent_id_for_alias(index, alias_value):
         raise FileExistsError(f"agent alias already exists: {alias_value}")
 
     agent_id = new_agent_id()
@@ -310,8 +320,6 @@ def create(
         "root": str(root),
         **({"alias": alias_value} if alias_value else {}),
     }
-    if alias_value:
-        index.setdefault("aliases", {})[alias_value] = agent_id
     write_index(index)
     return {"ok": True, "agent": _enrich_record(record, index=index, agent_id=agent_id, root=root)}
 
@@ -349,15 +357,13 @@ def adopt_root(
     existing_id = index.get("addresses", {}).get(address)
     if existing_id:
         raise FileExistsError(f"agent address already exists: {address} -> {existing_id}")
-    if alias_value and alias_value in index.get("aliases", {}):
+    if alias_value and _agent_id_for_alias(index, alias_value):
         raise FileExistsError(f"agent alias already exists: {alias_value}")
 
     index.setdefault("agents", {})[package_id] = {
         "root": str(root_path),
         **({"alias": alias_value} if alias_value else {}),
     }
-    if alias_value:
-        index.setdefault("aliases", {})[alias_value] = package_id
     write_index(index)
     return {
         "ok": True,
@@ -390,7 +396,7 @@ def clone(
     index = read_index()
     if address in index.get("addresses", {}):
         raise FileExistsError(f"agent address already exists: {address} -> {index['addresses'][address]}")
-    if alias_value and alias_value in index.get("aliases", {}):
+    if alias_value and _agent_id_for_alias(index, alias_value):
         raise FileExistsError(f"agent alias already exists: {alias_value}")
 
     target_id = new_agent_id()
@@ -410,8 +416,6 @@ def clone(
         **({"alias": alias_value} if alias_value else {}),
         "cloned_from": source["agent_id"],
     }
-    if alias_value:
-        index.setdefault("aliases", {})[alias_value] = target_id
     write_index(index)
     return {
         "ok": True,
@@ -454,7 +458,7 @@ def promote_seat(
     index = read_index()
     if address in index.get("addresses", {}):
         raise FileExistsError(f"agent address already exists: {address} -> {index['addresses'][address]}")
-    if alias_value and alias_value in index.get("aliases", {}):
+    if alias_value and _agent_id_for_alias(index, alias_value):
         raise FileExistsError(f"agent alias already exists: {alias_value}")
 
     agent_id = new_agent_id()
@@ -503,8 +507,6 @@ def promote_seat(
             **({"alias": alias_value} if alias_value else {}),
             "promoted_from": registry.seat_ref(row.get("fleet"), row.get("name") or row.get("seat")),
         }
-        if alias_value:
-            index.setdefault("aliases", {})[alias_value] = agent_id
         write_index(index)
     except Exception:
         if root.exists():
@@ -562,7 +564,7 @@ def rename(
     if existing_id and existing_id != agent_id:
         raise FileExistsError(f"agent address already exists: {address} -> {existing_id}")
     if alias_value:
-        existing_alias_id = index.get("aliases", {}).get(alias_value)
+        existing_alias_id = _agent_id_for_alias(index, alias_value)
         if existing_alias_id and existing_alias_id != agent_id:
             raise FileExistsError(f"agent alias already exists: {alias_value}")
 
@@ -588,8 +590,6 @@ def rename(
 
     if current_address and current_address != address:
         index.get("addresses", {}).pop(current_address, None)
-    if current_alias and current_alias != alias_value:
-        index.get("aliases", {}).pop(current_alias, None)
     meta = dict(_index_agent_meta(index, agent_id))
     meta.update({"root": str(root)})
     meta.pop("address", None)
@@ -598,8 +598,6 @@ def rename(
     else:
         meta.pop("alias", None)
     index.setdefault("agents", {})[agent_id] = meta
-    if alias_value:
-        index.setdefault("aliases", {})[alias_value] = agent_id
     write_index(index)
 
     updated_bindings = []

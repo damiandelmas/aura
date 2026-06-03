@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "cli"))
 def _assert_thin_agent_index(agent_packages):
     index = json.loads(agent_packages.index_path().read_text(encoding="utf-8"))
     assert "addresses" not in index
+    assert "aliases" not in index
     for meta in index.get("agents", {}).values():
         if isinstance(meta, dict):
             assert "address" not in meta
@@ -938,7 +939,7 @@ def test_agent_resolve_requires_manifest_json(monkeypatch, tmp_path):
     )
 
     try:
-        agent_packages.resolve("unit-agent")
+        agent_packages.resolve("i_package")
     except FileNotFoundError as exc:
         assert "missing manifest.json" in str(exc)
     else:
@@ -992,6 +993,7 @@ def test_agent_legacy_address_map_resolves_until_rewritten(monkeypatch, tmp_path
     agent_packages.write_index(agent_packages.read_index())
     rewritten = json.loads(agent_packages.index_path().read_text(encoding="utf-8"))
     assert "addresses" not in rewritten
+    assert "aliases" not in rewritten
     assert "address" not in rewritten["agents"]["i_package"]
     assert agent_packages.resolve("unit-agent")["agent_id"] == "i_package"
     try:
