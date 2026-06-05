@@ -20,7 +20,8 @@ except ImportError:  # pragma: no cover - Codex/Aura package hooks run on Unix.
 
 
 CLI = Path(__file__).resolve().parents[1] / "aura"
-DEFAULT_THRESHOLDS = (25, 50, 75)
+DEFAULT_FIRST_TRACE_MESSAGES = 15
+DEFAULT_TRACE_INTERVAL_MESSAGES = 15
 
 
 def _now() -> str:
@@ -189,16 +190,58 @@ def _context_percent(payload: dict[str, Any]) -> int | None:
     return latest
 
 
-def _thresholds() -> tuple[int, ...]:
-    raw = os.environ.get("AURA_KEEPER_MEMORY_THRESHOLDS")
+def _env_positive_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
     if not raw:
-        return DEFAULT_THRESHOLDS
-    values: list[int] = []
-    for part in raw.split(","):
-        part = part.strip()
-        if part.isdigit():
-            values.append(max(1, min(100, int(part))))
-    return tuple(sorted(set(values))) or DEFAULT_THRESHOLDS
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _first_trace_messages() -> int:
+    return _env_positive_int("AURA_KEEPER_FIRST_TRACE_MESSAGES", DEFAULT_FIRST_TRACE_MESSAGES)
+
+
+def _trace_interval_messages() -> int:
+    return _env_positive_int("AURA_KEEPER_TRACE_INTERVAL_MESSAGES", DEFAULT_TRACE_INTERVAL_MESSAGES)
+
+
+def _transcript_row_counts_for_trace(row: dict[str, Any]) -> bool:
+    row_type = row.get("type")
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    payload_type = payload.get("type")
+    if row_type == "response_item":
+        return payload_type == "message" and payload.get("role") in {"user", "assistant"}
+    if row_type == "event_msg":
+        return payload_type in {"user_message", "agent_message"}
+    return False
+
+
+def _transcript_message_count(payload: dict[str, Any]) -> int | None:
+    transcript = payload.get("transcript_path")
+    if not transcript:
+        return None
+    path = Path(str(transcript)).expanduser()
+    if not path.is_file():
+        return None
+    count = 0
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(row, dict) and _transcript_row_counts_for_trace(row):
+                    count += 1
+    except Exception:
+        return None
+    return count
 
 
 def _state_path(root: Path) -> Path:
@@ -211,6 +254,10 @@ def _log_path(root: Path) -> Path:
 
 def _lock_path(root: Path) -> Path:
     return root / "memories" / ".hook-state" / "aura-keeper-hook.lock"
+
+
+def _pause_path(root: Path) -> Path:
+    return root / "memories" / ".hook-state" / "keeper-paused"
 
 
 @contextmanager
@@ -269,68 +316,94 @@ def _session_state(root: Path, session_id: str) -> tuple[Path, dict[str, Any], d
     return path, state, session
 
 
+def _hook_paused(root: Path, session_id: str) -> bool:
+    if os.environ.get("AURA_KEEPER_HOOK_PAUSED") in {"1", "true", "TRUE", "yes", "YES"}:
+        return True
+    if _pause_path(root).exists():
+        return True
+    state = _load_state(_state_path(root))
+    session = state.get("sessions", {}).get(session_id)
+    return isinstance(session, dict) and bool(session.get("disabled_for_manual_prompt_iteration"))
+
+
 def _launch_keeper(root: Path, *, target: str, boundary: str) -> int | None:
     log_path = _log_path(root).with_name("keeper-launch.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     command_override = _first_string(os.environ.get("AURA_KEEPER_HOOK_COMMAND"))
     cmd = shlex.split(command_override) if command_override else [sys.executable, str(CLI), "keeper", "run", "memory", "--target", target, "--boundary", boundary]
     try:
-        proc = subprocess.run(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=float(os.environ.get("AURA_KEEPER_HOOK_TIMEOUT", "25")),
-        )
+        handle = log_path.open("ab")
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        finally:
+            handle.close()
     except Exception as exc:
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"ok": False, "error": "keeper-launch-exception", "detail": str(exc)}) + "\n")
         return None
-    output = (proc.stdout or "").strip()
     with log_path.open("a", encoding="utf-8") as handle:
-        if output:
-            handle.write(output + ("\n" if not output.endswith("\n") else ""))
-        handle.write(json.dumps({"returncode": proc.returncode, "target": target, "boundary": boundary}) + "\n")
-    if proc.returncode != 0:
-        return None
-    try:
-        receipt = json.loads(output.splitlines()[-1]) if output else {}
-    except Exception:
-        return None
-    if not isinstance(receipt, dict) or not receipt.get("ok"):
-        return None
-    pid = receipt.get("pid")
-    return int(pid) if isinstance(pid, int) else 0
+        handle.write(json.dumps({"pid": proc.pid, "target": target, "boundary": boundary}) + "\n")
+    return int(proc.pid)
 
 
 def _handle_stop(root: Path, payload: dict[str, Any], target: str, session_id: str) -> int | None:
     percent = _context_percent(payload)
-    if percent is None:
-        _audit(root, "skip", event="Stop", reason="missing-context-percent", target=target, session_id=session_id)
+    message_count = _transcript_message_count(payload)
+    if message_count is None:
+        _audit(root, "skip", event="Stop", reason="missing-transcript-message-count", target=target, session_id=session_id, percent=percent)
         return None
     with _state_lock(root):
         path, state, session = _session_state(root, session_id)
-        fired = {int(value) for value in session.get("fired_boundaries", []) if str(value).isdigit()}
-        crossed = [value for value in _thresholds() if percent >= value]
-        due = [value for value in crossed if value not in fired]
-        if not due:
-            _audit(root, "skip", event="Stop", reason="already-fired", target=target, session_id=session_id, percent=percent)
+        last_launched = session.get("last_trace_conversation_count")
+        try:
+            last_launched_count = int(last_launched) if last_launched is not None else None
+        except (TypeError, ValueError):
+            last_launched_count = None
+        minimum = _first_trace_messages() if last_launched_count is None else _trace_interval_messages()
+        new_messages = message_count if last_launched_count is None else max(0, message_count - last_launched_count)
+        if new_messages < minimum:
+            session["last_seen_conversation_count"] = message_count
+            session["last_stop_percent"] = percent
+            session["updated_at"] = _now()
+            _write_state(path, state)
+            _audit(
+                root,
+                "skip",
+                event="Stop",
+                reason="insufficient-new-messages",
+                target=target,
+                session_id=session_id,
+                conversation_count=message_count,
+                new_messages=new_messages,
+                minimum=minimum,
+                percent=percent,
+            )
             return None
-        boundary = max(due)
-        pid = _launch_keeper(root, target=target, boundary=str(boundary))
+        boundary = f"m{message_count}"
+        pid = _launch_keeper(root, target=target, boundary=boundary)
         if pid is None:
             session["last_stop_percent"] = percent
+            session["last_seen_conversation_count"] = message_count
             session["last_launch_failed_boundary"] = boundary
             session["updated_at"] = _now()
             _write_state(path, state)
-            _audit(root, "launch-failed", event="Stop", target=target, session_id=session_id, boundary=boundary, percent=percent)
+            _audit(root, "launch-failed", event="Stop", target=target, session_id=session_id, boundary=boundary, conversation_count=message_count, percent=percent)
             return None
-        session["fired_boundaries"] = sorted(fired | {value for value in crossed if value <= boundary})
+        trace_count = int(session.get("trace_count") or 0) + 1
+        session["trace_count"] = trace_count
+        session["last_trace_boundary"] = boundary
+        session["last_trace_conversation_count"] = message_count
+        session["last_seen_conversation_count"] = message_count
         session["last_stop_percent"] = percent
         session["updated_at"] = _now()
         _write_state(path, state)
-    _audit(root, "launched", event="Stop", target=target, session_id=session_id, boundary=boundary, percent=percent, pid=pid)
+    _audit(root, "launched", event="Stop", target=target, session_id=session_id, boundary=boundary, conversation_count=message_count, new_messages=new_messages, minimum=minimum, percent=percent, pid=pid)
     return pid
 
 
@@ -364,6 +437,9 @@ def main() -> int:
         return 0
     if not session_id:
         _audit(root, "skip", event=event, reason="missing-session-id", target=target)
+        return 0
+    if event in {"Stop", "PreCompact"} and _hook_paused(root, session_id):
+        _audit(root, "skip", event=event, reason="keeper-hook-paused", target=target, session_id=session_id)
         return 0
     if event == "Stop":
         _handle_stop(root, payload, target, session_id)

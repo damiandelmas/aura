@@ -180,6 +180,67 @@ def test_build_returns_matching_session_ledger_history(monkeypatch, tmp_path):
     ]
 
 
+def test_build_omits_keeper_worker_sessions(monkeypatch, tmp_path):
+    agent = _create_agent(tmp_path, monkeypatch=monkeypatch)
+
+    from lib import agent_history, registry, session_ledger, state
+
+    keeper_job = state.state_root() / "keeper-jobs" / "memory.job"
+    keeper_job.mkdir(parents=True)
+    (keeper_job / "result.json").write_text(
+        json.dumps({"ok": True, "thread_id": "keeper-thread"}) + "\n",
+        encoding="utf-8",
+    )
+    registry.write_registry(
+        {
+            "flexgraph-chatbot:pipeline": {
+                "name": "pipeline",
+                "fleet": "flexgraph-chatbot",
+                "agent_package_id": agent["agent_id"],
+                "runtime_session_id": "keeper-thread",
+            },
+            "flexgraph-chatbot:pipeline-old": {
+                "name": "pipeline-old",
+                "fleet": "flexgraph-chatbot",
+                "agent_package_id": agent["agent_id"],
+                "runtime_session_id": "real-thread",
+            },
+        }
+    )
+    session_ledger.append_record(
+        {
+            "timestamp": "2026-05-20T17:00:16+00:00",
+            "event": "session_bound_hook",
+            "agent_package_id": agent["agent_id"],
+            "fleet": "flexgraph-chatbot",
+            "seat": "pipeline",
+            "runtime_session_id": "keeper-thread",
+        }
+    )
+    session_ledger.append_record(
+        {
+            "timestamp": "2026-05-20T17:01:16+00:00",
+            "event": "session_bound_hook",
+            "agent_package_id": agent["agent_id"],
+            "fleet": "flexgraph-chatbot",
+            "seat": "pipeline-old",
+            "runtime_session_id": "real-thread",
+        }
+    )
+
+    result = agent_history.build("pipeline-conductor")
+
+    assert result["current"] == [{"ref": "flexgraph-chatbot:pipeline-old", "session_id": "real-thread"}]
+    assert result["history"] == [
+        {
+            "ref": "flexgraph-chatbot:pipeline-old",
+            "session_id": "real-thread",
+            "event": "session_bound_hook",
+            "timestamp": "2026-05-20T17:01:16+00:00",
+        }
+    ]
+
+
 def test_write_creates_aura_json_without_mutating_manifest(monkeypatch, tmp_path):
     agent = _create_agent(tmp_path, monkeypatch=monkeypatch)
 

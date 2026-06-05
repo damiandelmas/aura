@@ -180,6 +180,8 @@ def fleet_history(target: str | None) -> dict:
         capability = runtimes.capabilities(snap.get("runtime"))
         binding = runtime_session.mark_binding(dict(snap))
         session_id = binding.get("runtime_session_id") or binding.get("session_id")
+        if session_ledger.is_keeper_thread_id(session_id):
+            continue
         cwd = binding.get("cwd") or binding.get("workdir")
         if (
             session_id

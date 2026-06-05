@@ -121,3 +121,38 @@ def test_fleet_history_builds_restore_commands(monkeypatch, tmp_path):
     assert result["seats"][0]["restore"]["post_bind_command"] == (
         "aura seat tag unitfleet:worker --set identity_provider=desks --set identity_id=r_test"
     )
+
+
+def test_fleet_history_does_not_restore_keeper_worker_threads(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import fleets
+    from lib import registry, session_ledger
+
+    keeper_job = tmp_path / "state" / "keeper-jobs" / "memory.job"
+    keeper_job.mkdir(parents=True)
+    (keeper_job / "result.json").write_text('{"ok": true, "thread_id": "keeper-thread"}\n', encoding="utf-8")
+
+    real = registry.upsert_agent({
+        "name": "worker",
+        "seat": "worker",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "cwd": str(tmp_path),
+        "registered": True,
+        "runtime_session_id": "real-thread",
+        "runtime_session_binding": "bound",
+    })
+    keeper = dict(real)
+    keeper["runtime_session_id"] = "keeper-thread"
+    keeper["session_id"] = "keeper-thread"
+    session_ledger.append_seat_event(event="seat_spawned", after=real, source_command="test")
+    session_ledger.append_seat_event(event="session_bound_hook", after=keeper, source_command="test")
+    monkeypatch.setattr(fleets.list_cmd, "run", lambda _args: [])
+
+    result = fleets.run(argparse.Namespace(fleets_action="history", target="unitfleet"))
+
+    assert result["ok"] is True
+    assert result["seats"][0]["restore"]["ready"] is True
+    assert "--resume-session real-thread" in result["seats"][0]["restore"]["command"]
+    assert "keeper-thread" not in result["seats"][0]["restore"]["command"]

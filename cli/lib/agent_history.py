@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from lib import agent_packages, registry, session_ledger
+from lib import agent_packages, registry, session_ledger, state
 
 
 SCHEMA = "aura.agent_history.v1"
@@ -32,6 +32,30 @@ def _agent_ref(record: dict[str, Any]) -> str | None:
 def _session_id(record: dict[str, Any]) -> str | None:
     value = record.get("runtime_session_id") or record.get("session_id")
     return str(value) if value else None
+
+
+def _keeper_thread_ids() -> set[str]:
+    root = state.state_root() / "keeper-jobs"
+    if not root.is_dir():
+        return set()
+    thread_ids: set[str] = set()
+    for result_path in root.glob("memory.*/result.json"):
+        try:
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for key in ("thread_id", "keeper_thread_id"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                thread_ids.add(value.strip())
+    return thread_ids
+
+
+def _is_keeper_session(record: dict[str, Any], keeper_thread_ids: set[str]) -> bool:
+    session_id = _session_id(record)
+    return bool(session_id and session_id in keeper_thread_ids)
 
 
 def _matches_agent(record: dict[str, Any] | None, agent_id: str) -> bool:
@@ -105,10 +129,13 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def build(ref: str) -> dict[str, Any]:
     agent = agent_packages.resolve(ref)
     agent_id = str(agent["agent_id"])
+    keeper_thread_ids = _keeper_thread_ids()
 
     current = []
     for key, row in registry.read_registry().items():
         if not _matches_agent(row, agent_id):
+            continue
+        if _is_keeper_session(row, keeper_thread_ids):
             continue
         entry = _entry({**row, "seat_ref": row.get("seat_ref") or key})
         if entry:
@@ -118,7 +145,10 @@ def build(ref: str) -> dict[str, Any]:
     for row in session_ledger.iter_records():
         if not _row_matches_agent(row, agent_id):
             continue
-        history.append(_entry(_merged_row(row), event=row.get("event"), timestamp=row.get("timestamp")))
+        merged = _merged_row(row)
+        if _is_keeper_session(merged, keeper_thread_ids):
+            continue
+        history.append(_entry(merged, event=row.get("event"), timestamp=row.get("timestamp")))
 
     return {
         "schema": SCHEMA,
