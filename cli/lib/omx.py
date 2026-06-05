@@ -165,6 +165,45 @@ def _copy_if_present(source: Path, destination: Path, *, replace: bool = False) 
     return True
 
 
+def _backup_existing_auth(dest: Path) -> Path:
+    """Move a stale regular auth file to .auth-backups/ before replacing it."""
+    backup_dir = dest.parent / ".auth-backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    target = backup_dir / f"{dest.name}.{stamp}"
+    counter = 1
+    while target.exists():
+        target = backup_dir / f"{dest.name}.{stamp}.{counter}"
+        counter += 1
+    shutil.move(str(dest), str(target))
+    return target
+
+
+def _link_auth_file(src: Path, dest: Path) -> bool:
+    """Symlink dest → src.  Archive a pre-existing regular file first.
+
+    Returns True if dest points at src after the call (whether newly created
+    or already correct), False if src does not exist.
+    """
+    if not src.exists():
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.is_symlink():
+        current = os.readlink(dest)
+        if Path(current) == src:
+            return True
+        dest.unlink()
+    elif dest.exists():
+        try:
+            if dest.samefile(src):
+                return True
+        except OSError:
+            pass
+        _backup_existing_auth(dest)
+    dest.symlink_to(src)
+    return True
+
+
 def _apply_profile_template(profile: str | None, *, home: Path, codex_home: Path, omx_root: Path, package_layout: bool = False) -> tuple[Path | None, bool, tuple[str, ...]]:
     """Apply an explicit reusable OMX profile template into a per-seat box.
 
@@ -187,12 +226,16 @@ def _apply_profile_template(profile: str | None, *, home: Path, codex_home: Path
 
 
 def _seed_codex_home(codex_home: Path) -> tuple[bool, bool]:
-    """Seed auth only; boxed OMX behavior comes from Aura bases/templates."""
+    """Seed auth only; boxed OMX behavior comes from Aura bases/templates.
+
+    Auth files (auth.json, credentials.json) are SYMLINKED so they stay fresh
+    when the user's token refreshes.
+    """
 
     source = _source_codex_home()
     auth_seeded = False
     for name in ("auth.json", "credentials.json"):
-        auth_seeded = _copy_if_present(source / name, codex_home / name, replace=True) or auth_seeded
+        auth_seeded = _link_auth_file(source / name, codex_home / name) or auth_seeded
     return auth_seeded, False
 
 

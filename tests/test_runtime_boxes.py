@@ -332,11 +332,40 @@ def test_codex_box_uses_aura_base_config_and_auth_only_from_global(monkeypatch, 
     config = (box.codex_home / "config.toml").read_text(encoding="utf-8")
     assert 'status_line = ["model-with-reasoning", "git-branch", "current-dir", "session-id"]' in config
     assert "context-remaining" not in config
-    assert (box.codex_home / "auth.json").is_file()
+    auth_dest = box.codex_home / "auth.json"
+    assert auth_dest.is_symlink(), "auth.json must be a symlink, not a copy"
+    assert auth_dest.resolve() == (source / "auth.json").resolve()
+    config_dest = box.codex_home / "config.toml"
+    assert not config_dest.is_symlink(), "config.toml must be a regular copy, not a symlink"
+    assert config_dest.is_file()
     meta = box.metadata()
     assert meta["codex_box_behavior_source"] == "aura-runtime-base"
     assert meta["codex_box_auth_source"] == "user-global-auth-only"
     assert meta["codex_box_config_seeded"] is False
+
+
+def test_codex_package_auth_seed_is_idempotent_when_source_is_package_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    package_root = tmp_path / "agent-package"
+    codex_home = package_root / ".codex"
+    codex_home.mkdir(parents=True)
+    (codex_home / "auth.json").write_text('{"token":"package"}\n', encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+
+    from lib import codex
+
+    box = codex.prepare_box(
+        fleet="fleet",
+        seat="seat",
+        source_cwd=str(cwd),
+        root_override=package_root,
+        package_layout=True,
+    )
+
+    assert box.auth_seeded is True
+    assert (codex_home / "auth.json").read_text(encoding="utf-8") == '{"token":"package"}\n'
 
 
 def test_omx_box_uses_aura_base_config_and_auth_only_from_global(monkeypatch, tmp_path):
@@ -357,8 +386,211 @@ def test_omx_box_uses_aura_base_config_and_auth_only_from_global(monkeypatch, tm
     config = (box.codex_home / "config.toml").read_text(encoding="utf-8")
     assert "context-remaining" in config
     assert 'status_line = ["git-branch"]' not in config
-    assert (box.codex_home / "credentials.json").is_file()
+    creds_dest = box.codex_home / "credentials.json"
+    assert creds_dest.is_symlink(), "credentials.json must be a symlink, not a copy"
+    assert creds_dest.resolve() == (source / "credentials.json").resolve()
+    config_dest = box.codex_home / "config.toml"
+    assert not config_dest.is_symlink(), "config.toml must be a regular copy, not a symlink"
+    assert config_dest.is_file()
     meta = box.metadata()
     assert meta["omx_box_behavior_source"] == "aura-runtime-base"
     assert meta["omx_box_config_seeded"] is False
     assert str(meta["omx_box_team_state_root"]).endswith("omx-root/.omx/state")
+
+
+# ---------------------------------------------------------------------------
+# Auth symlink tests — codex.py
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlink unavailable")
+def test_codex_box_auth_files_are_symlinked_not_copied(monkeypatch, tmp_path):
+    """prepare_box must symlink auth.json and credentials.json, not copy them."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    source = tmp_path / "source-codex"
+    source.mkdir()
+    (source / "auth.json").write_text('{"token":"live"}\n', encoding="utf-8")
+    (source / "credentials.json").write_text('{"creds":"live"}\n', encoding="utf-8")
+    monkeypatch.setenv("AURA_CODEX_SOURCE_CODEX_HOME", str(source))
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+
+    from lib import codex
+
+    box = codex.prepare_box(fleet="f", seat="s", source_cwd=str(cwd))
+
+    auth = box.codex_home / "auth.json"
+    creds = box.codex_home / "credentials.json"
+    assert auth.is_symlink(), "auth.json must be a symlink"
+    assert creds.is_symlink(), "credentials.json must be a symlink"
+    assert auth.resolve() == (source / "auth.json").resolve()
+    assert creds.resolve() == (source / "credentials.json").resolve()
+    # Reading through the symlink still works
+    assert "live" in auth.read_text(encoding="utf-8")
+    assert "live" in creds.read_text(encoding="utf-8")
+    # config.toml must NOT be a symlink — it is a managed copy
+    config = box.codex_home / "config.toml"
+    assert not config.is_symlink()
+    assert config.is_file()
+    assert box.auth_seeded is True
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlink unavailable")
+def test_codex_box_auth_symlink_is_idempotent(monkeypatch, tmp_path):
+    """Re-running prepare_box when the symlink is already correct must not error."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    source = tmp_path / "source-codex"
+    source.mkdir()
+    (source / "auth.json").write_text('{"token":"live"}\n', encoding="utf-8")
+    monkeypatch.setenv("AURA_CODEX_SOURCE_CODEX_HOME", str(source))
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+
+    from lib import codex
+
+    box = codex.prepare_box(fleet="f", seat="s", source_cwd=str(cwd))
+    # Second call — symlink already exists and is correct
+    box2 = codex.prepare_box(fleet="f", seat="s", source_cwd=str(cwd))
+
+    auth = box2.codex_home / "auth.json"
+    assert auth.is_symlink()
+    assert auth.resolve() == (source / "auth.json").resolve()
+    assert box2.auth_seeded is True
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlink unavailable")
+def test_codex_box_stale_auth_copy_archived_before_symlink(monkeypatch, tmp_path):
+    """A pre-existing regular auth file must be archived to .auth-backups/."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    source = tmp_path / "source-codex"
+    source.mkdir()
+    (source / "auth.json").write_text('{"token":"fresh"}\n', encoding="utf-8")
+    monkeypatch.setenv("AURA_CODEX_SOURCE_CODEX_HOME", str(source))
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+
+    from lib import codex
+
+    box = codex.prepare_box(fleet="f", seat="s", source_cwd=str(cwd))
+    # Simulate a stale copy left over from a previous run: replace the symlink
+    # with a regular file.
+    auth_dest = box.codex_home / "auth.json"
+    auth_dest.unlink()
+    auth_dest.write_text('{"token":"stale"}\n', encoding="utf-8")
+    assert not auth_dest.is_symlink()
+
+    # Trigger seed again via the internal helper
+    codex._seed_codex_home(box.codex_home)
+
+    assert auth_dest.is_symlink(), "stale copy should be replaced with a symlink"
+    assert auth_dest.resolve() == (source / "auth.json").resolve()
+    backup_dir = box.codex_home / ".auth-backups"
+    backups = list(backup_dir.iterdir())
+    assert backups, ".auth-backups/ must contain the archived stale file"
+    archived_content = backups[0].read_text(encoding="utf-8")
+    assert '"stale"' in archived_content
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlink unavailable")
+def test_codex_box_missing_source_auth_does_not_crash(monkeypatch, tmp_path):
+    """If source auth files do not exist, box prep must not crash (auth_seeded=False)."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    empty_source = tmp_path / "empty-source-codex"
+    empty_source.mkdir()
+    monkeypatch.setenv("AURA_CODEX_SOURCE_CODEX_HOME", str(empty_source))
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+
+    from lib import codex
+
+    box = codex.prepare_box(fleet="f", seat="s", source_cwd=str(cwd))
+
+    assert box.auth_seeded is False
+    assert not (box.codex_home / "auth.json").exists()
+    assert not (box.codex_home / "credentials.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Auth symlink tests — omx.py
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlink unavailable")
+def test_omx_box_auth_files_are_symlinked_not_copied(monkeypatch, tmp_path):
+    """prepare_box must symlink auth.json and credentials.json in the OMX box."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
+    source = tmp_path / "source-codex"
+    source.mkdir()
+    (source / "auth.json").write_text('{"token":"live"}\n', encoding="utf-8")
+    (source / "credentials.json").write_text('{"creds":"live"}\n', encoding="utf-8")
+    monkeypatch.setenv("AURA_OMX_SOURCE_CODEX_HOME", str(source))
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+
+    from lib import omx
+
+    box = omx.prepare_box(fleet="f", seat="s", source_cwd=str(cwd))
+
+    auth = box.codex_home / "auth.json"
+    creds = box.codex_home / "credentials.json"
+    assert auth.is_symlink(), "auth.json must be a symlink"
+    assert creds.is_symlink(), "credentials.json must be a symlink"
+    assert auth.resolve() == (source / "auth.json").resolve()
+    assert creds.resolve() == (source / "credentials.json").resolve()
+    # config.toml must NOT be a symlink
+    config = box.codex_home / "config.toml"
+    assert not config.is_symlink()
+    assert config.is_file()
+    assert box.auth_seeded is True
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlink unavailable")
+def test_omx_box_stale_auth_copy_archived_before_symlink(monkeypatch, tmp_path):
+    """A pre-existing regular auth file in an OMX box must be archived."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
+    source = tmp_path / "source-codex"
+    source.mkdir()
+    (source / "auth.json").write_text('{"token":"fresh"}\n', encoding="utf-8")
+    monkeypatch.setenv("AURA_OMX_SOURCE_CODEX_HOME", str(source))
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+
+    from lib import omx
+
+    box = omx.prepare_box(fleet="f", seat="s", source_cwd=str(cwd))
+    auth_dest = box.codex_home / "auth.json"
+    auth_dest.unlink()
+    auth_dest.write_text('{"token":"stale"}\n', encoding="utf-8")
+    assert not auth_dest.is_symlink()
+
+    omx._seed_codex_home(box.codex_home)
+
+    assert auth_dest.is_symlink(), "stale copy should be replaced with a symlink"
+    assert auth_dest.resolve() == (source / "auth.json").resolve()
+    backup_dir = box.codex_home / ".auth-backups"
+    backups = list(backup_dir.iterdir())
+    assert backups, ".auth-backups/ must contain the archived stale file"
+    archived_content = backups[0].read_text(encoding="utf-8")
+    assert '"stale"' in archived_content
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlink unavailable")
+def test_omx_box_missing_source_auth_does_not_crash(monkeypatch, tmp_path):
+    """If source auth files do not exist, OMX box prep must not crash."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
+    empty_source = tmp_path / "empty-source-codex"
+    empty_source.mkdir()
+    monkeypatch.setenv("AURA_OMX_SOURCE_CODEX_HOME", str(empty_source))
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+
+    from lib import omx
+
+    box = omx.prepare_box(fleet="f", seat="s", source_cwd=str(cwd))
+
+    assert box.auth_seeded is False
+    assert not (box.codex_home / "auth.json").exists()
+    assert not (box.codex_home / "credentials.json").exists()

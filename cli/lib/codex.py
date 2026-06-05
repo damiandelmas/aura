@@ -34,6 +34,9 @@ HOOK_EVENT_STATE_LABELS: dict[str, str] = {
     "Stop": "stop",
 }
 
+KEEPER_HOOK_EVENTS = ("Stop", "PreCompact")
+KEEPER_HOOK_TIMEOUT_SECONDS = 10
+
 
 @dataclass(frozen=True)
 class CodexBox:
@@ -135,6 +138,8 @@ def _source_codex_home() -> Path:
 def _copy_if_present(source: Path, destination: Path, *, replace: bool = False) -> bool:
     if not source.is_file():
         return False
+    if source.resolve() == destination.resolve():
+        return True
     if destination.exists() and not replace:
         return True
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -146,18 +151,60 @@ def _copy_if_present(source: Path, destination: Path, *, replace: bool = False) 
     return True
 
 
+def _backup_existing_auth(dest: Path) -> Path:
+    """Move a stale regular auth file to .auth-backups/ before replacing it."""
+    backup_dir = dest.parent / ".auth-backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    from datetime import datetime, timezone
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    target = backup_dir / f"{dest.name}.{stamp}"
+    counter = 1
+    while target.exists():
+        target = backup_dir / f"{dest.name}.{stamp}.{counter}"
+        counter += 1
+    shutil.move(str(dest), str(target))
+    return target
+
+
+def _link_auth_file(src: Path, dest: Path) -> bool:
+    """Symlink dest → src.  Archive a pre-existing regular file first.
+
+    Returns True if dest points at src after the call (whether newly created
+    or already correct), False if src does not exist.
+    """
+    if not src.exists():
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.is_symlink():
+        current = os.readlink(dest)
+        if Path(current) == src:
+            return True
+        dest.unlink()
+    elif dest.exists():
+        try:
+            if dest.samefile(src):
+                return True
+        except OSError:
+            pass
+        _backup_existing_auth(dest)
+    dest.symlink_to(src)
+    return True
+
+
 def _seed_codex_home(codex_home: Path) -> tuple[bool, bool]:
     """Seed auth only from the user's native Codex home.
 
-    Boxed runtime behavior must come from Aura-owned bases/profile templates,
-    not from ~/.codex/config.toml. Returning config_seeded=False preserves the
-    existing metadata field while making the auth-only boundary explicit.
+    Auth files (auth.json, credentials.json) are SYMLINKED so they stay fresh
+    when the user's token refreshes.  Boxed runtime behavior must come from
+    Aura-owned bases/profile templates, not from ~/.codex/config.toml.
+    Returning config_seeded=False preserves the existing metadata field while
+    making the auth-only boundary explicit.
     """
 
     source = _source_codex_home()
     auth_seeded = False
     for name in ("auth.json", "credentials.json"):
-        auth_seeded = _copy_if_present(source / name, codex_home / name, replace=True) or auth_seeded
+        auth_seeded = _link_auth_file(source / name, codex_home / name) or auth_seeded
     return auth_seeded, False
 
 
@@ -478,28 +525,59 @@ def _install_aura_keeper_hooks(codex_home: Path) -> tuple[bool, str]:
         config["hooks"] = hooks
 
     changed = False
-    for event_name in ("Stop", "PreCompact"):
+    for event_name in KEEPER_HOOK_EVENTS:
         event_command = f"{command} {event_name}"
         entries = hooks.setdefault(event_name, [])
         if not isinstance(entries, list):
             entries = []
             hooks[event_name] = entries
             changed = True
-        if _find_command_entry(entries, event_command) is None:
+        existing_index = _find_command_entry(entries, event_command)
+        if existing_index is None:
             entries.append({
                 "hooks": [
                     {
                         "type": "command",
                         "command": event_command,
-                        "timeout": 30,
+                        "timeout": KEEPER_HOOK_TIMEOUT_SECONDS,
                     }
                 ],
             })
             changed = True
+        else:
+            entry = entries[existing_index]
+            handlers = entry.get("hooks") if isinstance(entry, dict) else None
+            if isinstance(handlers, list):
+                for hook in handlers:
+                    if (
+                        isinstance(hook, dict)
+                        and hook.get("type") == "command"
+                        and str(hook.get("command") or "") == event_command
+                        and hook.get("timeout") != KEEPER_HOOK_TIMEOUT_SECONDS
+                    ):
+                        hook["timeout"] = KEEPER_HOOK_TIMEOUT_SECONDS
+                        changed = True
 
     if changed or not hooks_path.exists():
         _atomic_write_json(hooks_path, config)
     return True, command
+
+
+def install_aura_package_hooks(codex_home: Path) -> dict[str, object]:
+    """Install Aura session and keeper hooks into a durable Codex home."""
+
+    session_installed, session_command = _install_aura_session_hook(codex_home)
+    keeper_installed, keeper_command = _install_aura_keeper_hooks(codex_home)
+    trusted = _trust_boxed_command_hooks(codex_home)
+    return {
+        "ok": True,
+        "codex_home": str(codex_home),
+        "session_hook_installed": session_installed,
+        "session_hook_command": session_command,
+        "keeper_hook_installed": keeper_installed,
+        "keeper_hook_command": keeper_command,
+        "trusted_hooks": len(trusted),
+    }
 
 
 def _apply_profile_template(
@@ -560,12 +638,21 @@ def prepare_box(
     )
     auth_seeded, config_seeded = _seed_codex_home(codex_home)
     source_cwd_trusted = _trust_source_cwd(codex_home, source_cwd)
-    aura_hook_installed, aura_hook_command = _install_aura_session_hook(codex_home)
-    aura_keeper_hook_installed = False
-    aura_keeper_hook_command = None
     if package_layout:
-        aura_keeper_hook_installed, aura_keeper_hook_command = _install_aura_keeper_hooks(codex_home)
-    _trust_boxed_command_hooks(codex_home)
+        hook_result = install_aura_package_hooks(codex_home)
+        aura_hook_installed = bool(hook_result["session_hook_installed"])
+        aura_hook_command = str(hook_result["session_hook_command"])
+        aura_keeper_hook_installed = bool(hook_result["keeper_hook_installed"])
+        aura_keeper_hook_command = (
+            str(hook_result["keeper_hook_command"])
+            if hook_result.get("keeper_hook_command")
+            else None
+        )
+    else:
+        aura_hook_installed, aura_hook_command = _install_aura_session_hook(codex_home)
+        aura_keeper_hook_installed = False
+        aura_keeper_hook_command = None
+        _trust_boxed_command_hooks(codex_home)
 
     return CodexBox(
         root=root,

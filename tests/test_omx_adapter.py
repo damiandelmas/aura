@@ -200,16 +200,34 @@ def test_omx_native_wrapper_triggers_keeper_for_stop_payload(tmp_path):
     codex_home = tmp_path / "agent" / ".codex"
     native_hook = tmp_path / "native-hook.py"
     keeper_hook_cmd = tmp_path / "keeper-hook-ok.py"
+    transcript = tmp_path / "session.jsonl"
     package_root = codex_home.parent
     home.mkdir()
     codex_home.mkdir(parents=True)
     (package_root / "manifest.json").write_text('{"runtime":"omx"}\n', encoding="utf-8")
     native_hook.write_text("import sys\nsys.stdin.read()\nprint('{}')\n", encoding="utf-8")
     keeper_hook_cmd.write_text("print('{\"ok\": true, \"pid\": 12345}')\n", encoding="utf-8")
+    transcript.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user" if n % 2 == 0 else "assistant",
+                        "content": [{"type": "text", "text": f"message {n}"}],
+                    },
+                }
+            )
+            + "\n"
+            for n in range(15)
+        ),
+        encoding="utf-8",
+    )
 
     result = subprocess.run(
         [str(wrapper)],
-        input=json.dumps({"hook_event_name": "Stop", "session_id": "019e-session", "context_percent": 60}),
+        input=json.dumps({"hook_event_name": "Stop", "session_id": "019e-session", "context_percent": 60, "transcript_path": str(transcript)}),
         text=True,
         capture_output=True,
         timeout=10,
@@ -229,7 +247,8 @@ def test_omx_native_wrapper_triggers_keeper_for_stop_payload(tmp_path):
 
     assert result.returncode == 0, result.stderr
     state = json.loads((package_root / "memories" / ".hook-state" / "aura-keeper-hook.json").read_text(encoding="utf-8"))
-    assert state["sessions"]["019e-session"]["fired_boundaries"] == [25, 50]
+    assert state["sessions"]["019e-session"]["last_trace_conversation_count"] == 15
+    assert state["sessions"]["019e-session"]["last_trace_boundary"] == "m15"
     launch_log = package_root / "memories" / ".hook-state" / "keeper-launch.log"
     assert launch_log.is_file()
 
