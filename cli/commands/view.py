@@ -472,8 +472,15 @@ def _run_placement(*, include_hidden: bool, placement_name: str | None = None) -
     }
 
 
-def _run_physical(*, include_hidden: bool) -> dict:
-    result = tmux_mirror.view_physical(include_hidden=include_hidden)
+def _run_physical(*, include_hidden: bool, resolve: bool = False, stale: bool = False) -> dict:
+    if resolve:
+        from lib import pane_resolver
+
+        result = pane_resolver.classify_physical(
+            include_hidden=include_hidden, resolve=True, include_stale=stale,
+        )
+    else:
+        result = tmux_mirror.view_physical(include_hidden=include_hidden)
     if isinstance(result, dict):
         result.setdefault("view_scope", "physical")
     return result
@@ -609,7 +616,11 @@ def run(args):
     if action == "historical":
         return _run_historical(include_hidden=include_hidden)
     if action == "physical":
-        return _run_physical(include_hidden=include_hidden)
+        return _run_physical(
+            include_hidden=include_hidden,
+            resolve=bool(getattr(args, "resolve", False)),
+            stale=bool(getattr(args, "stale", False)),
+        )
 
     limit = int(getattr(args, "limit", None) or 10)
     context = reports.infer_context()

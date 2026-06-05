@@ -92,7 +92,7 @@ def _tmux_target(ref: str) -> str:
     fleet, subject = _split_ref(ref)
     if subject.startswith("%"):
         return subject
-    return f"{fleet}:{subject}"
+    return f"={fleet}:{subject}"
 
 
 def _backend_ref(ref: str) -> str:
@@ -151,6 +151,40 @@ def create_window(
             tmux_env.extend(["-e", f"{key}={value}"])
         return tmux_env
 
+    # Keys whose values from the positive env dict should be pushed into the
+    # session environment so that runtime-created child panes (OMX HUD splits,
+    # etc.) inherit the CORRECT body home rather than whatever the tmux server
+    # inherited from the spawning process.
+    _BODY_HOME_KEYS = (
+        "CODEX_HOME",
+        "OMX_ROOT",
+        "OMX_TEAM_STATE_ROOT",
+    )
+
+    def _scrub_session_env() -> None:
+        """Remove stale identity vars from the tmux SESSION environment.
+
+        This is belt-and-suspenders alongside the per-command ``env -u`` prefix:
+        panes the runtime later creates (e.g. OMX HUD splits) inherit the tmux
+        *session* environment, not the command prefix, so we must also scrub
+        and re-set the relevant keys at the session level.
+
+        Only called when env or unset_env is non-empty (i.e. an identity-aware
+        spawn path), so legacy no-env windows are untouched.
+        """
+        if not env and not unset_env:
+            return
+        # Unset every key the caller asked to scrub.
+        if unset_env:
+            for key in unset_env:
+                _run_tmux(["set-environment", "-t", TMUX_SESSION, "-u", key])
+        # Re-set the body-home keys that were explicitly provided in env so
+        # that child panes pick up the CORRECT values, not inherited stale ones.
+        if env:
+            for key in _BODY_HOME_KEYS:
+                if key in env:
+                    _run_tmux(["set-environment", "-t", TMUX_SESSION, key, env[key]])
+
     def _create_initial_session(command_text: str | None = None):
         args = ["new-session", "-d", "-s", TMUX_SESSION, "-n", name, *_tmux_env_args()]
         if workdir:
@@ -177,11 +211,13 @@ def create_window(
             stderr = result.stderr.strip()
             if "duplicate session" in stderr.lower():
                 _apply_index_defaults()
+                _scrub_session_env()
                 result = _new_window(command_text)
             if result.returncode != 0:
                 return {"ok": False, "error": result.stderr.strip() or "tmux new-session failed", "name": name}
         else:
             _apply_index_defaults()
+            _scrub_session_env()
         pane = pane_id(name)
         return {
             "ok": True,
@@ -192,6 +228,7 @@ def create_window(
         }
 
     _apply_index_defaults()
+    _scrub_session_env()
     result = _new_window(command_text)
     if result.returncode != 0:
         return {"ok": False, "error": result.stderr.strip() or "tmux new-window failed", "name": name}
@@ -421,11 +458,15 @@ def kill_window(name: str):
     """Kill a window target, or a pane when passed a pane ref."""
     fleet, subject = _split_ref(name)
     if subject.startswith("%"):
+        # Belt-and-suspenders: verify the pane actually belongs to the expected
+        # fleet before killing to prevent cross-fleet kills on stale pane ids.
+        if not _pane_belongs_to_fleet(subject, fleet):
+            return
         _run_tmux(["kill-pane", "-t", subject])
         return
     if not target_exists(name):
         return
-    _run_tmux(["kill-window", "-t", f"{fleet}:{subject}"])
+    _run_tmux(["kill-window", "-t", f"={fleet}:{subject}"])
 
 
 def window_exists(name: str) -> bool:

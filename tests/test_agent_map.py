@@ -21,6 +21,27 @@ def aura_state(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(state_root))
     monkeypatch.setenv("DESKS_ROOT", str(desks_root))
     monkeypatch.setenv("AURA_FLEET", "flex-systems-archeology")
+    # Inject a controlled mirror matching FakeTerminal.alive so liveness is
+    # computed from the set, not from a real (or missing) tmux server.
+    from lib import tmux_mirror
+    monkeypatch.setattr(tmux_mirror, "list_physical_panes", lambda **_kw: {
+        "ok": True,
+        "schema": "aura.tmux_mirror.v1",
+        "panes": [
+            {
+                "pane_id": "%1",
+                "pane_ref": "tmux:flex-systems-archeology:%1",
+                "tmux_session": "flex-systems-archeology",
+                "physical_fleet": "flex-systems-archeology",
+            },
+            {
+                "pane_id": "%2",
+                "pane_ref": "tmux:flex-systems-archeology:%2",
+                "tmux_session": "flex-systems-archeology",
+                "physical_fleet": "flex-systems-archeology",
+            },
+        ],
+    })
     return tmp_path
 
 
@@ -159,11 +180,25 @@ def test_agent_map_includes_self_and_same_fleet_colleagues(aura_state):
 
 def test_agent_map_command_returns_packet(aura_state, monkeypatch):
     from commands import agent_map as agent_map_cmd
-    from lib import terminal
+    from lib import terminal, tmux_mirror
     from lib import registry
 
     monkeypatch.setattr(terminal, "configure_session", FakeTerminal.configure_session)
     monkeypatch.setattr(terminal, "target_exists", FakeTerminal.target_exists)
+    # aura_state fixture already patches tmux_mirror; ensure the command-level
+    # module uses the same controlled mirror.
+    monkeypatch.setattr(tmux_mirror, "list_physical_panes", lambda **_kw: {
+        "ok": True,
+        "schema": "aura.tmux_mirror.v1",
+        "panes": [
+            {
+                "pane_id": "%1",
+                "pane_ref": "tmux:flex-systems-archeology:%1",
+                "tmux_session": "flex-systems-archeology",
+                "physical_fleet": "flex-systems-archeology",
+            },
+        ],
+    })
 
     registry.upsert_agent({
         "name": "lead",

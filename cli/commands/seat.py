@@ -1016,6 +1016,7 @@ def _restart(args, registry, terminal) -> dict:
             "name": name,
             "fleet": fleet,
             "status": "restart_failed",
+            "pane_ref": None,
             "restart_last_failure": {
                 "restart_id": restart_id,
                 "phase": "relaunch_failed",

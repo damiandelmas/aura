@@ -465,6 +465,38 @@ def test_restart_failed_relaunch_keeps_old_seat_history_and_marks_failure(monkey
     assert updated["restart_last_failure"]["phase"] == "relaunch_failed"
 
 
+def test_restart_failed_relaunch_clears_dead_pane_ref(monkeypatch, tmp_path):
+    """A failed restart must not leave the old dead pane_ref in the registry.
+
+    Otherwise a subsequent ``list_seat_statuses`` would see the dead %N,
+    find it absent from the mirror, and report liveness='missing' correctly —
+    but the %N would still be recorded, which could mislead future lifecycle
+    operations (spawn choosing a conflicting pane_ref, etc.).
+    """
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+
+    from commands import seat
+    from lib import registry
+
+    RestartTerminal.reset()
+    RestartTerminal.launch_ok = False
+    # The record starts with a live pane_ref (%1).
+    registry.upsert_agent(_record(tmp_path))
+
+    before = registry.get_agent("engineer", fleet="unitfleet")
+    assert before["pane_ref"] == "tmux:unitfleet:%1"
+
+    result = seat._restart(_args(), registry, RestartTerminal)
+
+    assert result["ok"] is False
+    assert result["phase"] == "relaunch_failed"
+
+    updated = registry.get_agent("engineer", fleet="unitfleet")
+    # pane_ref must be cleared so the dead %N is not left in the registry.
+    assert updated.get("pane_ref") is None
+    assert updated["status"] == "restart_failed"
+
+
 def test_restart_requires_report_boundary_without_force(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))

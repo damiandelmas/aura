@@ -11,6 +11,28 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "cli"))
 
 
+# Mirror snapshot shared by the FakeTerminal — lists the two pane_refs
+# that FakeTerminal.target_exists() considers alive.
+_FAKE_MIRROR = {
+    "ok": True,
+    "schema": "aura.tmux_mirror.v1",
+    "panes": [
+        {
+            "pane_id": "%191",
+            "pane_ref": "tmux:runway-engineering:%191",
+            "tmux_session": "runway-engineering",
+            "physical_fleet": "runway-engineering",
+        },
+        {
+            "pane_id": "%222",
+            "pane_ref": "tmux:runway-engineering:%222",
+            "tmux_session": "runway-engineering",
+            "physical_fleet": "runway-engineering",
+        },
+    ],
+}
+
+
 @pytest.fixture
 def aura_state(monkeypatch, tmp_path):
     state_root = tmp_path / ".aura"
@@ -20,6 +42,10 @@ def aura_state(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(state_root))
     monkeypatch.setenv("DESKS_ROOT", str(desks_root))
     monkeypatch.setenv("AURA_FLEET", "runway-engineering")
+    # Inject a controlled mirror so liveness is computed from the set,
+    # not from a real (or missing) tmux server.
+    from lib import tmux_mirror
+    monkeypatch.setattr(tmux_mirror, "list_physical_panes", lambda **_kw: _FAKE_MIRROR)
     return state_root
 
 
@@ -206,3 +232,153 @@ def test_status_includes_runtime_profile_metadata(aura_state):
     assert row["runtime_profile_ref"] == "codex/aura-worker"
     assert row["runtime_profile_runtime"] == "codex"
     assert row["runtime_profile_source"] == "desks"
+
+
+# ---------------------------------------------------------------------------
+# Mirror-driven liveness tests (change 1 & 2)
+# ---------------------------------------------------------------------------
+
+def test_pane_ref_not_in_mirror_yields_missing_liveness(aura_state, monkeypatch):
+    """A record whose %N is absent from the mirror must be historical (not stored status)."""
+    from lib import registry, seat_status, tmux_mirror
+
+    registry.upsert_agent({
+        "name": "gone-worker",
+        "fleet": "runway-engineering",
+        "runtime": "codex",
+        "registered": True,
+        "seat_instance_id": "si_gone001",
+        "pane_ref": "tmux:runway-engineering:%999",
+        "status": "alive",  # stored status must NOT be trusted for liveness
+    })
+
+    row = seat_status.build_seat_status("runway-engineering:gone-worker", terminal=FakeTerminal)
+
+    assert row["ok"] is True
+    assert row["liveness"] == "missing"
+    assert row["managed_state"] == "missing_pane"
+    assert row["terminal"] == "missing"
+    assert "missing_pane" in row["risk_flags"]
+
+
+def test_stopped_seat_stays_stopped_when_pane_gone():
+    """An in-memory record carrying managed_state=stopped must NOT flip to missing_pane
+    when its pane is gone (e.g. a ledger-merged row read with a dead %N)."""
+    from lib import seat_status
+
+    state = seat_status._derive_managed_state(
+        {"managed_state": "stopped"}, liveness="missing", binding="unbound"
+    )
+    assert state == "stopped"
+
+
+def test_pane_ref_in_mirror_yields_alive_liveness(aura_state, monkeypatch):
+    """%N present in the mirror → liveness is alive, overriding any stored status."""
+    from lib import registry, seat_status
+
+    registry.upsert_agent({
+        "name": "live-worker",
+        "fleet": "runway-engineering",
+        "runtime": "codex",
+        "registered": True,
+        "seat_instance_id": "si_live001",
+        "pane_ref": "tmux:runway-engineering:%191",
+        "status": "idle",
+    })
+
+    row = seat_status.build_seat_status("runway-engineering:live-worker", terminal=FakeTerminal)
+
+    assert row["ok"] is True
+    assert row["liveness"] == "alive"
+    assert row["terminal"] == "alive"
+    assert "missing_pane" not in row["risk_flags"]
+
+
+def test_name_only_record_falls_back_to_target_exists(aura_state, monkeypatch):
+    """A record with no %N pane_ref (name-only / shell runtime) uses the target_exists fallback."""
+    from lib import registry, seat_status
+
+    registry.upsert_agent({
+        "name": "shell-worker",
+        "fleet": "runway-engineering",
+        "runtime": "shell",
+        "registered": True,
+        "seat_instance_id": "si_shell001",
+        # terminal_ref only — no pane_ref with a %N
+        "terminal_ref": "runway-engineering:shell-worker",
+    })
+
+    class ShellTerminal:
+        @staticmethod
+        def configure_session(fleet):
+            return fleet
+        @staticmethod
+        def target_exists(target):
+            return target == "runway-engineering:shell-worker"
+
+    row = seat_status.build_seat_status("runway-engineering:shell-worker", terminal=ShellTerminal)
+
+    assert row["ok"] is True
+    assert row["liveness"] == "alive"
+    assert row["terminal"] == "alive"
+
+
+def test_mirror_unavailable_falls_back_to_per_seat_target_exists(aura_state, monkeypatch):
+    """When the mirror returns ok=False the code falls back to per-seat target_exists."""
+    from lib import registry, seat_status, tmux_mirror
+
+    # Override the fixture's mirror with a failing one.
+    monkeypatch.setattr(tmux_mirror, "list_physical_panes", lambda **_kw: {"ok": False, "error": "no tmux", "panes": []})
+
+    registry.upsert_agent({
+        "name": "fallback-worker",
+        "fleet": "runway-engineering",
+        "runtime": "codex",
+        "registered": True,
+        "seat_instance_id": "si_fallback001",
+        "pane_ref": "tmux:runway-engineering:%191",
+        "status": "idle",
+    })
+
+    row = seat_status.build_seat_status("runway-engineering:fallback-worker", terminal=FakeTerminal)
+
+    # FakeTerminal.target_exists knows %191 is alive → should still report alive.
+    assert row["ok"] is True
+    assert row["liveness"] == "alive"
+
+
+def test_list_seat_statuses_single_mirror_join(aura_state, monkeypatch):
+    """list_seat_statuses uses a single mirror call and computes liveness for all seats."""
+    from lib import registry, seat_status, tmux_mirror
+
+    call_count = {"n": 0}
+    real_mirror = _FAKE_MIRROR
+
+    def counting_mirror(**_kw):
+        call_count["n"] += 1
+        return real_mirror
+
+    monkeypatch.setattr(tmux_mirror, "list_physical_panes", counting_mirror)
+
+    registry.upsert_agent({
+        "name": "alpha",
+        "fleet": "runway-engineering",
+        "runtime": "codex",
+        "registered": True,
+        "pane_ref": "tmux:runway-engineering:%191",
+    })
+    registry.upsert_agent({
+        "name": "beta",
+        "fleet": "runway-engineering",
+        "runtime": "codex",
+        "registered": True,
+        "pane_ref": "tmux:runway-engineering:%999",
+    })
+
+    rows = seat_status.list_seat_statuses(fleet="runway-engineering", terminal=FakeTerminal)
+
+    assert call_count["n"] == 1  # single mirror call regardless of seat count
+    by_name = {row["seat"]: row for row in rows}
+    assert by_name["alpha"]["liveness"] == "alive"
+    assert by_name["beta"]["liveness"] == "missing"
+    assert by_name["beta"]["managed_state"] == "missing_pane"

@@ -55,8 +55,58 @@ def _target_exists(terminal, target: str | None) -> bool:
     return False
 
 
-def _terminal_status(record: dict[str, Any], terminal=None) -> tuple[str, str, list[str]]:
+def _extract_pane_id(pane_ref: str | None) -> str | None:
+    """Extract the bare %N pane id from a pane_ref like 'tmux:fleet:%N'."""
+    if not pane_ref:
+        return None
+    subject = str(pane_ref)
+    if subject.startswith("tmux:"):
+        subject = subject[len("tmux:"):]
+    # subject is now e.g. "fleet:%42" or just "%42"
+    if ":" in subject:
+        _, pane_id = subject.rsplit(":", 1)
+        return pane_id if pane_id.startswith("%") else None
+    return subject if subject.startswith("%") else None
+
+
+def _terminal_status(
+    record: dict[str, Any],
+    terminal=None,
+    *,
+    live_pane_ids: set[str] | None = None,
+) -> tuple[str, str, list[str]]:
     targets = _seat_targets(record)
+    if not terminal and live_pane_ids is None:
+        return "unknown", record.get("status") or "unknown", targets
+
+    pane_ref = record.get("pane_ref")
+    pane_id = _extract_pane_id(pane_ref)
+
+    # Fast path: use the pre-built mirror snapshot when available.
+    if live_pane_ids is not None and pane_id is not None:
+        if pane_id in live_pane_ids:
+            # Pane is alive in the mirror — try to infer status via terminal if available.
+            if terminal:
+                fleet = record.get("fleet")
+                if fleet and hasattr(terminal, "configure_session"):
+                    try:
+                        terminal.configure_session(fleet)
+                    except Exception:
+                        pass
+                seat = _seat_name(record) or pane_ref
+                try:
+                    status = registry.infer_status(seat, terminal, record.get("status", "unknown"), target=pane_ref)
+                except Exception:
+                    status = record.get("status") or "alive"
+            else:
+                status = record.get("status") or "alive"
+            return "alive", status, targets
+        else:
+            # Record has a %N pane_ref but it is NOT in the live mirror → historical.
+            return "missing", "missing", targets
+
+    # Fallback: name-only runtimes (no %N pane_ref) or mirror unavailable.
+    # Use the existing per-seat target_exists shell-out.
     if not terminal:
         return "unknown", record.get("status") or "unknown", targets
 
@@ -202,9 +252,13 @@ def _nearby_holding(fleet: str | None) -> list[dict[str, Any]]:
 def _derive_managed_state(record: dict[str, Any], *, liveness: str, binding: str) -> str:
     if record.get("terminal_state") == "terminal" or record.get("restore_suppressed"):
         return "stopped"
+    stored = record.get("managed_state")
+    # A deliberately-stopped seat stays stopped even when its pane is gone — do not
+    # reclassify it as missing_pane (that reads as a fault, not an intentional stop).
+    if stored == "stopped":
+        return "stopped"
     if liveness == "missing":
         return "missing_pane"
-    stored = record.get("managed_state")
     if stored in {"spawned_bound", "spawned_unbound", "adopted_bound", "adopted_unbound", "stopped", "missing_pane"}:
         return stored
     adopted = bool(record.get("adoption_id") or str(record.get("registered_via") or "").startswith(("adopt", "holding-adopt")))
@@ -238,11 +292,12 @@ def build_from_record(
     placements_by_target: dict[str, list[dict[str, Any]]] | None = None,
     pending_by_target: dict[str, tuple[bool, bool]] | None = None,
     keeper_ids: set[str] | None = None,
+    live_pane_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     seat = _seat_name(record)
     fleet = record.get("fleet")
     target = _target(fleet, seat)
-    liveness, status, checked_targets = _terminal_status(record, terminal=terminal)
+    liveness, status, checked_targets = _terminal_status(record, terminal=terminal, live_pane_ids=live_pane_ids)
 
     bound_record = runtime_session.mark_binding(dict(record))
     binding = bound_record.get("runtime_session_binding") or (
@@ -355,10 +410,18 @@ def build_from_record(
 
 
 def build_seat_status(target: str, *, terminal=None) -> dict[str, Any]:
+    from lib import tmux_mirror
+
     record = registry.get_agent(target)
     if not record:
         return {"ok": False, "error": f"seat not found: {target}", "target": target}
-    return {"ok": True, **build_from_record(record, terminal=terminal)}
+    mirror = tmux_mirror.list_physical_panes()
+    live_pane_ids: set[str] | None = (
+        {p["pane_id"] for p in mirror.get("panes", [])}
+        if mirror.get("ok")
+        else None
+    )
+    return {"ok": True, **build_from_record(record, terminal=terminal, live_pane_ids=live_pane_ids)}
 
 
 def list_seat_statuses(
@@ -368,6 +431,8 @@ def list_seat_statuses(
     terminal=None,
     include_ledger: bool = True,
 ) -> list[dict[str, Any]]:
+    from lib import tmux_mirror
+
     latest_reports = _latest_reports_by_target()
     placements_by_target = placements.placements_by_seat()
     keeper_ids = session_ledger.keeper_thread_ids()
@@ -385,6 +450,13 @@ def list_seat_statuses(
         target: (target in pending_queue_targets, target in pending_deferred_targets)
         for target in pending_queue_targets | pending_deferred_targets
     }
+    # Single mirror snapshot for all seats — O(1) tmux call instead of O(N).
+    mirror = tmux_mirror.list_physical_panes()
+    live_pane_ids: set[str] | None = (
+        {p["pane_id"] for p in mirror.get("panes", [])}
+        if mirror.get("ok")
+        else None
+    )
     return [
         build_from_record(
             record,
@@ -393,6 +465,7 @@ def list_seat_statuses(
             placements_by_target=placements_by_target,
             pending_by_target=pending_by_target,
             keeper_ids=keeper_ids,
+            live_pane_ids=live_pane_ids,
         )
         for record in _base_rows(fleet=fleet, include_hidden=include_hidden, include_ledger=include_ledger)
     ]
