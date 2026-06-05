@@ -38,8 +38,14 @@ def run(args):
         return _footer_candidate(args)
     if getattr(args, "sessions_action", None) == "bind-footer":
         return _bind_footer(args)
+    if getattr(args, "sessions_action", None) == "resolve-pane":
+        return _resolve_pane(args)
+    if getattr(args, "sessions_action", None) == "bind-pane":
+        return _bind_pane(args)
     if getattr(args, "sessions_action", None) == "restore-plan":
         return _restore_plan(args)
+    if getattr(args, "sessions_action", None) == "heal":
+        return _heal(args)
     if getattr(args, "sessions_action", None) == "fleets":
         return _fleets(args)
     if getattr(args, "sessions_action", None) == "fleet-history":
@@ -416,6 +422,256 @@ def _enrich_restore_row_from_launch_history(row: dict, *, runtime_session) -> di
         "runtime_session_jsonl": found.get("jsonl"),
         "runtime_session_timestamp": found.get("timestamp"),
         "restore_launch_history_recovered": True,
+    }
+
+
+def _heal(args) -> dict:
+    """Re-attempt binding for alive + unbound codex/omx seats.
+
+    Selector (exactly one required):
+      --target fleet:seat  → single seat
+      --fleet NAME         → all seats in that fleet
+      --all                → all registered seats
+
+    Each candidate is classified: skip (unsupported-runtime / already-bound /
+    not-alive), refused (body-gate failure), or healed (nonce or pane method).
+    `--dry-run` performs zero registry writes and reports what would happen.
+    """
+    from lib import registry, runtime_session, terminal as terminal_mod
+
+    target = getattr(args, "target", None)
+    fleet_filter = getattr(args, "fleet", None)
+    all_seats = bool(getattr(args, "all", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    repair = bool(getattr(args, "repair", False))
+
+    # Require exactly one selector
+    selectors = sum([bool(target), bool(fleet_filter), bool(all_seats)])
+    if selectors == 0:
+        return {
+            "ok": False,
+            "error": "heal requires one of --target, --fleet, or --all",
+        }
+
+    # Build the candidate records
+    if target:
+        fleet_t, seat_t = _target_fleet_seat(target)
+        if not fleet_t or not seat_t:
+            return {
+                "ok": False,
+                "error": "could not resolve target; pass --target fleet:seat",
+                "target": target,
+            }
+        record = registry.get_agent(seat_t, fleet=fleet_t)
+        if not record:
+            return {
+                "ok": False,
+                "error": "target-seat-not-registered",
+                "target": f"{fleet_t}:{seat_t}",
+            }
+        candidates = [record]
+    elif fleet_filter:
+        candidates = registry.list_agents(fleet=fleet_filter, include_hidden=True)
+    else:
+        candidates = registry.list_agents(include_hidden=True)
+
+    results = []
+    healed_count = 0
+    refused_count = 0
+    skipped_count = 0
+
+    for record in candidates:
+        seat = record.get("name") or record.get("seat") or ""
+        fleet = record.get("fleet") or ""
+        seat_target = f"{fleet}:{seat}" if fleet and seat else seat
+
+        runtime = str(record.get("runtime") or "").strip().lower()
+
+        # Skip non-codex/omx runtimes
+        if runtime not in {"codex", "omx"}:
+            results.append({
+                "seat": seat_target,
+                "status": "skipped",
+                "reason": "unsupported-runtime",
+                "runtime": runtime,
+            })
+            skipped_count += 1
+            continue
+
+        # Skip already-bound seats
+        if runtime_session.is_bound_session(record):
+            results.append({
+                "seat": seat_target,
+                "status": "skipped",
+                "reason": "already-bound",
+                "session_id": record.get("runtime_session_id") or record.get("session_id"),
+            })
+            skipped_count += 1
+            continue
+
+        # Check liveness: seat must have a reachable terminal
+        from lib import seat_status
+        status_row = seat_status.build_from_record(record, terminal=terminal_mod)
+        if status_row.get("terminal") != "alive":
+            results.append({
+                "seat": seat_target,
+                "status": "skipped",
+                "reason": "not-alive",
+                "terminal": status_row.get("terminal"),
+            })
+            skipped_count += 1
+            continue
+
+        # Attempt bind — nonce first, then pane fallback
+        launch_id = record.get("aura_launch_id")
+        expected_cwd = record.get("runtime_session_cwd") or record.get("cwd") or record.get("workdir")
+        heal_result = None
+
+        # --- attempt a: nonce via launch_id ---
+        if launch_id:
+            found = _codex_session_from_nonce(
+                str(launch_id),
+                expected_cwd=expected_cwd,
+                record=record,
+            )
+            if found.get("ok") and found.get("session_id"):
+                session_id = found["session_id"]
+                if dry_run:
+                    heal_result = {
+                        "seat": seat_target,
+                        "status": "would-heal",
+                        "method": "nonce",
+                        "session_id": session_id,
+                        "nonce": launch_id,
+                        "jsonl": found.get("jsonl"),
+                    }
+                else:
+                    evidence = {
+                        "reason": "heal-nonce",
+                        "nonce": launch_id,
+                        "bound_after_spawn": True,
+                        "jsonl": found.get("jsonl"),
+                        "matches": found.get("matches"),
+                    }
+                    bind_result = _bind_registry_session(
+                        fleet=fleet,
+                        seat=seat,
+                        previous=record,
+                        session_id=session_id,
+                        source="codex-jsonl:nonce",
+                        confidence="exact",
+                        evidence={k: v for k, v in evidence.items() if v is not None},
+                        cwd=found.get("cwd") or expected_cwd,
+                        event="session_bound_nonce",
+                        repair=repair,
+                    )
+                    if bind_result.get("ok"):
+                        heal_result = {
+                            "seat": seat_target,
+                            "status": "healed",
+                            "method": "nonce",
+                            "session_id": session_id,
+                        }
+                    else:
+                        heal_result = {
+                            "seat": seat_target,
+                            "status": "refused",
+                            "method": "nonce",
+                            "reason": bind_result.get("reason") or bind_result.get("error"),
+                            "detail": bind_result.get("detail"),
+                        }
+
+        # --- attempt b: pane resolve (fallback) ---
+        if heal_result is None:
+            pane_ref = record.get("pane_ref") or ""
+            # Extract the %N pane id from a ref like "tmux:fleet:%26"
+            pane_id = None
+            if "%" in pane_ref:
+                # last segment after the final ":"
+                last_segment = pane_ref.rsplit(":", 1)[-1]
+                if last_segment.startswith("%"):
+                    pane_id = last_segment
+
+            if pane_id:
+                try:
+                    from lib import pane_resolver
+                    res = pane_resolver.resolve_pane(pane=pane_id)
+                    gate = pane_resolver.bind_gates(res, previous=record, repair=repair)
+                    if (
+                        gate.get("ok")
+                        and res.get("runtime_session_confidence") == "exact"
+                        and res.get("runtime_session_id")
+                    ):
+                        session_id = res["runtime_session_id"]
+                        source = res.get("runtime_session_source") or "tmux-pane:env"
+                        if dry_run:
+                            heal_result = {
+                                "seat": seat_target,
+                                "status": "would-heal",
+                                "method": "pane",
+                                "session_id": session_id,
+                                "pane_ref": pane_ref,
+                            }
+                        else:
+                            evidence = {
+                                "reason": "heal-pane-resolve",
+                                "pane_ref": pane_ref,
+                                "pane_id": pane_id,
+                            }
+                            bind_result = _bind_registry_session(
+                                fleet=fleet,
+                                seat=seat,
+                                previous=record,
+                                session_id=session_id,
+                                source=source,
+                                confidence="exact",
+                                evidence={k: v for k, v in evidence.items() if v is not None},
+                                cwd=expected_cwd,
+                                event="session_bound_pane",
+                                repair=repair,
+                            )
+                            if bind_result.get("ok"):
+                                heal_result = {
+                                    "seat": seat_target,
+                                    "status": "healed",
+                                    "method": "pane",
+                                    "session_id": session_id,
+                                }
+                            else:
+                                heal_result = {
+                                    "seat": seat_target,
+                                    "status": "refused",
+                                    "method": "pane",
+                                    "reason": bind_result.get("reason") or bind_result.get("error"),
+                                    "detail": bind_result.get("detail"),
+                                }
+                except Exception:
+                    pass
+
+        # If both attempts produced no exact evidence
+        if heal_result is None:
+            heal_result = {
+                "seat": seat_target,
+                "status": "skipped",
+                "reason": "no-exact-evidence",
+            }
+
+        results.append(heal_result)
+        status = heal_result.get("status")
+        if status in ("healed", "would-heal"):
+            healed_count += 1
+        elif status == "refused":
+            refused_count += 1
+        else:
+            skipped_count += 1
+
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "results": results,
+        "healed": healed_count,
+        "refused": refused_count,
+        "skipped": skipped_count,
     }
 
 
@@ -906,6 +1162,101 @@ def _bind_current(args) -> dict:
     )
 
 
+def _resolve_pane(args) -> dict:
+    from lib import pane_resolver
+
+    return pane_resolver.resolve_pane(
+        pane=getattr(args, "pane", None),
+        current=bool(getattr(args, "current", False)),
+    )
+
+
+def _bind_pane(args) -> dict:
+    from lib import pane_resolver, registry
+
+    res = pane_resolver.resolve_pane(
+        pane=getattr(args, "pane", None),
+        current=bool(getattr(args, "current", False)),
+    )
+    if not res.get("ok"):
+        return res
+
+    target = getattr(args, "target", None)
+    fleet, seat = _target_fleet_seat(target) if target else (None, None)
+    matched = res.get("matched_row") or {}
+    fleet = fleet or matched.get("fleet")
+    seat = seat or matched.get("seat")
+    if not fleet or not seat:
+        return {
+            "ok": False,
+            "error": "no-target",
+            "detail": "pane is unmanaged; pass --target fleet:seat to bind",
+            "resolved": res,
+        }
+
+    fleet, seat, previous, alias_chain = _canonical_bind_target(registry, fleet=fleet, seat=seat)
+
+    gate = pane_resolver.bind_gates(
+        res,
+        previous=previous,
+        repair=bool(getattr(args, "repair", False)),
+    )
+    if not gate.get("ok"):
+        return {
+            "ok": False,
+            "error": gate.get("reason"),
+            "detail": gate.get("detail"),
+            **{key: value for key, value in gate.items() if key not in {"ok", "reason", "detail"}},
+            "resolved": res,
+        }
+
+    previous = previous or {
+        "name": seat,
+        "fleet": fleet,
+        "runtime": res.get("runtime_hint") or "codex",
+        "registered": True,
+        "status": "unknown",
+    }
+    source = res.get("runtime_session_source") or "tmux-pane:env"
+    method = source.split(":", 1)[-1]
+    evidence = {
+        "reason": "tmux-pane-resolver",
+        "method": method,
+        "pane_ref": res.get("pane_ref"),
+        "pane_pid": res.get("pane_pid"),
+        "transcript_path": res.get("transcript_path"),
+        "package_env_status": (res.get("package_env_status") or {}).get("status"),
+        "evidence": res.get("runtime_session_evidence"),
+    }
+    cwd = (
+        previous.get("runtime_session_cwd")
+        or previous.get("cwd")
+        or previous.get("workdir")
+        or res.get("pane_current_path")
+    )
+    return _bind_registry_session(
+        fleet=fleet,
+        seat=seat,
+        previous=previous,
+        session_id=res["runtime_session_id"],
+        source=source,
+        confidence="exact",
+        evidence={key: value for key, value in evidence.items() if value is not None},
+        cwd=cwd,
+        event="session_bound_pane",
+        extra={
+            "target": f"{fleet}:{seat}",
+            "pane_ref": res.get("pane_ref"),
+            "transcript_path": res.get("transcript_path"),
+            "alias_chain": alias_chain,
+        },
+        # The pane path already ran the full pane-env veto via pane_resolver.bind_gates
+        # above; forward repair so the writer's record-internal veto does not
+        # double-gate a legitimate operator --repair rebind.
+        repair=bool(getattr(args, "repair", False)),
+    )
+
+
 def _normalize_hook_event(event: str | None) -> str:
     if not event:
         return "session-start"
@@ -1032,8 +1383,33 @@ def _bind_registry_session(
     cwd: str | None,
     event: str,
     extra: dict | None = None,
+    env: dict[str, str] | None = None,
+    repair: bool = False,
 ) -> dict:
-    from lib import registry, runtime_session, session_ledger
+    from lib import bind_guard, registry, runtime_session, session_ledger
+
+    # Universal body-integrity veto: a real session id must never bind onto a
+    # contaminated or wrong body. This is the single chokepoint every bind writer
+    # (pane, hook, nonce, current, footer, spawn observe/nonce/resume) flows
+    # through. `env` is the body's process env (in-body hook binds pass os.environ;
+    # spawner-side binds pass None -> record-internal checks only). `repair=True`
+    # is the operator override.
+    gate = bind_guard.body_gates(previous, env=env, repair=repair)
+    if not gate.get("ok"):
+        return {
+            "ok": False,
+            "error": "body-gate-refused",
+            "reason": gate.get("reason"),
+            "detail": gate.get("detail"),
+            "seat": seat,
+            "fleet": fleet,
+            "session_id": session_id,
+            "runtime_session_source": source,
+            "mismatches": gate.get("mismatches"),
+            "expected_seat_instance_id": gate.get("expected_seat_instance_id"),
+            "actual_seat_instance_id": gate.get("actual_seat_instance_id"),
+            "registry_updated": False,
+        }
 
     updated = registry.upsert_agent({
         **previous,

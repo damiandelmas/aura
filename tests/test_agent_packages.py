@@ -810,6 +810,8 @@ def test_codex_prepare_box_supports_agent_package_layout(monkeypatch, tmp_path):
     assert "PreCompact" in hooks["hooks"]
     assert "aura_keeper_hook.py Stop" in hooks["hooks"]["Stop"][0]["hooks"][0]["command"]
     assert "aura_keeper_hook.py PreCompact" in hooks["hooks"]["PreCompact"][0]["hooks"][0]["command"]
+    assert hooks["hooks"]["Stop"][0]["hooks"][0]["timeout"] == 10
+    assert hooks["hooks"]["PreCompact"][0]["hooks"][0]["timeout"] == 10
     meta = box.metadata()
     assert meta["codex_isolation"] == "aura-agent-package"
     assert meta["codex_package_root"] == str(root.resolve())

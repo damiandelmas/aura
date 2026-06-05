@@ -827,3 +827,290 @@ def test_codex_bind_hook_script_accepts_omx_package_without_capsule_residue(monk
     assert not (capsule / "runtime-session.json").exists()
     assert not (capsule / "receipts").exists()
     assert not (capsule / "artifacts").exists()
+
+
+def test_codex_bind_hook_ignores_mismatched_keeper_codex_home(monkeypatch, tmp_path):
+    import json
+    import os
+    import subprocess
+    from lib import registry
+
+    state = tmp_path / ".aura"
+    target_package = tmp_path / "target-agent"
+    keeper_package = tmp_path / "keeper-agent"
+    (target_package / ".codex").mkdir(parents=True)
+    (keeper_package / ".codex").mkdir(parents=True)
+    (target_package / "manifest.json").write_text(
+        json.dumps({"schema": "aura.agent_manifest.v1", "runtime": "codex"}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AURA_STATE_DIR", str(state))
+
+    registry.upsert_agent({
+        "name": "manager",
+        "fleet": "flexgraph-chatbot-adapters",
+        "runtime": "codex",
+        "registered": True,
+        "cwd": str(tmp_path),
+        "seat_instance_id": "si_target",
+        "agent_package_id": "i_target",
+        "agent_package_root": str(target_package),
+    })
+
+    env = {
+        **os.environ,
+        "AURA_STATE_DIR": str(state),
+        "AURA_FLEET": "flexgraph-chatbot-adapters",
+        "AURA_SEAT": "manager",
+        "AURA_RUNTIME": "codex",
+        "AURA_SEAT_INSTANCE_ID": "si_target",
+        "AURA_AGENT_PACKAGE_ID": "i_target",
+        "AURA_AGENT_PACKAGE_ROOT": str(target_package),
+        "AURA_RUNTIME_CAPSULE_REF": str(target_package),
+        "CODEX_HOME": str(keeper_package / ".codex"),
+    }
+    payload = {
+        "hook_event_name": "SessionStart",
+        "session_id": "keeper-thread",
+        "transcript_path": str(keeper_package / ".codex" / "sessions" / "keeper.jsonl"),
+    }
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "cli" / "hooks" / "codex_bind_hook.py")],
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    row = registry.get_agent("manager", fleet="flexgraph-chatbot-adapters")
+    assert "runtime_session_id" not in row
+
+
+# ---------------------------------------------------------------------------
+# _heal tests (Node E)
+# ---------------------------------------------------------------------------
+
+def _make_heal_args(*, target=None, fleet=None, all=False, dry_run=False, repair=False):
+    """Build a minimal args Namespace for sessions._heal."""
+    return argparse.Namespace(
+        target=target,
+        fleet=fleet,
+        all=all,
+        dry_run=dry_run,
+        repair=repair,
+    )
+
+
+def _write_nonce_jsonl(jsonl_path, nonce, session_id, cwd=None):
+    """Write a minimal Codex JSONL with the nonce string and a session_meta row."""
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    jsonl_path.write_text(
+        json.dumps({
+            "type": "session_meta",
+            "payload": {
+                "id": session_id,
+                "cwd": cwd or "/repo/heal-test",
+                "timestamp": "2026-06-04T10:00:00Z",
+                "aura_launch_id": nonce,
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_heal_non_package_alive_unbound_seat_heals_via_nonce(monkeypatch, tmp_path):
+    """An alive, unbound, non-package codex seat with a findable launch nonce must be healed."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    nonce = "aura-launch-heal-nonce-test-01"
+    session_id = "019f1234-heal-nonce-0000-000000000001"
+    workdir = str(tmp_path / "repo")
+    codex_home = tmp_path / "codex-home"
+    jsonl = codex_home / "sessions" / "heal-test.jsonl"
+    _write_nonce_jsonl(jsonl, nonce, session_id, cwd=workdir)
+
+    pane_ref = "tmux:healfleet:%42"
+
+    from commands import sessions
+    from lib import registry, runtime_session, terminal as terminal_mod
+
+    registry.upsert_agent({
+        "name": "engineer",
+        "fleet": "healfleet",
+        "runtime": "codex",
+        "registered": True,
+        "cwd": workdir,
+        "workdir": workdir,
+        "aura_launch_id": nonce,
+        "pane_ref": pane_ref,
+        # Non-package seat: no agent_package_id, no agent_package_root
+        "codex_box_codex_home": str(codex_home),
+    })
+
+    # Make the terminal report pane as alive
+    monkeypatch.setattr(terminal_mod, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal_mod, "target_exists", lambda target: target == pane_ref)
+
+    result = sessions._heal(_make_heal_args(target="healfleet:engineer"))
+
+    assert result["ok"] is True
+    assert result["healed"] == 1
+    assert result["refused"] == 0
+    assert result["skipped"] == 0
+    assert result["results"][0]["status"] == "healed"
+    assert result["results"][0]["method"] == "nonce"
+    assert result["results"][0]["session_id"] == session_id
+
+    # Verify registry was actually updated
+    row = registry.get_agent("engineer", fleet="healfleet")
+    assert runtime_session.is_bound_session(row) is True
+    assert row["runtime_session_id"] == session_id
+    assert row["runtime_session_source"] == "codex-jsonl:nonce"
+
+
+def test_heal_contaminated_package_record_is_refused(monkeypatch, tmp_path):
+    """A contaminated package record (runtime_home under a different root) is refused — no registry write."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    nonce = "aura-launch-heal-contaminated-test-02"
+    session_id = "019f1234-heal-cont-0000-000000000002"
+    scout_root = str(tmp_path / "i_scout")
+    manager_root = str(tmp_path / "i_manager")
+
+    codex_home = tmp_path / "i_scout" / ".codex"
+    jsonl = codex_home / "sessions" / "contaminated.jsonl"
+    # Write the nonce in the scout package's codex home
+    _write_nonce_jsonl(jsonl, nonce, session_id, cwd=scout_root)
+
+    pane_ref = "tmux:contamfleet:%99"
+
+    from commands import sessions
+    from lib import registry, terminal as terminal_mod
+
+    registry.upsert_agent({
+        "name": "scout",
+        "fleet": "contamfleet",
+        "runtime": "codex",
+        "registered": True,
+        "cwd": scout_root,
+        "workdir": scout_root,
+        "aura_launch_id": nonce,
+        "pane_ref": pane_ref,
+        # Contaminated: agent_package_id/root point to scout, but runtime_home
+        # and native_state_ref point to manager (the bind_guard detects this)
+        "agent_package_id": "i_scout",
+        "agent_package_root": scout_root,
+        "runtime_home": manager_root,
+        "native_state_ref": f"{manager_root}/.codex",
+    })
+
+    monkeypatch.setattr(terminal_mod, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal_mod, "target_exists", lambda target: target == pane_ref)
+
+    result = sessions._heal(_make_heal_args(target="contamfleet:scout"))
+
+    assert result["ok"] is True
+    assert result["refused"] == 1
+    assert result["healed"] == 0
+    row_after = registry.get_agent("scout", fleet="contamfleet")
+    assert "runtime_session_id" not in (row_after or {})
+    assert result["results"][0]["status"] == "refused"
+    assert result["results"][0]["reason"] == "package-env-mismatch"
+
+
+def test_heal_seat_with_no_nonce_and_no_exact_pane_evidence_is_skipped(monkeypatch, tmp_path):
+    """A seat with no aura_launch_id and no exact pane evidence is skipped (no-exact-evidence)."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    pane_ref = "tmux:noevfleet:%77"
+
+    from commands import sessions
+    from lib import registry, runtime_session, terminal as terminal_mod
+
+    registry.upsert_agent({
+        "name": "worker",
+        "fleet": "noevfleet",
+        "runtime": "codex",
+        "registered": True,
+        "cwd": str(tmp_path / "repo"),
+        "pane_ref": pane_ref,
+        # No aura_launch_id
+    })
+
+    monkeypatch.setattr(terminal_mod, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal_mod, "target_exists", lambda target: target == pane_ref)
+
+    # Make pane resolver return no exact evidence (pane doesn't actually exist in tmux)
+    from lib import pane_resolver
+    monkeypatch.setattr(
+        pane_resolver,
+        "resolve_pane",
+        lambda pane=None, current=False: {"ok": False, "error": "pane-not-found", "pane": pane},
+    )
+
+    result = sessions._heal(_make_heal_args(target="noevfleet:worker"))
+
+    assert result["ok"] is True
+    assert result["skipped"] == 1
+    assert result["healed"] == 0
+    assert result["refused"] == 0
+    assert result["results"][0]["status"] == "skipped"
+    assert result["results"][0]["reason"] == "no-exact-evidence"
+
+    # Confirm registry row stays unbound
+    row = registry.get_agent("worker", fleet="noevfleet")
+    assert not runtime_session.is_bound_session(row)
+
+
+def test_heal_dry_run_performs_no_registry_write(monkeypatch, tmp_path):
+    """--dry-run must report would-heal but never write the registry."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    nonce = "aura-launch-heal-dryrun-test-04"
+    session_id = "019f1234-heal-dry0-0000-000000000004"
+    workdir = str(tmp_path / "repo")
+    codex_home = tmp_path / "codex-home-dry"
+    jsonl = codex_home / "sessions" / "dryrun.jsonl"
+    _write_nonce_jsonl(jsonl, nonce, session_id, cwd=workdir)
+
+    pane_ref = "tmux:dryfleet:%55"
+
+    from commands import sessions
+    from lib import registry, runtime_session, terminal as terminal_mod
+
+    registry.upsert_agent({
+        "name": "builder",
+        "fleet": "dryfleet",
+        "runtime": "codex",
+        "registered": True,
+        "cwd": workdir,
+        "workdir": workdir,
+        "aura_launch_id": nonce,
+        "pane_ref": pane_ref,
+        "codex_box_codex_home": str(codex_home),
+    })
+
+    monkeypatch.setattr(terminal_mod, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal_mod, "target_exists", lambda target: target == pane_ref)
+
+    result = sessions._heal(_make_heal_args(target="dryfleet:builder", dry_run=True))
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    # dry-run still counts as "healed" (would-heal) in the healed counter
+    assert result["healed"] == 1
+    assert result["results"][0]["status"] == "would-heal"
+    assert result["results"][0]["method"] == "nonce"
+    assert result["results"][0]["session_id"] == session_id
+
+    # Registry must NOT have been updated
+    row = registry.get_agent("builder", fleet="dryfleet")
+    assert not runtime_session.is_bound_session(row), "dry-run must not write the registry"
+    assert "session_id" not in row

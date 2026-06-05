@@ -116,6 +116,8 @@ def main():
                          help="Explicit OMX boxed-profile template under ~/.aura/runtime-profiles/omx/NAME")
     p_spawn.add_argument("--command", dest="launch_command", metavar="CMD",
                          help="Override runtime launch command for terminal-backed spawn")
+    p_spawn.add_argument("--allow-native-subagent-spawn", action="store_true",
+                         help=argparse.SUPPRESS)
 
     # quick
     p_quick = subparsers.add_parser("quick", help="Launch a quick Aura-managed runtime seat from the current directory")
@@ -256,7 +258,7 @@ def main():
     keeper_run_sub = p_keeper_run.add_subparsers(dest="keeper_kind", required=True)
     p_keeper_memory = keeper_run_sub.add_parser("memory", help="Write a target-agent memory from a Flex session slice")
     p_keeper_memory.add_argument("--target", required=True, help="Target fleet:seat, package id, address, or alias")
-    p_keeper_memory.add_argument("--boundary", required=True, help="Memory boundary such as 25, 50, 75, precompact, closeout, or manual")
+    p_keeper_memory.add_argument("--boundary", required=True, help="Memory boundary such as m120, precompact, closeout, or manual")
     p_keeper_memory.add_argument("--force", action="store_true", help="Launch even if the deterministic job already has a result")
     p_keeper_status = keeper_sub.add_parser("status", help="Read keeper job status")
     p_keeper_status.add_argument("job_id")
@@ -265,6 +267,23 @@ def main():
     p_keeper_tail = keeper_sub.add_parser("tail", help="Read the end of a keeper job log")
     p_keeper_tail.add_argument("job_id")
     p_keeper_tail.add_argument("--lines", type=int, default=80, help="Number of log lines to return")
+    p_keeper_health = keeper_sub.add_parser("health", help="Summarize recent keeper job health")
+    p_keeper_health.add_argument("--limit", type=int, default=50, help="Number of recent keeper jobs to scan")
+    p_keeper_backfill = keeper_sub.add_parser("backfill", help="Relaunch failed keeper memory jobs from stored requests")
+    p_keeper_backfill.add_argument("--limit", type=int, default=5, help="Maximum failed jobs to relaunch")
+    p_keeper_backfill.add_argument("--dry-run", action="store_true", help="List backfill candidates without launching")
+    p_keeper_backfill.add_argument("--diagnostic", default="codex-auth-refresh", help="Diagnostic kind to backfill, or 'any'")
+    p_keeper_backfill.add_argument("--agent-id", help="Only backfill one target Aura agent id")
+    p_keeper_backfill.add_argument("--session-id", help="Only backfill one target runtime session id")
+    p_keeper_backfill.add_argument("--job-id", action="append", default=[], help="Specific keeper job id to backfill; repeatable")
+    p_keeper_backfill.add_argument("--wait", action="store_true", help="Wait for relaunched jobs to complete or fail")
+    p_keeper_backfill.add_argument("--timeout", type=int, default=600, help="Seconds to wait when --wait is used")
+    p_keeper_hooks = keeper_sub.add_parser("hooks", help="Install or refresh keeper lifecycle hooks")
+    keeper_hooks_sub = p_keeper_hooks.add_subparsers(dest="keeper_hooks_action", required=True)
+    p_keeper_hooks_install = keeper_hooks_sub.add_parser("install", help="Refresh keeper hooks across agent homes and profiles")
+    p_keeper_hooks_install.add_argument("--agents", action="store_true", help="Refresh durable Aura agent package homes")
+    p_keeper_hooks_install.add_argument("--profiles", action="store_true", help="Refresh Aura runtime profile templates")
+    p_keeper_hooks_install.add_argument("--dry-run", action="store_true", help="Report targets without mutating files")
 
     # agent-map
     p_agent_map = subparsers.add_parser("agent-map", help="Render status-derived map for one managed seat")
@@ -646,7 +665,7 @@ def main():
     p_sessions.add_argument(
         "sessions_action",
         nargs="?",
-        choices=["latest", "all", "restore-plan", "self", "bind-current", "bind-hook", "bind-nonce", "footer", "bind-footer", "seat-history", "fleets", "fleet-history"],
+        choices=["latest", "all", "restore-plan", "self", "bind-current", "bind-hook", "bind-nonce", "resolve-pane", "bind-pane", "footer", "bind-footer", "seat-history", "fleets", "fleet-history", "heal"],
                             help="Optional sessions action")
     p_sessions.add_argument("nonce", nargs="?",
                             help="For bind-nonce, unique marker written into the target Codex session; for seat-history, target seat ref")
@@ -682,6 +701,14 @@ def main():
                             help="For bind-hook, native hook event name such as SessionStart")
     p_sessions.add_argument("--seat-instance-id",
                             help="For bind-hook, expected Aura seat instance id when known")
+    p_sessions.add_argument("--pane",
+                            help="For resolve-pane/bind-pane, the tmux pane to resolve (e.g. %%123 or tmux:fleet:%%123)")
+    p_sessions.add_argument("--current", action="store_true",
+                            help="For resolve-pane/bind-pane, resolve the current pane from $TMUX_PANE")
+    p_sessions.add_argument("--repair", action="store_true",
+                            help="For bind-pane, allow rebinding a registry target that points at a different pane")
+    p_sessions.add_argument("--all", action="store_true",
+                            help="For heal, attempt heal on all registered seats")
 
     # fleets
     p_fleets = subparsers.add_parser("fleets", help="Resolve and inspect stable fleet identities")
@@ -833,6 +860,10 @@ def main():
                         help="Number of colleagues/reports/deferred records to include (default: 10)")
     p_view.add_argument("--include-hidden", action="store_true",
                         help="Include hidden/internal seats")
+    p_view.add_argument("--resolve", action="store_true",
+                        help="For physical view, resolve each pane to its runtime session and classify managed-bound/managed-unbound/unmanaged/stale/mismatch")
+    p_view.add_argument("--stale", action="store_true",
+                        help="For physical --resolve, include the full stale registry-row list (default: count only)")
 
     # clawhip — sidecar adapter boundary
     p_clawhip = subparsers.add_parser("clawhip", help="Inspect Aura/Clawhip sidecar adapter")
@@ -870,6 +901,13 @@ def main():
     p_discord_listen.add_argument("--sender-prefix", default="discord", help="Aura sender prefix (default: discord)")
     p_discord_listen.add_argument("--dry-run", action="store_true", help="Parse and ack routes without sending to Aura")
     p_discord_listen.add_argument("--ready-once", action="store_true", help="Connect, print ready state, and exit")
+
+    p_discord_bind = discord_sub.add_parser("bind-channel", help="Bind a Discord channel to an Aura fleet/default target")
+    p_discord_bind.add_argument("channel", help="Discord channel id")
+    p_discord_bind.add_argument("--fleet", help="Aura fleet used for @seat shorthand in this channel")
+    p_discord_bind.add_argument("--default-target", help="Aura fleet:seat target for plain messages")
+    p_discord_bind.add_argument("--default-seat", help="Default seat inside --fleet for plain messages")
+    p_discord_bind.add_argument("--alias", action="append", default=[], help="Seat alias as NAME=TARGET; repeatable")
 
     # placement
     p_placement = subparsers.add_parser("placement", help="Manage grouping/link placements without moving tmux panes")

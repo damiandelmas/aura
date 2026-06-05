@@ -109,3 +109,126 @@ def test_bind_hook_rejects_wrong_seat_instance(monkeypatch, tmp_path):
 
     assert result["ok"] is False
     assert result["error"] == "seat-instance-mismatch"
+
+
+# --- Universal body-integrity veto (bind_guard / _bind_registry_session) -------
+# Every bind writer now flows through the body veto in _bind_registry_session, so a
+# real session id can never bind onto a contaminated/wrong body. These tests pin
+# that single chokepoint.
+
+def _contaminated_package_record(scout_root: str, manager_root: str) -> dict:
+    # Registry says this seat is the scout package, but its runtime home / capsule
+    # ref / native state were wired to the MANAGER body (the factory-v2 class).
+    return {
+        "fleet": "flexchat-shopify-factory-v2",
+        "name": "scout",
+        "runtime": "codex",
+        "registered": True,
+        "agent_package_id": "i_scout",
+        "agent_package_root": scout_root,
+        "runtime_home": manager_root,            # contradicts scout root
+        "native_state_ref": f"{manager_root}/.codex",
+    }
+
+
+def test_bind_registry_session_refuses_contaminated_body(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import sessions
+
+    scout_root = str(tmp_path / "i_scout")
+    manager_root = str(tmp_path / "i_manager")
+    result = sessions._bind_registry_session(
+        fleet="flexchat-shopify-factory-v2",
+        seat="scout",
+        previous=_contaminated_package_record(scout_root, manager_root),
+        session_id="019e8f82-4174-7a81-ae19-dd3301971628",
+        source="codex-jsonl:nonce",
+        confidence="exact",
+        evidence={"reason": "test"},
+        cwd=scout_root,
+        event="session_bound_nonce",
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "body-gate-refused"
+    assert result["reason"] == "package-env-mismatch"
+    assert result["registry_updated"] is False
+
+
+def test_bind_registry_session_repair_bypasses_body_veto(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import sessions
+
+    scout_root = str(tmp_path / "i_scout")
+    manager_root = str(tmp_path / "i_manager")
+    result = sessions._bind_registry_session(
+        fleet="flexchat-shopify-factory-v2",
+        seat="scout",
+        previous=_contaminated_package_record(scout_root, manager_root),
+        session_id="019e8f82-4174-7a81-ae19-dd3301971628",
+        source="tmux-pane:env",
+        confidence="exact",
+        evidence={"reason": "operator-repair"},
+        cwd=scout_root,
+        event="session_bound_pane",
+        repair=True,
+    )
+
+    assert result["ok"] is True
+    assert result["runtime_session_id"] == "019e8f82-4174-7a81-ae19-dd3301971628"
+
+
+def test_bind_registry_session_allows_clean_package_body(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import sessions
+
+    root = str(tmp_path / "i_scout")
+    result = sessions._bind_registry_session(
+        fleet="flexchat-shopify-factory-v2",
+        seat="scout",
+        previous={
+            "fleet": "flexchat-shopify-factory-v2",
+            "name": "scout",
+            "runtime": "codex",
+            "registered": True,
+            "agent_package_id": "i_scout",
+            "agent_package_root": root,
+            "runtime_home": root,
+            "native_state_ref": f"{root}/.codex",
+        },
+        session_id="019e8f82-4174-7a81-ae19-dd3301971628",
+        source="codex-jsonl:nonce",
+        confidence="exact",
+        evidence={"reason": "test"},
+        cwd=root,
+        event="session_bound_nonce",
+    )
+
+    assert result["ok"] is True
+
+
+def test_bind_registry_session_allows_non_package_seat(monkeypatch, tmp_path):
+    # Plain `aura spawn` codex seat (no package) — the recovery-pain-scout/engineer
+    # class. not-package -> veto must let it bind.
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import sessions
+
+    result = sessions._bind_registry_session(
+        fleet="flex-community",
+        seat="recovery-pain-scout",
+        previous={
+            "fleet": "flex-community",
+            "name": "recovery-pain-scout",
+            "runtime": "codex",
+            "registered": True,
+        },
+        session_id="019e8f82-4174-7a81-ae19-dd3301971628",
+        source="codex-jsonl:nonce",
+        confidence="exact",
+        evidence={"reason": "test"},
+        cwd="/home/axp/projects/flex/outreach/sandbox/recovery-pain-scout",
+        event="session_bound_nonce",
+    )
+
+    assert result["ok"] is True
+    assert result["runtime_session_id"] == "019e8f82-4174-7a81-ae19-dd3301971628"

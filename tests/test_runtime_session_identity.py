@@ -110,6 +110,11 @@ def test_runtime_session_ignores_inherited_codex_thread_env(monkeypatch):
         "_read_process_environ",
         lambda pid: {"CODEX_THREAD_ID": "inherited-parent-thread"} if pid == 1002 else {},
     )
+    # Isolate from the host: without this, _process_cwd(1001) resolves to a real
+    # path on the dev machine and the live ~/.codex state DB yields cwd-start
+    # candidates, so discover_from_pane_pid returns a non-empty dict. The point of
+    # this test is only that an inherited CODEX_THREAD_ID is ignored.
+    monkeypatch.setattr(runtime_session, "_process_cwd", lambda pid: None)
 
     assert runtime_session.discover_from_pane_pid("codex", 1001) == {}
 
@@ -470,6 +475,14 @@ def test_spawn_exports_aura_runtime_env_and_records_pane_ref(monkeypatch, tmp_pa
         "CODEX_THREAD_ID",
         "CODEX_CI",
         "CLAUDE_SESSION_ID",
+        "CODEX_HOME",
+        "AURA_AGENT_PACKAGE_ID",
+        "AURA_AGENT_PACKAGE_ROOT",
+        "AURA_AGENT_PACKAGE_ADDRESS",
+        "AURA_AGENT_PACKAGE_ALIAS",
+        "AURA_RUNTIME_CAPSULE_REF",
+        "OMX_ROOT",
+        "OMX_TEAM_STATE_ROOT",
     ]
 
 
@@ -677,6 +690,112 @@ def test_spawn_codex_fork_session_conflicts_and_unsupported_runtime(monkeypatch,
     )
     assert unsupported["ok"] is False
     assert unsupported["error"] == "runtime does not support native fork: shell"
+
+
+def test_spawn_refuses_aura_spawn_from_codex_native_subagent(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+    codex_home = tmp_path / "codex-home"
+    session_id = "019e6b81-39f4-73e1-81a1-949d4515ca0f"
+    session_file = codex_home / "sessions" / "2026" / "05" / "27" / f"rollout-{session_id}.jsonl"
+    session_file.parent.mkdir(parents=True)
+    session_file.write_text(
+        '{"type":"session_meta","payload":{"id":"019e6b81-39f4-73e1-81a1-949d4515ca0f",'
+        '"thread_source":"subagent","source":{"subagent":{"thread_spawn":{"depth":1}}}}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("CODEX_THREAD_ID", session_id)
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(*_args, **_kwargs):
+            raise AssertionError("native subagent spawn should refuse before create_window")
+
+    args = argparse.Namespace(
+        name="forked",
+        runtime="codex",
+        resume_session=None,
+        fork_session=session_id,
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt="inherit and report",
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is False
+    assert result["error"] == "native-subagent-aura-spawn-refused"
+    assert result["codex_session_id"] == session_id
+    assert result["codex_session_path"] == str(session_file)
+
+
+def test_spawn_allows_explicit_native_subagent_aura_spawn_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+
+    from commands import spawn
+
+    unit = tmp_path / "unit"
+    unit.mkdir()
+    codex_home = tmp_path / "codex-home"
+    session_id = "019e6b81-39f4-73e1-81a1-949d4515ca0f"
+    session_file = codex_home / "sessions" / "2026" / "05" / "27" / f"rollout-{session_id}.jsonl"
+    session_file.parent.mkdir(parents=True)
+    session_file.write_text(
+        '{"type":"session_meta","payload":{"id":"019e6b81-39f4-73e1-81a1-949d4515ca0f",'
+        '"thread_source":"subagent","source":{"subagent":{"thread_spawn":{"depth":1}}}}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("CODEX_THREAD_ID", session_id)
+    monkeypatch.setenv("AURA_ALLOW_NATIVE_SUBAGENT_SPAWN", "1")
+
+    created = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((name, command))
+            return {"ok": True, "target": "unitfleet:forked", "pane_id": "%43"}
+
+        @staticmethod
+        def send_text(name, text, submit=False):
+            return {"ok": True}
+
+    args = argparse.Namespace(
+        name="forked",
+        runtime="codex",
+        resume_session=None,
+        fork_session=session_id,
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt="inherit and report",
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    assert created[0][0] == "forked"
 
 
 def test_spawn_codex_resume_resolves_cwd_choice_to_requested_cwd(monkeypatch, tmp_path):
@@ -905,7 +1024,8 @@ def test_spawn_codex_prompt_embeds_aura_launch_context(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert result["aura_launch_id"] == "aura-launch-abcdef1234567890"
-    assert created[0][1].endswith(" 'build the artifact'")
+    assert "build the artifact" in created[0][1]
+    assert "launch=aura-launch-abcdef1234567890" in created[0][1]
     assert sent == []
     assert result["prompt_delivery"] == {
         "submitted": True,
@@ -988,7 +1108,8 @@ def test_spawn_codex_native_prompt_skips_retry_before_session_observation(monkey
     result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
 
     assert result["ok"] is True
-    assert created[0][1].endswith(" 'build the artifact'")
+    assert "build the artifact" in created[0][1]
+    assert "launch=aura-launch-abcdef1234567890" in created[0][1]
     assert result["prompt_delivery"] == {
         "submitted": True,
         "transport": "runtime-native-argv",
@@ -1260,7 +1381,8 @@ def test_spawn_auto_observes_omx_session_by_launch_nonce(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert result["runtime"] == "omx"
-    assert created[0][1].endswith(" 'launch nonce prompt'")
+    assert "launch nonce prompt" in created[0][1]
+    assert "launch=aura-launch-" in created[0][1]
     assert sent == []
     assert result["prompt_delivery"] == {
         "submitted": True,
@@ -2197,3 +2319,226 @@ def test_check_preserves_bound_registry_session_when_live_probe_is_low_confidenc
     assert result["runtime_session_binding"] == "bound"
     assert result["runtime_session_id"] == "bound-thread"
     assert result["session_id"] == "bound-thread"
+
+
+def test_augment_runtime_prompt_embeds_nonce_for_codex_and_omx():
+    """_augment_runtime_prompt must embed the launch_id nonce for codex/omx runtimes.
+
+    The literal launch_id string is what sessions._codex_session_from_nonce greps
+    for in the Codex JSONL to establish exact session evidence at auto-bind time.
+    Removing the nonce (regression 443b47c) caused spawns to find no evidence and
+    never auto-bind.
+    """
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cli"))
+    from commands.spawn import _augment_runtime_prompt
+
+    # codex: nonce and prompt text must both be present
+    result = _augment_runtime_prompt(
+        "codex",
+        "do the thing",
+        fleet="f",
+        seat="s",
+        launch_id="aura-launch-deadbeef00000000",
+    )
+    assert "aura-launch-deadbeef00000000" in result
+    assert "do the thing" in result
+
+    # omx: same requirement
+    result_omx = _augment_runtime_prompt(
+        "omx",
+        "do the thing",
+        fleet="f",
+        seat="s",
+        launch_id="aura-launch-deadbeef00000000",
+    )
+    assert "aura-launch-deadbeef00000000" in result_omx
+    assert "do the thing" in result_omx
+
+    # non-codex/omx runtime: prompt returned unchanged
+    result_cc = _augment_runtime_prompt(
+        "claude-code",
+        "do the thing",
+        fleet="f",
+        seat="s",
+        launch_id="aura-launch-x",
+    )
+    assert result_cc == "do the thing"
+
+
+# --- Gated resume-session bind (body-integrity veto) --------------------------
+# These tests pin that --resume-session now routes through _bind_registry_session
+# so the body-integrity veto (bind_guard.body_gates) is applied before writing a
+# real session id into the registry.
+
+
+def test_spawn_resume_session_binds_via_gate_for_clean_body(monkeypatch, tmp_path):
+    """Clean package body: resume bind goes through the gate and succeeds.
+
+    After spawn, the registry must hold runtime_session_binding="bound",
+    runtime_session_id=UUID, runtime_session_source="spawn:resume-session".
+    The ledger must contain a session_bound_resume event confirming the gate
+    path was taken (not the old direct upsert).
+    """
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from commands import spawn
+    from lib import registry, session_ledger
+
+    root = tmp_path / "unit"
+    root.mkdir()
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            return {"ok": True, "target": "unitfleet:outreach", "pane_id": "%43"}
+
+    session_id = "019ee000-0000-7000-aaaa-000000000001"
+    args = argparse.Namespace(
+        name="outreach",
+        runtime="codex",
+        resume_session=session_id,
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(root),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+    # The bind succeeded — result carries bound session fields.
+    assert result["runtime_session_binding"] == "bound"
+    assert result["runtime_session_id"] == session_id
+    assert result["runtime_session_source"] == "spawn:resume-session"
+    assert result["runtime_session_confidence"] == "exact"
+    # No refusal key present when the gate passed.
+    assert "resume_bind" not in result
+
+    # Registry must reflect the gated bind.
+    record = registry.get_agent("outreach", fleet="unitfleet")
+    assert record is not None
+    assert record["runtime_session_binding"] == "bound"
+    assert record["runtime_session_id"] == session_id
+    assert record["runtime_session_source"] == "spawn:resume-session"
+
+    # Ledger must contain a session_bound_resume event (proves the gate path).
+    ledger = session_ledger.read_ledger()
+    bound_events = [r for r in ledger if r.get("event") == "session_bound_resume"]
+    assert bound_events, "expected a session_bound_resume ledger event"
+    assert bound_events[0]["session_id"] == session_id
+    assert bound_events[0]["runtime_session_source"] == "spawn:resume-session"
+
+
+def test_spawn_resume_session_refused_for_contaminated_body(monkeypatch, tmp_path):
+    """Contaminated body: bind is refused by body_gates; spawn still returns ok=True.
+
+    We use a real contaminated record (agent_package_root != runtime_home / native_state_ref)
+    injected via monkeypatching registry.get_agent so that _bind_registry_session receives
+    the cross-root record as `previous`.  The gate must refuse, the seat must stay unbound,
+    and result["resume_bind"] must carry the body-gate-refused reason.  The terminal
+    launch (ok=True) must not be affected.
+    """
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    scout_root = tmp_path / "i_scout"
+    manager_root = tmp_path / "i_manager"
+    scout_root.mkdir()
+    manager_root.mkdir()
+
+    from commands import spawn
+    from lib import registry
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            return {"ok": True, "target": "unitfleet:scout", "pane_id": "%44"}
+
+    session_id = "019ee000-0000-7000-bbbb-000000000002"
+    args = argparse.Namespace(
+        name="scout",
+        runtime="codex",
+        resume_session=session_id,
+        launch_command=None,
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(scout_root),
+        context=None,
+    )
+
+    # Wrap registry.upsert_agent to capture the registered record, then inject
+    # a contaminated version for the _bind_registry_session `previous` arg by
+    # monkeypatching registry.get_agent.
+    original_upsert = registry.upsert_agent
+    upserted_records = []
+
+    def fake_upsert(record):
+        result_rec = original_upsert(record)
+        upserted_records.append(result_rec)
+        return result_rec
+
+    monkeypatch.setattr(registry, "upsert_agent", fake_upsert)
+
+    # After the initial upsert+clear, spawn calls _bind_registry_session with
+    # `previous=registered`.  We intercept via bind_guard.body_gates to simulate
+    # a contaminated body returning package-env-mismatch.
+    from lib import bind_guard
+    original_body_gates = bind_guard.body_gates
+
+    def fake_body_gates(record, *, env=None, seat_instance_id=None, repair=False):
+        # Simulate contamination: as if runtime_home pointed to manager_root
+        # while agent_package_root pointed to scout_root.
+        if record and record.get("name") == "scout":
+            return {
+                "ok": False,
+                "reason": "package-env-mismatch",
+                "detail": "simulated contaminated body for test",
+                "mismatches": [
+                    {
+                        "check": "registry_runtime_home",
+                        "left": str(manager_root),
+                        "right": str(scout_root),
+                        "ok": False,
+                    }
+                ],
+            }
+        return original_body_gates(record, env=env, seat_instance_id=seat_instance_id, repair=repair)
+
+    monkeypatch.setattr(bind_guard, "body_gates", fake_body_gates)
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    # Terminal launched — spawn still ok.
+    assert result["ok"] is True
+
+    # Body-gate refusal surfaced in result.
+    assert "resume_bind" in result
+    assert result["resume_bind"]["ok"] is False
+    assert result["resume_bind"]["error"] == "body-gate-refused"
+    assert result["resume_bind"]["reason"] == "package-env-mismatch"
+
+    # Registry must NOT have a bound session id.
+    record = registry.get_agent("scout", fleet="unitfleet")
+    assert record is not None
+    assert record.get("runtime_session_binding") != "bound"
+    assert record.get("runtime_session_id") is None
+
+    # Result must NOT claim a bound session.
+    assert result.get("runtime_session_binding") != "bound"
+    assert result.get("runtime_session_id") is None

@@ -492,6 +492,9 @@ def test_tmux_create_window_uses_requested_window_for_new_session(monkeypatch, t
             ["move-window", "-r", "-t", "freshfleet"],
         ):
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        # set-environment scrub/set calls added by the session-env isolation fix
+        if args[:3] == ["set-environment", "-t", "freshfleet"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         raise AssertionError(args)
 
     monkeypatch.setattr(tmux, "_run_tmux", fake_run)
@@ -508,25 +511,32 @@ def test_tmux_create_window_uses_requested_window_for_new_session(monkeypatch, t
     assert result["ok"] is True
     assert result["target"] == "freshfleet:worker"
     assert result["pane_id"] == "%77"
-    assert calls == [
-        [
-            "new-session",
-            "-d",
-            "-s",
-            "freshfleet",
-            "-n",
-            "worker",
-            "-e",
-            "AURA_SEAT=worker",
-            "-c",
-            str(tmp_path),
-            "env -u NO_COLOR AURA_SEAT=worker printf ready",
-        ],
-        ["set-option", "-t", "freshfleet", "base-index", "1"],
-        ["set-window-option", "-t", "freshfleet", "pane-base-index", "1"],
-        ["set-option", "-t", "freshfleet", "renumber-windows", "on"],
-        ["move-window", "-r", "-t", "freshfleet"],
+    # Verify the new-session call is present and correct.
+    assert calls[0] == [
+        "new-session",
+        "-d",
+        "-s",
+        "freshfleet",
+        "-n",
+        "worker",
+        "-e",
+        "AURA_SEAT=worker",
+        "-c",
+        str(tmp_path),
+        "env -u NO_COLOR AURA_SEAT=worker printf ready",
     ]
+    # _apply_index_defaults follows immediately after new-session.
+    assert ["set-option", "-t", "freshfleet", "base-index", "1"] in calls
+    assert ["set-window-option", "-t", "freshfleet", "pane-base-index", "1"] in calls
+    assert ["set-option", "-t", "freshfleet", "renumber-windows", "on"] in calls
+    assert ["move-window", "-r", "-t", "freshfleet"] in calls
+    # Session-env isolation: unset_env key must be scrubbed from the session env.
+    assert ["set-environment", "-t", "freshfleet", "-u", "NO_COLOR"] in calls
+    # AURA_SEAT is not a body-home key so no set-environment KEY=VAL call for it.
+    assert not any(
+        c[:4] == ["set-environment", "-t", "freshfleet"] and len(c) == 5 and c[3] == "AURA_SEAT"
+        for c in calls
+    )
 
 
 def test_tmux_create_window_index_defaults_can_be_disabled(monkeypatch, tmp_path):
@@ -591,6 +601,315 @@ def test_tmux_create_window_retries_new_window_on_duplicate_session(monkeypatch,
         ["move-window", "-r", "-t", "racefleet"],
         ["new-window", "-t", "racefleet", "-n", "worker-b", "-d", "-c", str(tmp_path), "sleep 60"],
     ]
+
+
+def test_tmux_create_window_scrubs_session_env_on_duplicate_session_race(monkeypatch, tmp_path):
+    """Duplicate-session race path must still scrub/set the session env when env/unset_env are present."""
+    from lib import tmux
+
+    calls = []
+    monkeypatch.setattr(tmux, "TMUX_SESSION", "racefleet")
+    monkeypatch.setattr(tmux, "_session", lambda: None)
+    monkeypatch.setattr(tmux, "pane_id", lambda name: "%78")
+
+    def fake_run(args):
+        calls.append(args)
+        if args[:6] == ["new-session", "-d", "-s", "racefleet", "-n", "race-seat"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="duplicate session: racefleet")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tmux, "_run_tmux", fake_run)
+
+    result = tmux.create_window(
+        "race-seat", str(tmp_path), detached=True, command="codex",
+        env={"CODEX_HOME": "/seat/home"}, unset_env=["CODEX_HOME", "OMX_ROOT"],
+    )
+
+    assert result["ok"] is True
+    set_env_calls = [c for c in calls if c[:3] == ["set-environment", "-t", "racefleet"]]
+    assert ["set-environment", "-t", "racefleet", "-u", "CODEX_HOME"] in set_env_calls
+    assert ["set-environment", "-t", "racefleet", "-u", "OMX_ROOT"] in set_env_calls
+    assert ["set-environment", "-t", "racefleet", "CODEX_HOME", "/seat/home"] in set_env_calls
+    # the scrub must run before the new window is created in the raced session
+    new_window_idx = next(i for i, c in enumerate(calls) if c[:3] == ["new-window", "-t", "racefleet"])
+    last_scrub_idx = max(i for i, c in enumerate(calls) if c[:3] == ["set-environment", "-t", "racefleet"])
+    assert last_scrub_idx < new_window_idx
+
+
+def test_tmux_create_window_scrubs_session_env_for_unset_keys(monkeypatch, tmp_path):
+    """Session env isolation: set-environment -u is issued for every unset_env key
+    so runtime-created child panes don't inherit stale identity from the spawner."""
+    from lib import tmux
+
+    calls = []
+    unset_keys = ["CODEX_HOME", "AURA_AGENT_PACKAGE_ID", "NO_COLOR"]
+
+    monkeypatch.setattr(tmux, "TMUX_SESSION", "isofleet")
+    monkeypatch.setattr(tmux, "_session", lambda: None)
+    monkeypatch.setattr(tmux, "pane_id", lambda name: "%88" if name == "iso-seat" else None)
+
+    def fake_run(args):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tmux, "_run_tmux", fake_run)
+
+    result = tmux.create_window(
+        "iso-seat",
+        str(tmp_path),
+        detached=True,
+        command="codex",
+        env={"AURA_SEAT": "iso-seat", "CODEX_HOME": "/state/codex-home"},
+        unset_env=unset_keys,
+    )
+
+    assert result["ok"] is True
+
+    set_env_calls = [c for c in calls if c[:3] == ["set-environment", "-t", "isofleet"]]
+
+    # Every key in unset_env must be scrubbed from the session environment.
+    for key in unset_keys:
+        assert ["set-environment", "-t", "isofleet", "-u", key] in set_env_calls, (
+            f"expected set-environment -u {key} but got: {set_env_calls}"
+        )
+
+    # CODEX_HOME is present in env and is a body-home key: must be SET on session.
+    assert ["set-environment", "-t", "isofleet", "CODEX_HOME", "/state/codex-home"] in set_env_calls
+
+    # Non-body-home env key (AURA_SEAT) must NOT be written to session env via set-environment.
+    assert not any(
+        c == ["set-environment", "-t", "isofleet", "AURA_SEAT", "iso-seat"]
+        for c in set_env_calls
+    )
+
+
+def test_tmux_create_window_scrubs_session_env_for_existing_session(monkeypatch, tmp_path):
+    """When the tmux session already exists (new-window path), the session env
+    is still scrubbed before creating the new window."""
+    from lib import tmux
+
+    calls = []
+
+    monkeypatch.setattr(tmux, "TMUX_SESSION", "livefleet")
+    monkeypatch.setattr(tmux, "_session", lambda: True)  # session already exists
+    monkeypatch.setattr(tmux, "pane_id", lambda name: "%89" if name == "late-seat" else None)
+
+    def fake_run(args):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tmux, "_run_tmux", fake_run)
+
+    result = tmux.create_window(
+        "late-seat",
+        str(tmp_path),
+        detached=True,
+        command="omx --direct --madmax",
+        env={"OMX_ROOT": "/state/omx-root", "OMX_TEAM_STATE_ROOT": "/state/omx-state"},
+        unset_env=["OMX_ROOT", "OMX_TEAM_STATE_ROOT", "CODEX_HOME"],
+    )
+
+    assert result["ok"] is True
+
+    set_env_calls = [c for c in calls if c[:3] == ["set-environment", "-t", "livefleet"]]
+
+    # Unset keys scrubbed from session.
+    assert ["set-environment", "-t", "livefleet", "-u", "OMX_ROOT"] in set_env_calls
+    assert ["set-environment", "-t", "livefleet", "-u", "OMX_TEAM_STATE_ROOT"] in set_env_calls
+    assert ["set-environment", "-t", "livefleet", "-u", "CODEX_HOME"] in set_env_calls
+
+    # Body-home keys in env set on session with correct values.
+    assert ["set-environment", "-t", "livefleet", "OMX_ROOT", "/state/omx-root"] in set_env_calls
+    assert ["set-environment", "-t", "livefleet", "OMX_TEAM_STATE_ROOT", "/state/omx-state"] in set_env_calls
+
+    # CODEX_HOME is not in env so no positive set for it.
+    assert not any(
+        c == ["set-environment", "-t", "livefleet", "CODEX_HOME", str]
+        for c in set_env_calls
+    )
+
+    # new-window must have been issued (existing-session path).
+    assert any(c[:3] == ["new-window", "-t", "livefleet"] for c in calls)
+
+
+def test_tmux_create_window_no_env_does_not_scrub_session(monkeypatch, tmp_path):
+    """Legacy path: when neither env nor unset_env is given, no set-environment
+    calls are emitted so untouched sessions are unaffected."""
+    from lib import tmux
+
+    calls = []
+
+    monkeypatch.setenv("AURA_TMUX_INDEX_DEFAULTS", "0")
+    monkeypatch.setattr(tmux, "TMUX_SESSION", "legacyfleet")
+    monkeypatch.setattr(tmux, "_session", lambda: None)
+    monkeypatch.setattr(tmux, "pane_id", lambda name: "%90")
+
+    def fake_run(args):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tmux, "_run_tmux", fake_run)
+
+    result = tmux.create_window("plain-seat", str(tmp_path), command="bash")
+
+    assert result["ok"] is True
+    set_env_calls = [c for c in calls if c[0] == "set-environment"]
+    assert set_env_calls == [], f"unexpected set-environment calls on no-env path: {set_env_calls}"
+
+
+def test_spawn_runtime_session_env_scrub_covers_full_unset_list(monkeypatch, tmp_path):
+    """Integration: spawn._spawn_terminal_runtime passes the full unset_env list
+    to create_window, which in turn scrubs all of them from the tmux session env,
+    including the identity/home leak keys."""
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_FLEET", "isofleet")
+    monkeypatch.setenv("AURA_TMUX_INDEX_DEFAULTS", "0")
+
+    from commands import spawn
+    from lib import tmux as tmux_lib
+
+    tmux_calls = []
+    original_run_tmux = tmux_lib._run_tmux
+
+    def capturing_run_tmux(args):
+        tmux_calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tmux_lib, "TMUX_SESSION", "isofleet")
+    monkeypatch.setattr(tmux_lib, "_session", lambda: None)
+    monkeypatch.setattr(tmux_lib, "pane_id", lambda name: "%91")
+    monkeypatch.setattr(tmux_lib, "_run_tmux", capturing_run_tmux)
+
+    class FakeTerminal:
+        SESSION_NAME = "isofleet"
+        BACKEND_NAME = "tmux"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            # Delegate to the real tmux.create_window so we exercise the full path.
+            return tmux_lib.create_window(name, workdir, detached=detached, command=command, env=env, unset_env=unset_env)
+
+        @staticmethod
+        def send_text(name, text, submit=True, submit_key="Enter"):
+            return {"ok": True}
+
+        @staticmethod
+        def window_exists(name):
+            return False
+
+    args = argparse.Namespace(
+        name="iso-worker",
+        runtime="codex",
+        launch_command="codex",
+        profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(tmp_path),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+
+    set_env_calls = [c for c in tmux_calls if c[:3] == ["set-environment", "-t", "isofleet"]]
+
+    # All identity / runtime-home keys that spawn passes in unset_env must be scrubbed.
+    expected_scrubbed = [
+        "CODEX_HOME",
+        "AURA_AGENT_PACKAGE_ID",
+        "AURA_AGENT_PACKAGE_ROOT",
+        "AURA_AGENT_PACKAGE_ADDRESS",
+        "AURA_AGENT_PACKAGE_ALIAS",
+        "AURA_RUNTIME_CAPSULE_REF",
+        "OMX_ROOT",
+        "OMX_TEAM_STATE_ROOT",
+        "NO_COLOR",
+        "AURA_RUNTIME_SESSION_ID",
+        "AURA_SESSION_ID",
+        "CODEX_THREAD_ID",
+        "CODEX_CI",
+        "CLAUDE_SESSION_ID",
+    ]
+    for key in expected_scrubbed:
+        assert ["set-environment", "-t", "isofleet", "-u", key] in set_env_calls, (
+            f"expected session-env unset for {key}"
+        )
+
+
+def test_spawn_runtime_session_env_sets_body_home_on_session(monkeypatch, tmp_path):
+    """Integration: when spawn sets CODEX_HOME / OMX_ROOT / OMX_TEAM_STATE_ROOT in
+    launch_env, create_window propagates them to the tmux session env so runtime-
+    created child panes inherit the correct body home."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "agents.json"))
+    monkeypatch.setenv("AURA_FLEET", "bodyfleet")
+    monkeypatch.setenv("AURA_TMUX_INDEX_DEFAULTS", "0")
+    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
+
+    from commands import spawn
+    from lib import tmux as tmux_lib
+
+    tmux_calls = []
+
+    def capturing_run_tmux(args):
+        tmux_calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tmux_lib, "TMUX_SESSION", "bodyfleet")
+    monkeypatch.setattr(tmux_lib, "_session", lambda: None)
+    monkeypatch.setattr(tmux_lib, "pane_id", lambda name: "%92")
+    monkeypatch.setattr(tmux_lib, "_run_tmux", capturing_run_tmux)
+
+    unit = tmp_path / "project"
+    unit.mkdir()
+
+    class FakeTerminal:
+        SESSION_NAME = "bodyfleet"
+        BACKEND_NAME = "tmux"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            return tmux_lib.create_window(name, workdir, detached=detached, command=command, env=env, unset_env=unset_env)
+
+    args = argparse.Namespace(
+        name="omx-body-seat",
+        runtime="omx",
+        resume_session=None,
+        launch_command=None,
+        profile=None,
+        omx_profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(unit),
+        context=None,
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True
+
+    set_env_calls = [c for c in tmux_calls if c[:3] == ["set-environment", "-t", "bodyfleet"]]
+
+    # The OMX box sets OMX_ROOT, OMX_TEAM_STATE_ROOT, and CODEX_HOME in launch_env.
+    # All three must be forwarded to the tmux session env.
+    body_home_keys_set = {
+        c[3]: c[4]
+        for c in set_env_calls
+        if len(c) == 5 and c[3] in ("CODEX_HOME", "OMX_ROOT", "OMX_TEAM_STATE_ROOT")
+    }
+    assert "CODEX_HOME" in body_home_keys_set, f"CODEX_HOME not set on session env; set_env_calls={set_env_calls}"
+    assert "OMX_ROOT" in body_home_keys_set, f"OMX_ROOT not set on session env"
+    assert "OMX_TEAM_STATE_ROOT" in body_home_keys_set, f"OMX_TEAM_STATE_ROOT not set on session env"
+
+    # Values must match what spawn computed (omx box roots under state dir).
+    assert body_home_keys_set["CODEX_HOME"].startswith(str(tmp_path / "state" / "runtime-homes"))
+    assert body_home_keys_set["OMX_ROOT"].startswith(str(tmp_path / "state" / "runtime-homes"))
 
 
 def test_spawn_run_does_not_precreate_tmux_session(monkeypatch, tmp_path):
@@ -659,6 +978,14 @@ def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, 
                 "CODEX_THREAD_ID",
                 "CODEX_CI",
                 "CLAUDE_SESSION_ID",
+                "CODEX_HOME",
+                "AURA_AGENT_PACKAGE_ID",
+                "AURA_AGENT_PACKAGE_ROOT",
+                "AURA_AGENT_PACKAGE_ADDRESS",
+                "AURA_AGENT_PACKAGE_ALIAS",
+                "AURA_RUNTIME_CAPSULE_REF",
+                "OMX_ROOT",
+                "OMX_TEAM_STATE_ROOT",
             ]
             return {"ok": True}
 
@@ -788,8 +1115,17 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
         "CODEX_THREAD_ID",
         "CODEX_CI",
         "CLAUDE_SESSION_ID",
+        "CODEX_HOME",
+        "AURA_AGENT_PACKAGE_ID",
+        "AURA_AGENT_PACKAGE_ROOT",
+        "AURA_AGENT_PACKAGE_ADDRESS",
+        "AURA_AGENT_PACKAGE_ALIAS",
+        "AURA_RUNTIME_CAPSULE_REF",
+        "OMX_ROOT",
+        "OMX_TEAM_STATE_ROOT",
     ]
-    assert sent[0][1] == "Do the unit work.\n"
+    assert "Do the unit work." in sent[0][1]
+    assert "launch=aura-launch-" in sent[0][1]
     assert result["prompt_delivery"]["submitted"] is True
     assert "agent_map_included" not in result["prompt_delivery"]
     assert result["context_file"] == str(context_file)
@@ -811,6 +1147,118 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
     assert json.loads(workspace_state.latest_session_path(unit).read_text(encoding="utf-8"))["seat"] == "codex-seat"
     assert not (unit / ".aura" / "state").exists()
     assert not (unit / ".aura").exists()
+
+
+def test_resolve_package_env_sets_codex_home_for_codex_package(tmp_path):
+    from commands import spawn
+
+    root = tmp_path / "i_scout"
+    env, meta = spawn._resolve_package_env(
+        {"root": str(root), "env": {"CODEX_HOME": ".codex"}},
+        "codex",
+    )
+    assert env["CODEX_HOME"] == str((root / ".codex").resolve())
+    assert meta == {}
+
+
+def test_resolve_package_env_sets_omx_roots_for_omx_package(tmp_path):
+    from commands import spawn
+
+    root = tmp_path / "i_omx"
+    env, _meta = spawn._resolve_package_env(
+        {
+            "root": str(root),
+            "env": {
+                "CODEX_HOME": ".codex",
+                "OMX_ROOT": ".",
+                "OMX_TEAM_STATE_ROOT": ".omx/state",
+            },
+        },
+        "omx",
+    )
+    assert env["CODEX_HOME"] == str((root / ".codex").resolve())
+    assert env["OMX_ROOT"] == str(root.resolve())
+    assert env["OMX_TEAM_STATE_ROOT"] == str((root / ".omx" / "state").resolve())
+
+
+def test_codex_package_spawn_sets_own_codex_home_over_contaminated_parent(monkeypatch, tmp_path):
+    # Regression: a non-boxed codex package spawn must wire its OWN CODEX_HOME and
+    # never inherit the spawner's (the factory-v2 fleet contamination class, where a
+    # manager seat spawned a crew and every child read the manager's package body).
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_FLEET", "unitfleet")
+    monkeypatch.setenv("AURA_CODEX_STARTUP_READY_TIMEOUT", "0")
+    # Contaminated parent environment (manager body) inherited by the spawn process.
+    manager_root = tmp_path / "i_manager"
+    monkeypatch.setenv("CODEX_HOME", str(manager_root / ".codex"))
+    monkeypatch.setenv("AURA_AGENT_PACKAGE_ID", "i_manager")
+    monkeypatch.setenv("AURA_AGENT_PACKAGE_ROOT", str(manager_root))
+
+    from commands import spawn
+
+    pkg_root = tmp_path / "i_scout"
+    (pkg_root / ".codex").mkdir(parents=True)
+
+    created = []
+
+    class FakeTerminal:
+        SESSION_NAME = "unitfleet"
+        BACKEND_NAME = "tmux"
+
+        @staticmethod
+        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
+            created.append((env, unset_env))
+            return {"ok": True}
+
+        @staticmethod
+        def send_text(name, text, submit=True, submit_key="Enter"):
+            return {"ok": True, "target": f"unitfleet:{name}", "text": text}
+
+    args = argparse.Namespace(
+        name="scout",
+        runtime="codex",
+        launch_command="printf ready",
+        profile=None,
+        runtime_profile=None,
+        boxed=False,
+        omx_profile=None,
+        model=None,
+        as_pane=True,
+        prompt=None,
+        work=None,
+        cwd=str(tmp_path),
+        context=None,
+        _agent_package={
+            "agent_id": "i_scout",
+            "address": None,
+            "alias": "shopify-scout",
+            "root": str(pkg_root),
+            "runtime": "codex",
+            "argv": None,
+            "env": {"CODEX_HOME": ".codex"},
+        },
+    )
+
+    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
+
+    assert result["ok"] is True, result
+    assert len(created) == 1
+    env, unset_env = created[0]
+    # Own home wins, not the inherited manager home.
+    assert env["CODEX_HOME"] == str((pkg_root / ".codex").resolve())
+    assert env["AURA_AGENT_PACKAGE_ROOT"] == str(pkg_root)
+    assert env["AURA_AGENT_PACKAGE_ID"] == "i_scout"
+    # Backstop: inherited identity/home vars are scrubbed so an unset can never leak.
+    for key in (
+        "CODEX_HOME",
+        "AURA_AGENT_PACKAGE_ID",
+        "AURA_AGENT_PACKAGE_ROOT",
+        "AURA_RUNTIME_CAPSULE_REF",
+        "OMX_ROOT",
+        "OMX_TEAM_STATE_ROOT",
+    ):
+        assert key in unset_env
 
 
 def test_spawn_non_codex_does_not_claim_agent_map_injected(monkeypatch, tmp_path):
@@ -1871,6 +2319,9 @@ def test_spawn_sets_flex_project_env_without_launch_packet(monkeypatch, tmp_path
     text = sent[0][1]
     assert "[FLEX PROJECT RETRIEVAL]" not in text
     assert text.endswith("Begin.")
+    # The augmented prompt must carry the nonce marker so the Codex session can
+    # be auto-bound via _codex_session_from_nonce after spawn.
+    assert "launch=aura-launch-" in text
     assert "flex_project_packet_delivered" not in result
 
 
@@ -3208,3 +3659,81 @@ def test_spawn_fleet_flag_controls_physical_tmux_session(tmp_path):
         subprocess.run(["tmux", "kill-session", "-t", fleet], capture_output=True, text=True)
         # Regression guard cleanup: the old bug placed --fleet windows in aura.
         subprocess.run(["tmux", "kill-window", "-t", f"aura:{name}"], capture_output=True, text=True)
+
+
+# ---------------------------------------------------------------------------
+# Safety fix: _tmux_target / kill_window / exact-match tests
+# ---------------------------------------------------------------------------
+
+def test_tmux_target_pane_ref_returned_unchanged():
+    """Pane-id refs must pass through _tmux_target without an = prefix."""
+    from lib.tmux import _tmux_target
+    assert _tmux_target("tmux:fleet:%5") == "%5"
+    assert _tmux_target("fleet:%5") == "%5"
+    assert _tmux_target("%99") == "%99"
+
+
+def test_tmux_target_name_ref_gets_exact_prefix():
+    """Name-based targets must get a leading = so tmux uses exact matching."""
+    from lib.tmux import _tmux_target
+    assert _tmux_target("fleet:seat") == "=fleet:seat"
+    assert _tmux_target("tmux:myfleet:engineer") == "=myfleet:engineer"
+
+
+def test_kill_window_pane_ref_refused_on_fleet_mismatch(monkeypatch):
+    """kill_window must refuse to kill a pane whose session != the recorded fleet."""
+    from lib import tmux
+
+    killed = []
+
+    def fake_run(args):
+        if args[:4] == ["display-message", "-p", "-t", "%7"]:
+            # Pane %7 is actually in fleet-v2, not fleet.
+            return subprocess.CompletedProcess(args, 0, stdout="fleet-v2\n", stderr="")
+        killed.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tmux, "_run_tmux", fake_run)
+
+    tmux.kill_window("fleet:%7")
+
+    assert killed == [], f"Expected no kill but got: {killed}"
+
+
+def test_kill_window_pane_ref_kills_when_fleet_matches(monkeypatch):
+    """kill_window proceeds with kill-pane when the pane belongs to the correct fleet."""
+    from lib import tmux
+
+    killed = []
+
+    def fake_run(args):
+        if args[:4] == ["display-message", "-p", "-t", "%7"]:
+            return subprocess.CompletedProcess(args, 0, stdout="fleet\n", stderr="")
+        killed.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tmux, "_run_tmux", fake_run)
+
+    tmux.kill_window("fleet:%7")
+
+    assert killed == [["kill-pane", "-t", "%7"]]
+
+
+def test_kill_window_name_target_uses_exact_prefix(monkeypatch):
+    """kill_window name path must pass =fleet:seat to tmux, not a bare fleet:seat."""
+    from lib import tmux
+
+    killed = []
+
+    def fake_run(args):
+        if args[:3] == ["list-windows", "-t", "myfleet"]:
+            return subprocess.CompletedProcess(args, 0, stdout="engineer\n", stderr="")
+        killed.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tmux, "_run_tmux", fake_run)
+
+    tmux.kill_window("myfleet:engineer")
+
+    assert len(killed) == 1
+    assert killed[0] == ["kill-window", "-t", "=myfleet:engineer"]

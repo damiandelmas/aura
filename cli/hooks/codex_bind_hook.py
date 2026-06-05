@@ -91,6 +91,40 @@ def _log_path() -> Path | None:
     return root_path / "receipts" / "codex-bind-hook.jsonl"
 
 
+def _codex_home() -> Path | None:
+    raw = _first_string(os.environ.get("CODEX_HOME"))
+    if not raw:
+        return None
+    return Path(raw).expanduser()
+
+
+def _package_root_from_env() -> Path | None:
+    raw = _first_string(os.environ.get("AURA_AGENT_PACKAGE_ROOT"), os.environ.get("AURA_RUNTIME_CAPSULE_REF"))
+    if not raw:
+        return None
+    root = Path(raw).expanduser()
+    return root if _is_package_agent_root(root) else None
+
+
+def _is_keeper_worker() -> bool:
+    return os.environ.get("AURA_KEEPER_WORKER") in {"1", "true", "TRUE", "yes", "YES"}
+
+
+def _codex_home_matches_package_root() -> bool:
+    # In-body integrity check using this agent's own frozen process env. Delegates
+    # to the canonical bind_guard.package_env_status so the hook shares one
+    # body-integrity definition with every other bind writer (the same veto the
+    # gated registry writer applies). Refuse to let a contaminated agent
+    # (CODEX_HOME / capsule ref pointing at another body) bind as if healthy.
+    try:
+        from lib import bind_guard
+
+        status = bind_guard.package_env_status(dict(os.environ), None)
+        return status.get("status") != "mismatch"
+    except Exception:
+        return True
+
+
 def _append_log(entry: dict) -> None:
     path = _log_path()
     if not path:
@@ -117,6 +151,18 @@ def main() -> int:
     target = _target()
     event = _hook_event(payload)
     if event != "SessionStart":
+        return 0
+    if _is_keeper_worker():
+        _append_log({"ok": False, "reason": "keeper-worker", "event": event})
+        return 0
+    if not _codex_home_matches_package_root():
+        _append_log({
+            "ok": False,
+            "reason": "codex-home-package-root-mismatch",
+            "event": event,
+            "codex_home": str(_codex_home()),
+            "package_root": str(_package_root_from_env()),
+        })
         return 0
     if not session_id or not target:
         _append_log({

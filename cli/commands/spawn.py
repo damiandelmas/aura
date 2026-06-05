@@ -1,5 +1,6 @@
 """Spawn new agent."""
 
+import json
 import os
 import shlex
 import subprocess
@@ -67,9 +68,82 @@ def _infer_fleet_from_caller():
     return None
 
 
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _codex_session_file(session_id: str | None) -> Path | None:
+    if not session_id:
+        return None
+    codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    sessions_root = codex_home / "sessions"
+    if not sessions_root.is_dir():
+        return None
+    matches = []
+    for path in sessions_root.rglob(f"*{session_id}.jsonl"):
+        try:
+            matches.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    matches.sort(key=lambda item: item[0], reverse=True)
+    return matches[0][1] if matches else None
+
+
+def _current_codex_native_subagent() -> dict | None:
+    session_id = (
+        os.environ.get("CODEX_THREAD_ID")
+        or os.environ.get("AURA_RUNTIME_SESSION_ID")
+        or os.environ.get("AURA_SESSION_ID")
+    )
+    path = _codex_session_file(session_id)
+    if not path:
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for _ in range(20):
+                line = handle.readline()
+                if not line:
+                    break
+                row = json.loads(line)
+                if row.get("type") != "session_meta":
+                    continue
+                payload = row.get("payload") or {}
+                source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+                if payload.get("thread_source") == "subagent" or source.get("subagent"):
+                    return {"session_id": session_id, "session_path": str(path)}
+                return None
+    except Exception:
+        return None
+    return None
+
+
+def _native_subagent_spawn_refusal(args) -> dict | None:
+    if getattr(args, "allow_native_subagent_spawn", False) or _truthy_env("AURA_ALLOW_NATIVE_SUBAGENT_SPAWN"):
+        return None
+    evidence = _current_codex_native_subagent()
+    if not evidence:
+        return None
+    return {
+        "ok": False,
+        "error": "native-subagent-aura-spawn-refused",
+        "detail": (
+            "This process is a Codex native child agent. Use Codex native subagents for child-agent work; "
+            "use aura spawn only from an Aura leader or with --allow-native-subagent-spawn / "
+            "AURA_ALLOW_NATIVE_SUBAGENT_SPAWN=1 when a full Aura seat is explicitly intended."
+        ),
+        "name": getattr(args, "name", None),
+        "codex_session_id": evidence.get("session_id"),
+        "codex_session_path": evidence.get("session_path"),
+    }
+
+
 def _resolve_package_env(agent_package: dict, runtime: str) -> tuple[dict[str, str], dict[str, str]]:
-    if runtime in {"codex", "omx"}:
-        return {}, {}
+    # A package agent always owns its own runtime home. Resolve the manifest env
+    # (e.g. codex CODEX_HOME=.codex, omx OMX_ROOT/OMX_TEAM_STATE_ROOT) against the
+    # package root for every runtime, so the home is set independently of whether a
+    # box/profile launch path also runs. Previously codex/omx returned {} here and
+    # relied solely on the box path; a non-boxed codex package spawn then left
+    # CODEX_HOME unset and inherited it from the spawning process, mixing profiles.
     root = agent_package.get("root")
     env = agent_package.get("env")
     if not root or not isinstance(env, dict):
@@ -102,6 +176,10 @@ def run(args):
 
     if getattr(args, 'prompt', None) and getattr(args, 'work', None):
         return {"ok": False, "error": "use either --prompt or --work, not both"}
+
+    refusal = _native_subagent_spawn_refusal(args)
+    if refusal:
+        return refusal
 
     # Determine fleet name BEFORE importing terminal (it reads env at import time)
     # Priority: --fleet flag > caller-derived default.
@@ -349,6 +427,10 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
 
     if getattr(args, 'prompt', None) and getattr(args, 'work', None):
         return result_fn({"ok": False, "error": "use either --prompt or --work, not both", "name": args.name})
+
+    refusal = _native_subagent_spawn_refusal(args)
+    if refusal:
+        return result_fn(refusal)
 
     requested_runtime = getattr(args, 'runtime', None)
     if not requested_runtime and getattr(args, 'launch_command', None):
@@ -723,6 +805,19 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 "CODEX_THREAD_ID",
                 "CODEX_CI",
                 "CLAUDE_SESSION_ID",
+                # Spawner identity / runtime-home leakage guard. launch_env explicitly
+                # re-sets the right values (env sets win over `env -u` in the launch
+                # prefix), so scrubbing here only removes an INHERITED value when this
+                # spawn did not set its own — preventing a parent package's body from
+                # bleeding into a child seat.
+                "CODEX_HOME",
+                "AURA_AGENT_PACKAGE_ID",
+                "AURA_AGENT_PACKAGE_ROOT",
+                "AURA_AGENT_PACKAGE_ADDRESS",
+                "AURA_AGENT_PACKAGE_ALIAS",
+                "AURA_RUNTIME_CAPSULE_REF",
+                "OMX_ROOT",
+                "OMX_TEAM_STATE_ROOT",
             ],
         )
     except TypeError:
@@ -745,20 +840,27 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             process_meta = {}
     session_meta = {}
     if resume_session:
+        # Register the seat UNBOUND so that body_gates can vet the record before
+        # a real session id is written.  The actual bind (with the veto) happens
+        # below via _bind_registry_session, mirroring the nonce path.
         session_meta = {
-            "session_id": resume_session,
-            "runtime_session_id": resume_session,
-            "runtime_session_source": "spawn:resume-session",
-            "runtime_session_binding": "bound",
-            "runtime_session_bind_method": "spawn-resume-session",
-            "runtime_session_bind_source": "spawn:resume-session",
-            "runtime_session_confidence": "exact",
-            "runtime_session_evidence": {
-                "reason": "aura-spawn-resume-session",
-                "resume_session": resume_session,
-            },
+            "session_id": None,
+            "runtime_session_id": None,
+            "runtime_session_source": None,
+            "runtime_session_binding": "unbound",
+            "runtime_session_bind_method": None,
+            "runtime_session_bind_source": None,
+            "runtime_session_confidence": None,
+            "runtime_session_evidence": None,
+            "runtime_session_env": None,
+            "runtime_session_cwd": None,
+            "runtime_session_created_at_ms": None,
+            "runtime_session_updated_at_ms": None,
+            "runtime_session_pid": None,
         }
     elif fork_session:
+        # Fork writes no real (bound) session id — the child binds later via its
+        # own observe/hook path — so no body-gate veto is needed here.
         session_meta = {
             "session_id": None,
             "runtime_session_id": None,
@@ -851,6 +953,52 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             registered = stored
         except Exception:
             pass
+
+    # --- Gated resume-session bind (mirrors the nonce path in _observe_spawn_session) ---
+    # The initial upsert above registered the seat as UNBOUND so body_gates could
+    # vet the record.  Now route the real session id through _bind_registry_session,
+    # which applies the body-integrity veto before writing "bound" into the registry.
+    resume_bind = None
+    if resume_session:
+        from commands import sessions as sessions_cmd
+
+        bound = sessions_cmd._bind_registry_session(
+            fleet=fleet,
+            seat=args.name,
+            previous=registered,
+            session_id=resume_session,
+            source="spawn:resume-session",
+            confidence="exact",
+            evidence={
+                "reason": "aura-spawn-resume-session",
+                "resume_session": resume_session,
+                "bound_after_spawn": True,
+            },
+            cwd=workdir,
+            event="session_bound_resume",
+            env=None,  # spawner-side: record-internal veto only (never os.environ)
+        )
+        if bound.get("ok"):
+            # Re-fetch the now-bound row so the rest of the spawn flow sees it.
+            registered = registry.get_agent(args.name, fleet=fleet) or registered
+            session_meta = {
+                "session_id": resume_session,
+                "runtime_session_id": resume_session,
+                "runtime_session_source": "spawn:resume-session",
+                "runtime_session_binding": "bound",
+                "runtime_session_bind_method": bound.get("runtime_session_bind_method"),
+                "runtime_session_bind_source": "spawn:resume-session",
+                "runtime_session_confidence": "exact",
+                "runtime_session_evidence": bound.get("runtime_session_evidence") or {
+                    "reason": "aura-spawn-resume-session",
+                    "resume_session": resume_session,
+                    "bound_after_spawn": True,
+                },
+            }
+        else:
+            # Body-gate refused — the terminal launched but the seat stays unbound.
+            # Preserve the refusal for the caller; do not claim a bound session.
+            resume_bind = bound
 
     capsule_launch = {}
     if not agent_package:
@@ -955,6 +1103,10 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         **process_meta,
         **session_meta,
     }
+    # Surface body-gate refusal when --resume-session was refused (terminal still
+    # launched; seat stays unbound; caller can inspect result["resume_bind"]).
+    if resume_bind is not None:
+        result["resume_bind"] = resume_bind
 
     prompt_target = pane_ref or launch.get("target") or args.name
     observation_session = session_meta
@@ -1423,10 +1575,13 @@ def _augment_runtime_prompt(
     launch_id: str,
     flex_packet: str | None = None,
 ) -> str:
-    del fleet, seat, launch_id
+    # For codex/omx the first line embeds the launch_id nonce that
+    # sessions._codex_session_from_nonce greps for in the Codex JSONL.
+    # Removing this nonce (regression in 443b47c) caused fresh codex/omx
+    # spawns to find no session evidence and never auto-bind.
     if runtime not in {"codex", "omx"}:
         return prompt_text
-    lines = []
+    lines = [f"[aura-seat fleet={fleet} seat={seat} launch={launch_id}]", ""]
     if flex_packet:
         lines.extend([flex_packet, ""])
     lines.append(prompt_text)
@@ -1583,7 +1738,16 @@ def _retry_codex_prompt_submit(*, terminal, target: str, seat: str, launch_id: s
                 capture = terminal.capture_output(target, 160) or []
             except Exception:
                 capture = []
-        prompt_prefix = str(prompt_text or "").splitlines()[0][:80]
+        # `prompt_text` here is the augmented prompt whose first line is the
+        # `[aura-seat ... launch=...]` nonce marker — never visible in the Codex
+        # TUI composer.  Strip any leading nonce-marker lines so we check for
+        # the first line of the ORIGINAL user prompt instead.
+        _pt_lines = str(prompt_text or "").splitlines()
+        _pt_lines = [l for l in _pt_lines if not l.startswith("[aura-seat ")]
+        # drop any blank lines that were separating the nonce header from the body
+        while _pt_lines and not _pt_lines[0].strip():
+            _pt_lines = _pt_lines[1:]
+        prompt_prefix = (_pt_lines[0] if _pt_lines else "")[:80]
         prompt_visible = bool(prompt_prefix) and any(
             line.strip().startswith(("› ", "❯ ")) and prompt_prefix in line
             for line in (str(raw) for raw in capture)

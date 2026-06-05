@@ -8,6 +8,8 @@ import re
 import sqlite3
 import subprocess
 
+from lib.bind_guard import AURA_OWNED_SESSION_ENVS
+
 
 RUNTIME_SESSION_ENV = {
     "codex": ("CODEX_THREAD_ID",),
@@ -38,6 +40,8 @@ def binding_method_for_source(source: str | None) -> str | None:
         return BOUND_SESSION_SOURCES[source]
     if source.startswith("codex-hook:"):
         return "codex-hook"
+    if source.startswith("tmux-pane:"):
+        return "tmux-pane"
     if source.startswith("env:"):
         return "runtime-env"
     if source == "current-process":
@@ -414,12 +418,12 @@ def _discover_codex_state_thread(
 
 def _session_env_names(runtime: str | None) -> tuple[str, ...]:
     names = RUNTIME_SESSION_ENV.get(runtime or "", ())
-    return ("AURA_RUNTIME_SESSION_ID", "AURA_SESSION_ID", *names)
+    return (*AURA_OWNED_SESSION_ENVS, *names)
 
 
 def _current_process_session_env_names(runtime: str | None) -> tuple[str, ...]:
     names = RUNTIME_SESSION_ENV.get(runtime or "", ())
-    return (*names, "AURA_RUNTIME_SESSION_ID", "AURA_SESSION_ID")
+    return (*names, *AURA_OWNED_SESSION_ENVS)
 
 
 def _discover_codex_runtime_argv(pid: int) -> dict:
