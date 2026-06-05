@@ -27,8 +27,8 @@ def test_agent_create_writes_minimal_package(monkeypatch, tmp_path):
 
     result = agent_packages.create(
         address="flexgraph:chatbot:pipeline:conductor",
-        runtime="omx",
-        profile="omx/aura-operator",
+        runtime="codex",
+        profile="codex/aura-operator",
         cwd=str(tmp_path / "unit"),
         fleet="flexgraph-chatbot",
         seat="pipeline",
@@ -41,11 +41,10 @@ def test_agent_create_writes_minimal_package(monkeypatch, tmp_path):
     assert agent["agent_id"].startswith("i_")
     assert "address" not in agent
     assert agent["alias"] == "pipeline-conductor"
-    assert agent["profile"] == "omx/aura-operator"
+    assert agent["profile"] == "codex/aura-operator"
     assert (root / "manifest.json").is_file()
     assert not (root / "agent.json").exists()
     assert (root / ".codex").is_dir()
-    assert (root / ".omx" / "state").is_dir()
     assert not (root / "home").exists()
     assert not (root / ".desks").exists()
     assert not (root / "runtime").exists()
@@ -53,13 +52,13 @@ def test_agent_create_writes_minimal_package(monkeypatch, tmp_path):
     assert not (root / "artifacts").exists()
     body = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     assert body == {
-        "argv": ["omx"],
+        "argv": ["codex"],
         "cwd": str((tmp_path / "unit").resolve()),
-        "env": {"CODEX_HOME": ".codex", "OMX_ROOT": ".", "OMX_TEAM_STATE_ROOT": ".omx/state"},
+        "env": {"CODEX_HOME": ".codex"},
         "fleet": "flexgraph-chatbot",
-        "profile": "omx/aura-operator",
+        "profile": "codex/aura-operator",
         "resume": {"default": "latest"},
-        "runtime": "omx",
+        "runtime": "codex",
         "schema": "aura.agent_manifest.v1",
         "seat": "pipeline",
     }
@@ -176,8 +175,8 @@ def test_agent_clone_preserves_package_body_and_updates_manifest(monkeypatch, tm
 
     source = agent_packages.create(
         address="flexgraph:chatbot:ops:manager",
-        runtime="omx",
-        profile="omx/aura-operator",
+        runtime="codex",
+        profile="codex/aura-operator",
         cwd=str(tmp_path / "source-unit"),
         fleet="flexgraph-chatbot",
         seat="manager",
@@ -186,7 +185,8 @@ def test_agent_clone_preserves_package_body_and_updates_manifest(monkeypatch, tm
     source_root = Path(source["root"])
     (source_root / ".codex" / "skills" / "local-skill").mkdir(parents=True)
     (source_root / ".codex" / "skills" / "local-skill" / "SKILL.md").write_text("skill\n", encoding="utf-8")
-    (source_root / ".omx" / "state" / "runtime.json").write_text('{"ok":true}\n', encoding="utf-8")
+    (source_root / ".codex" / "state").mkdir(parents=True, exist_ok=True)
+    (source_root / ".codex" / "state" / "runtime.json").write_text('{"ok":true}\n', encoding="utf-8")
     (source_root / "aura.json").write_text('{"schema":"aura.agent_history.v1"}\n', encoding="utf-8")
 
     cloned = agent_packages.clone(
@@ -205,7 +205,7 @@ def test_agent_clone_preserves_package_body_and_updates_manifest(monkeypatch, tm
     assert clone_manifest["fleet"] == "flexgraph-clone"
     assert clone_manifest["seat"] == "manager-clone"
     assert (clone_root / ".codex" / "skills" / "local-skill" / "SKILL.md").read_text(encoding="utf-8") == "skill\n"
-    assert (clone_root / ".omx" / "state" / "runtime.json").is_file()
+    assert (clone_root / ".codex" / "state" / "runtime.json").is_file()
     assert (clone_root / "aura.json").is_file()
     assert agent_packages.resolve("ops-manager-clone")["agent_id"] == cloned["agent_id"]
     assert agent_packages.resolve("ops-manager")["agent_id"] == source["agent_id"]
@@ -384,8 +384,8 @@ def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
 
     created = agent_packages.create(
         address="flexgraph:chatbot:pipeline:conductor",
-        runtime="omx",
-        profile="omx/aura-operator",
+        runtime="codex",
+        profile="codex/aura-operator",
         cwd=str(tmp_path / "unit"),
         fleet="flexgraph-chatbot",
         seat="pipeline",
@@ -423,10 +423,9 @@ def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
     )
 
     assert result["ok"] is True
-    assert captured["runtime"] == "omx"
+    assert captured["runtime"] == "codex"
     assert captured["resume_session"] is None
-    assert captured["omx_profile"] is None
-    assert captured["runtime_profile"] == "omx/aura-operator"
+    assert captured["runtime_profile"] == "codex/aura-operator"
     assert captured["identity_provider"] == "aura-agent"
     assert captured["identity_id"] == created["agent"]["agent_id"]
     assert captured["_agent_package"]["root"] == created["agent"]["root"]
@@ -434,59 +433,6 @@ def test_agent_spawn_delegates_package_roots(monkeypatch, tmp_path):
     assert "spawn_history" not in inspected["agent"]
     body = json.loads((Path(created["agent"]["root"]) / "manifest.json").read_text(encoding="utf-8"))
     assert "spawn_history" not in body
-
-
-def test_agent_spawn_omx_default_manifest_profile_is_not_required_overlay(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-
-    from commands import agent as agent_cmd
-    from commands import spawn
-    from lib import agent_packages
-
-    created = agent_packages.create(
-        address="aura:engine:hands:engineer",
-        runtime="omx",
-        profile="omx/default",
-        cwd=str(tmp_path / "unit"),
-        fleet="aura-engine",
-        seat="hands-engineer",
-        alias=None,
-    )
-    captured = {}
-
-    def fake_spawn(args):
-        captured.update(vars(args))
-        return {
-            "ok": True,
-            "name": args.name,
-            "fleet": args.fleet,
-            "runtime": args.runtime,
-            "runtime_capsule_ref": args._agent_package["root"],
-        }
-
-    monkeypatch.setattr(spawn, "run", fake_spawn)
-    result = agent_cmd.run(
-        argparse.Namespace(
-            agent_action="spawn",
-            ref=created["agent"]["agent_id"],
-            cwd=None,
-            fleet=None,
-            seat=None,
-            prompt=None,
-            resume_session=None,
-            fresh=True,
-            model=None,
-            wait=False,
-            timeout=30,
-            as_pane=True,
-        )
-    )
-
-    assert result["ok"] is True
-    assert captured["runtime"] == "omx"
-    assert captured["runtime_profile"] is None
-    assert captured["omx_profile"] is None
-    assert captured["_agent_package"]["root"] == created["agent"]["root"]
 
 
 def test_agent_spawn_defaults_to_latest_valid_package_runtime_session(monkeypatch, tmp_path):
@@ -498,8 +444,8 @@ def test_agent_spawn_defaults_to_latest_valid_package_runtime_session(monkeypatc
 
     created = agent_packages.create(
         address="flexgraph:chatbot:pipeline:conductor",
-        runtime="omx",
-        profile="omx/aura-operator",
+        runtime="codex",
+        profile="codex/aura-operator",
         cwd=str(tmp_path / "unit"),
         fleet="flexgraph-chatbot",
         seat="pipeline",
@@ -511,7 +457,7 @@ def test_agent_spawn_defaults_to_latest_valid_package_runtime_session(monkeypatc
     registry.upsert_agent({
         "name": "pipeline",
         "fleet": "flexgraph-chatbot",
-        "runtime": "omx",
+        "runtime": "codex",
         "agent_package_id": created["agent"]["agent_id"],
         "runtime_session_id": "newer-unbound",
         "runtime_session_binding": "unbound",
@@ -520,7 +466,7 @@ def test_agent_spawn_defaults_to_latest_valid_package_runtime_session(monkeypatc
     registry.upsert_agent({
         "name": "pipeline-old",
         "fleet": "flexgraph-chatbot",
-        "runtime": "omx",
+        "runtime": "codex",
         "agent_package_id": created["agent"]["agent_id"],
         "runtime_session_id": "019e3334-6cf5-72cb-aafb-9e423bfb9f86",
         "runtime_session_binding": "bound",
@@ -531,7 +477,7 @@ def test_agent_spawn_defaults_to_latest_valid_package_runtime_session(monkeypatc
     registry.upsert_agent({
         "name": "pipeline-wrong-runtime",
         "fleet": "flexgraph-chatbot",
-        "runtime": "codex",
+        "runtime": "hermes",
         "agent_package_id": created["agent"]["agent_id"],
         "runtime_session_id": "wrong-runtime",
         "runtime_session_binding": "bound",
@@ -572,7 +518,7 @@ def test_agent_spawn_defaults_to_latest_valid_package_runtime_session(monkeypatc
 
     assert result["ok"] is True
     assert captured["resume_session"] == "019e3334-6cf5-72cb-aafb-9e423bfb9f86"
-    assert captured["runtime"] == "omx"
+    assert captured["runtime"] == "codex"
 
 
 def test_agent_spawn_latest_resume_reads_package_runtime_session(monkeypatch, tmp_path):
@@ -584,8 +530,8 @@ def test_agent_spawn_latest_resume_reads_package_runtime_session(monkeypatch, tm
 
     created = agent_packages.create(
         address="flexgraph:chatbot:pipeline:conductor",
-        runtime="omx",
-        profile="omx/aura-operator",
+        runtime="codex",
+        profile="codex/aura-operator",
         cwd=str(tmp_path / "unit"),
         fleet="flexgraph-chatbot",
         seat="pipeline",
@@ -594,7 +540,7 @@ def test_agent_spawn_latest_resume_reads_package_runtime_session(monkeypatch, tm
     registry.upsert_agent({
         "name": "pipeline",
         "fleet": "flexgraph-chatbot",
-        "runtime": "omx",
+        "runtime": "codex",
         "agent_package_id": created["agent"]["agent_id"],
         "runtime_session_id": "019e3334-6cf5-72cb-aafb-9e423bfb9f86",
         "runtime_session_binding": "bound",
@@ -635,7 +581,7 @@ def test_agent_spawn_latest_resume_reads_package_runtime_session(monkeypatch, tm
 
     assert result["ok"] is True
     assert captured["resume_session"] == "019e3334-6cf5-72cb-aafb-9e423bfb9f86"
-    assert captured["runtime"] == "omx"
+    assert captured["runtime"] == "codex"
 
 
 def test_agent_spawn_default_resume_requires_valid_package_session(monkeypatch, tmp_path):
@@ -647,8 +593,8 @@ def test_agent_spawn_default_resume_requires_valid_package_session(monkeypatch, 
 
     created = agent_packages.create(
         address="flexgraph:chatbot:pipeline:conductor",
-        runtime="omx",
-        profile="omx/aura-operator",
+        runtime="codex",
+        profile="codex/aura-operator",
         cwd=str(tmp_path / "unit"),
         fleet="flexgraph-chatbot",
         seat="pipeline",
@@ -657,7 +603,7 @@ def test_agent_spawn_default_resume_requires_valid_package_session(monkeypatch, 
     registry.upsert_agent({
         "name": "pipeline",
         "fleet": "flexgraph-chatbot",
-        "runtime": "omx",
+        "runtime": "codex",
         "agent_package_id": created["agent"]["agent_id"],
         "runtime_session_id": "unbound-session",
         "runtime_session_binding": "unbound",
@@ -704,8 +650,8 @@ def test_agent_spawn_fresh_bypasses_manifest_resume_default(monkeypatch, tmp_pat
 
     created = agent_packages.create(
         address="flexgraph:chatbot:pipeline:conductor",
-        runtime="omx",
-        profile="omx/aura-operator",
+        runtime="codex",
+        profile="codex/aura-operator",
         cwd=str(tmp_path / "unit"),
         fleet="flexgraph-chatbot",
         seat="pipeline",
@@ -748,8 +694,8 @@ def test_agent_spawn_fresh_conflicts_with_resume_session(monkeypatch, tmp_path):
 
     agent_packages.create(
         address="flexgraph:chatbot:pipeline:conductor",
-        runtime="omx",
-        profile="omx/aura-operator",
+        runtime="codex",
+        profile="codex/aura-operator",
         cwd=str(tmp_path / "unit"),
         fleet="flexgraph-chatbot",
         seat="pipeline",
@@ -818,95 +764,6 @@ def test_codex_prepare_box_supports_agent_package_layout(monkeypatch, tmp_path):
     assert meta["codex_package_codex_home"] == str(root / ".codex")
     assert meta["codex_aura_keeper_hook_installed"] is True
     assert not any(key.startswith("codex_box_") for key in meta)
-
-
-def test_omx_prepare_box_supports_agent_package_layout(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
-    cwd = tmp_path / "project"
-    cwd.mkdir()
-
-    from lib import omx, omx_adapter
-
-    monkeypatch.setattr(
-        omx.omx_adapter,
-        "apply_adapter",
-        lambda **_: omx_adapter.OmxAdapterResult(enabled=True),
-    )
-    root = tmp_path / "state" / "agents" / "i_pkg_omx"
-    box = omx.prepare_box(
-        fleet="fleet",
-        seat="seat",
-        source_cwd=str(cwd),
-        profile=None,
-        root_override=root,
-        package_layout=True,
-    )
-
-    assert box.root == root.resolve()
-    assert box.codex_home == root / ".codex"
-    assert box.omx_root == root.resolve()
-    assert box.omx_state == root / ".omx"
-    assert not (root / "home").exists()
-    assert not (root / "runtime").exists()
-    meta = box.metadata()
-    assert meta["omx_isolation"] == "aura-agent-package"
-    assert meta["omx_package_root"] == str(root.resolve())
-    assert meta["omx_package_codex_home"] == str(root / ".codex")
-    assert meta["omx_package_omx_state"] == str(root / ".omx")
-    assert not any(key.startswith("omx_box_") for key in meta)
-
-
-def test_agent_cli_create_and_inspect_public_argv(tmp_path):
-    env = {**os.environ, "AURA_STATE_DIR": str(tmp_path / "state")}
-    create = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "cli" / "aura"),
-            "agent",
-            "create",
-            "flexgraph:chatbot:pipeline:conductor",
-            "--runtime",
-            "omx",
-            "--profile",
-            "omx/aura-operator",
-            "--cwd",
-            str(tmp_path / "unit"),
-            "--fleet",
-            "flexgraph-chatbot",
-            "--seat",
-            "pipeline",
-            "--alias",
-            "pipeline-conductor",
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    created = json.loads(create.stdout)
-    assert created["ok"] is True
-
-    inspect = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "cli" / "aura"),
-            "agent",
-            "inspect",
-            "pipeline-conductor",
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    inspected = json.loads(inspect.stdout)
-    assert inspected["ok"] is True
-    assert "address" not in inspected["agent"]
-    assert inspected["agent"]["alias"] == "pipeline-conductor"
-    assert inspected["agent"]["root"] == created["agent"]["root"]
-    assert Path(inspected["agent"]["root"], ".codex").is_dir()
 
 
 def test_agent_resolve_requires_manifest_json(monkeypatch, tmp_path):
@@ -1109,3 +966,212 @@ def test_agent_census_reports_duplicate_live_bindings(monkeypatch, tmp_path):
         "flexgraph-chatbot:manager",
         "flexgraph-chatbot:manager-copy",
     ]
+
+
+# ---------------------------------------------------------------------------
+# archive tests
+# ---------------------------------------------------------------------------
+
+def _make_fake_panes_runner(live_pane_ids):
+    """Return a tmux runner stub that reports the given pane IDs as alive."""
+    import subprocess
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def runner(cmd, **kwargs):
+        lines = []
+        for pid in live_pane_ids:
+            lines.append(f"fake-session\t%0\t0\tfakewin\t{pid}\t0\t12345\t/tmp\tbash\t1")
+        return FakeResult("\n".join(lines))
+
+    return runner
+
+
+def test_agent_archive_codex_body_no_live_seat(monkeypatch, tmp_path):
+    """Archive a codex body: body moved, sessions preserved, index cleared, ledger event written."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "seats.json"))
+
+    from lib import agent_packages, registry, tmux_mirror
+
+    # Create the agent body.
+    agent = agent_packages.create(
+        address="flexgraph:chatbot:ops:manager",
+        runtime="codex",
+        profile="worker",
+        cwd=str(tmp_path / "unit"),
+        fleet="flexgraph-chatbot",
+        seat="manager",
+        alias="ops-manager",
+    )["agent"]
+    root = Path(agent["root"])
+
+    # Plant a .codex/sessions file so we can verify it survives the move.
+    sessions_dir = root / ".codex" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    sessions_file = sessions_dir / "session-abc.json"
+    sessions_file.write_text('{"session_id":"abc"}\n', encoding="utf-8")
+
+    # Add a registry row for this package.
+    registry.upsert_agent({
+        "name": "manager",
+        "fleet": "flexgraph-chatbot",
+        "runtime": "codex",
+        "agent_package_id": agent["agent_id"],
+        "agent_package_root": agent["root"],
+        "runtime_session_id": "019e3334-6cf5-72cb-aafb-9e423bfb9f86",
+        "runtime_session_binding": "bound",
+    })
+
+    # No live panes.
+    monkeypatch.setattr(tmux_mirror, "list_physical_panes", lambda: {
+        "ok": True, "schema": "aura.tmux_mirror.v1",
+        "counts": {"sessions": 0, "panes": 0},
+        "sessions": [], "panes": [],
+    })
+
+    result = agent_packages.archive("ops-manager", reason="test-retire")
+
+    assert result["ok"] is True
+    assert result["agent_id"] == agent["agent_id"]
+    assert result["deindexed"] is True
+    assert len(result["archived_rows"]) == 1
+    assert result["archived_rows"][0]["ref"] == "flexgraph-chatbot:manager"
+
+    # Body moved.
+    assert not root.exists()
+    archived_to = Path(result["body_archived_to"])
+    assert archived_to.exists()
+    assert archived_to.is_dir()
+
+    # .codex/sessions preserved.
+    assert (archived_to / ".codex" / "sessions" / "session-abc.json").exists()
+
+    # Index cleared.
+    index = agent_packages.read_index()
+    assert agent["agent_id"] not in index.get("agents", {})
+
+    # Registry row removed.
+    assert registry.get_agent("flexgraph-chatbot:manager") is None
+
+    # Ledger event written.
+    from lib import session_ledger
+    ledger_path = session_ledger.ledger_path()
+    assert ledger_path.exists()
+    events = [
+        json.loads(line)
+        for line in ledger_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    seat_archived = [e for e in events if e.get("event") == "seat_archived"]
+    assert len(seat_archived) == 1
+    assert seat_archived[0]["evidence"]["agent_package_id"] == agent["agent_id"]
+
+
+def test_agent_archive_dry_run_performs_no_writes(monkeypatch, tmp_path):
+    """dry-run: nothing moved or removed, plan is returned."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "seats.json"))
+
+    from lib import agent_packages, registry, tmux_mirror
+
+    agent = agent_packages.create(
+        address="flexgraph:chatbot:ops:observer",
+        runtime="codex",
+        profile="worker",
+        cwd=str(tmp_path / "unit"),
+        fleet="flexgraph-chatbot",
+        seat="observer",
+        alias="obs-agent",
+    )["agent"]
+    root = Path(agent["root"])
+
+    registry.upsert_agent({
+        "name": "observer",
+        "fleet": "flexgraph-chatbot",
+        "runtime": "codex",
+        "agent_package_id": agent["agent_id"],
+        "agent_package_root": agent["root"],
+    })
+
+    monkeypatch.setattr(tmux_mirror, "list_physical_panes", lambda: {
+        "ok": True, "schema": "aura.tmux_mirror.v1",
+        "counts": {"sessions": 0, "panes": 0},
+        "sessions": [], "panes": [],
+    })
+
+    result = agent_packages.archive("obs-agent", dry_run=True)
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert "plan" in result
+    plan = result["plan"]
+    assert plan["agent_id"] == agent["agent_id"]
+    assert plan["body_root"] == str(root)
+    assert "flexgraph-chatbot:observer" in plan["rows_to_archive"]
+    assert plan["deindex"] is True
+
+    # Nothing should have moved or been removed.
+    assert root.exists()
+    assert agent_packages.resolve("obs-agent")["agent_id"] == agent["agent_id"]
+    assert registry.get_agent("flexgraph-chatbot:observer") is not None
+
+
+def test_agent_archive_refuses_live_seat_without_force(monkeypatch, tmp_path):
+    """A body with a live pane should be refused without --force."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "seats.json"))
+
+    from lib import agent_packages, registry, tmux_mirror
+
+    agent = agent_packages.create(
+        address="flexgraph:chatbot:ops:live-agent",
+        runtime="codex",
+        profile="worker",
+        cwd=str(tmp_path / "unit"),
+        fleet="flexgraph-chatbot",
+        seat="live-agent",
+        alias="live-a",
+    )["agent"]
+    root = Path(agent["root"])
+
+    # Register a row with a fake live pane.
+    registry.upsert_agent({
+        "name": "live-agent",
+        "fleet": "flexgraph-chatbot",
+        "runtime": "codex",
+        "agent_package_id": agent["agent_id"],
+        "agent_package_root": agent["root"],
+        "pane_ref": "tmux:fake-session:%99",
+    })
+
+    # Mirror reports pane %99 as alive.
+    monkeypatch.setattr(tmux_mirror, "list_physical_panes", lambda: {
+        "ok": True, "schema": "aura.tmux_mirror.v1",
+        "counts": {"sessions": 1, "panes": 1},
+        "sessions": ["fake-session"],
+        "panes": [{"pane_id": "%99", "tmux_session": "fake-session"}],
+    })
+
+    result_no_force = agent_packages.archive("live-a")
+
+    assert result_no_force["ok"] is False
+    assert result_no_force["error"] == "agent-has-live-seat"
+    assert any(r["pane_ref"] == "tmux:fake-session:%99" for r in result_no_force["live"])
+
+    # Body untouched.
+    assert root.exists()
+    assert registry.get_agent("flexgraph-chatbot:live-agent") is not None
+
+    # With --force it should succeed.
+    result_force = agent_packages.archive("live-a", force=True)
+
+    assert result_force["ok"] is True
+    assert result_force["agent_id"] == agent["agent_id"]
+    assert not root.exists()
+    assert registry.get_agent("flexgraph-chatbot:live-agent") is None

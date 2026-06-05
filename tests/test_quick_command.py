@@ -77,36 +77,6 @@ def test_quick_default_codex_creates_profile_and_delegates_package_spawn(monkeyp
     assert not (Path.cwd() / ".omx").exists()
 
 
-def test_quick_default_omx_uses_package_body_and_runtime_profile(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-
-    from commands import quick
-
-    captured = {}
-    monkeypatch.setattr(quick.spawn, "run", lambda args: captured.update(vars(args)) or {"ok": True})
-    monkeypatch.setattr(quick, "_now_minute", lambda: "2026-05-14-1420")
-    monkeypatch.setattr(quick, "_shortid", lambda: "feed01")
-
-    result = quick.run(_args("omx", default=True, cwd=str(tmp_path / "project")))
-
-    profile_root = tmp_path / "state" / "runtime-profiles" / "omx" / "default"
-    assert result["ok"] is True
-    assert (profile_root / "codex-home-template").is_dir()
-    assert captured["runtime"] == "omx"
-    assert captured["omx_profile"] is None
-    assert captured["runtime_profile"] == "omx/default"
-    assert captured["boxed"] is False
-    assert captured["name"] == "omx-feed01"
-    assert captured["identity_provider"] == "aura-agent"
-    assert captured["fresh"] is True
-    assert captured["_agent_package"]["alias"] == "quick-omx"
-    assert result["quick_agent_package_alias"] == "quick-omx"
-    package_root = Path(captured["_agent_package"]["root"])
-    manifest = json.loads((package_root / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["runtime"] == "omx"
-    assert sorted(path.name for path in package_root.iterdir()) == [".codex", ".omx", "manifest.json"]
-
-
 def test_quick_new_generated_profile_uses_safe_name(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
@@ -123,36 +93,6 @@ def test_quick_new_generated_profile_uses_safe_name(monkeypatch, tmp_path):
     assert captured["runtime_profile"] == "codex/quick-2026-05-14-1420-beaded"
     assert captured["_agent_package"]["alias"] == "quick-codex"
     assert (tmp_path / "state" / "runtime-profiles" / "codex" / "quick-2026-05-14-1420-beaded").is_dir()
-
-
-def test_quick_reuses_canonical_agent_package(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-
-    from commands import quick
-
-    roots = []
-
-    def fake_spawn_run(args):
-        roots.append(args._agent_package["root"])
-        return {
-            "ok": True,
-            "name": args.name,
-            "fleet": args.fleet,
-            "runtime": args.runtime,
-            "runtime_capsule_ref": args._agent_package["root"],
-        }
-
-    monkeypatch.setattr(quick.spawn, "run", fake_spawn_run)
-    monkeypatch.setattr(quick, "_now_minute", lambda: "2026-05-14-1420")
-    monkeypatch.setattr(quick, "_shortid", lambda: "abc123")
-
-    first = quick.run(_args("omx", cwd=str(tmp_path / "one")))
-    second = quick.run(_args("omx", cwd=str(tmp_path / "two")))
-
-    assert first["ok"] is True
-    assert second["ok"] is True
-    assert roots[0] == roots[1]
-    assert first["quick_agent_package_id"] == second["quick_agent_package_id"]
 
 
 def test_quick_rejects_path_like_profile_before_spawn(monkeypatch, tmp_path):
@@ -192,20 +132,6 @@ def test_quick_preset_does_not_copy_user_global_skills(monkeypatch, tmp_path):
     assert (tmp_path / "state" / "runtime-profiles" / "codex" / "worker" / "codex-home-template" / "config.toml").is_file()
 
 
-def test_quick_existing_profile_missing_fails_before_spawn(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-
-    from commands import quick
-
-    monkeypatch.setattr(quick.spawn, "run", lambda args: (_ for _ in ()).throw(AssertionError("spawn should not run")))
-
-    result = quick.run(_args("omx", profile="missing"))
-
-    assert result["ok"] is False
-    assert result["error"] == "quick-launch-invalid"
-    assert "omx profile not found" in result["detail"]
-
-
 def test_quick_hermes_profile_maps_to_native_runtime_profile(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     hermes_profile = tmp_path / "home" / ".hermes" / "profiles" / "aura-operator"
@@ -222,7 +148,6 @@ def test_quick_hermes_profile_maps_to_native_runtime_profile(monkeypatch, tmp_pa
     assert captured["runtime"] == "hermes"
     assert captured["runtime_profile"] == "hermes/aura-operator"
     assert captured["boxed"] is False
-    assert captured["omx_profile"] is None
     assert captured["_agent_package"] is None
 
 

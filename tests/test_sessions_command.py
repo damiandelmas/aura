@@ -98,41 +98,6 @@ def test_sessions_rows_fall_back_to_legacy_name(monkeypatch):
     assert result["rows"][0]["target"] == "flex-leaders-2:engineer"
 
 
-def test_sessions_rows_mark_bound_omx_restore_ready(monkeypatch):
-    from commands import sessions
-
-    monkeypatch.setattr(
-        sessions.list_cmd,
-        "run",
-        lambda _args: [
-            {
-                "seat": "pipeline",
-                "fleet": "flexgraph-chatbot",
-                "runtime": "omx",
-                "terminal": "alive",
-                "runtime_session_id": "019e3334-6cf5-72cb-aafb-9e423bfb9f86",
-                "session_id": "019e3334-6cf5-72cb-aafb-9e423bfb9f86",
-                "runtime_session_binding": "bound",
-                "runtime_session_bind_method": "codex-hook",
-                "runtime_session_source": "codex-hook:session-start",
-                "cwd": "/repo/flexgraph/chatbot",
-            }
-        ],
-    )
-
-    result = sessions.run(argparse.Namespace(
-        sessions_action=None,
-        fleet=None,
-        live=True,
-        include_hidden=True,
-    ))
-
-    row = result["rows"][0]
-    assert row["runtime_capabilities"]["supports_resume"] is True
-    assert row["restore_ready"] is True
-    assert row["restore_reason"] == "bound-session-id-and-runtime-resume-supported"
-
-
 def test_restore_plan_prefers_package_agent_spawn(monkeypatch, tmp_path):
     from commands import sessions
 

@@ -139,11 +139,11 @@ def _native_subagent_spawn_refusal(args) -> dict | None:
 
 def _resolve_package_env(agent_package: dict, runtime: str) -> tuple[dict[str, str], dict[str, str]]:
     # A package agent always owns its own runtime home. Resolve the manifest env
-    # (e.g. codex CODEX_HOME=.codex, omx OMX_ROOT/OMX_TEAM_STATE_ROOT) against the
-    # package root for every runtime, so the home is set independently of whether a
-    # box/profile launch path also runs. Previously codex/omx returned {} here and
-    # relied solely on the box path; a non-boxed codex package spawn then left
-    # CODEX_HOME unset and inherited it from the spawning process, mixing profiles.
+    # (e.g. codex CODEX_HOME=.codex) against the package root for every runtime,
+    # so the home is set independently of whether a box/profile launch path also runs.
+    # Previously codex returned {} here and relied solely on the box path; a non-boxed
+    # codex package spawn then left CODEX_HOME unset and inherited it from the
+    # spawning process, mixing profiles.
     root = agent_package.get("root")
     env = agent_package.get("env")
     if not root or not isinstance(env, dict):
@@ -484,7 +484,6 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         if identity_label_arg:
             role_meta["identity_label"] = identity_label_arg
     raw_profile = getattr(args, 'profile', None)
-    explicit_omx_profile = getattr(args, 'omx_profile', None)
     runtime_profile_ref_arg = getattr(args, 'runtime_profile', None)
     boxed_requested = bool(getattr(args, 'boxed', False))
     runtime_profile = None
@@ -508,31 +507,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         runtime_profile_ref = canonical_ref
         runtime_profile_source = "cli-runtime-profile"
     profile_source = "cli" if raw_profile else None
-    if runtime == "omx" and raw_profile and explicit_omx_profile and raw_profile != explicit_omx_profile:
-        return result_fn({
-            "ok": False,
-            "error": "conflicting-omx-profile",
-            "detail": "use either --omx-profile or --profile for OMX, not both with different values",
-            "name": args.name,
-            "runtime": runtime,
-        })
-    if runtime == "omx" and runtime_profile and explicit_omx_profile and runtime_profile != explicit_omx_profile:
-        return result_fn({
-            "ok": False,
-            "error": "conflicting-omx-profile",
-            "detail": "use either --runtime-profile omx/NAME or --omx-profile for OMX, not both with different values",
-            "name": args.name,
-            "runtime": runtime,
-        })
-    if runtime == "omx" and runtime_profile and raw_profile and raw_profile != runtime_profile:
-        return result_fn({
-            "ok": False,
-            "error": "conflicting-omx-profile",
-            "detail": "use either --runtime-profile omx/NAME or --profile for OMX, not both with different values",
-            "name": args.name,
-            "runtime": runtime,
-        })
-    if boxed_requested and runtime not in {"codex", "omx"}:
+    if boxed_requested and runtime != "codex":
         return result_fn({
             "ok": False,
             "error": "boxed-runtime-not-supported",
@@ -541,21 +516,8 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "runtime": runtime,
         })
     profile = None if runtime == "hermes" else raw_profile or args.name
-    omx_profile = None
     codex_profile = None
-    if runtime == "omx":
-        if explicit_omx_profile:
-            omx_profile = explicit_omx_profile
-            runtime_profile_source = "cli-omx-profile"
-        elif runtime_profile:
-            omx_profile = runtime_profile
-        elif raw_profile:
-            omx_profile = raw_profile
-            runtime_profile_source = "cli-profile"
-        if omx_profile:
-            runtime_profile = omx_profile
-            runtime_profile_ref = f"omx/{omx_profile}"
-    elif runtime == "codex":
+    if runtime == "codex":
         if runtime_profile:
             codex_profile = runtime_profile
         elif runtime_profile_ref_arg:
@@ -604,7 +566,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             "runtime_profile_runtime": runtime,
             "runtime_profile_source": runtime_profile_source or "cli-runtime-profile",
         }
-    recorded_profile = profile if runtime == "hermes" else omx_profile if runtime == "omx" else codex_profile if runtime == "codex" else None
+    recorded_profile = profile if runtime == "hermes" else codex_profile if runtime == "codex" else None
     try:
         context_path = workspace_state.infer_context_file(
             workdir_path,
@@ -712,40 +674,12 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         launch_env["FLEX_PROJECT_MANIFEST"] = flex_meta["flex_project_manifest"]
     if flex_meta.get("flex_project_root"):
         launch_env["FLEX_PROJECT_ROOT"] = flex_meta["flex_project_root"]
-    omx_box_meta = {}
     codex_box_meta = {}
     runtime_home = _runtime_home(runtime, profile)
-    if agent_package.get("root") and runtime not in {"codex", "omx"}:
+    if agent_package.get("root") and runtime != "codex":
         runtime_home = str(Path(str(agent_package["root"])).expanduser().resolve())
         if runtime == "gajae-code":
             native_state_ref = package_env.get("GJC_CONFIG_DIR") or native_state_ref
-    if runtime == "omx":
-        try:
-            from lib import omx as omx_lib
-
-            omx_box = omx_lib.prepare_box(
-                fleet=fleet,
-                seat=args.name,
-                source_cwd=workdir,
-                profile=omx_profile,
-                root_override=agent_package.get("root"),
-                package_layout=bool(agent_package),
-            )
-            launch_env.update(omx_box.launch_env(workdir))
-            omx_box_meta = omx_box.metadata()
-            launch_env["AURA_RUNTIME_CAPSULE_REF"] = str(omx_box.root)
-            runtime_home = str(omx_box.root)
-            native_state_ref = str(omx_box.omx_state)
-        except Exception as exc:
-            return result_fn({
-                "ok": False,
-                "error": "omx-box-setup-failed",
-                "detail": str(exc),
-                "name": args.name,
-                "runtime": runtime,
-                "cwd": workdir,
-                "fleet": fleet,
-            })
     if runtime == "codex" and (boxed_requested or codex_profile):
         try:
             from lib import codex as codex_lib
@@ -816,8 +750,6 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 "AURA_AGENT_PACKAGE_ADDRESS",
                 "AURA_AGENT_PACKAGE_ALIAS",
                 "AURA_RUNTIME_CAPSULE_REF",
-                "OMX_ROOT",
-                "OMX_TEAM_STATE_ROOT",
             ],
         )
     except TypeError:
@@ -935,7 +867,6 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         **package_env_meta,
         **flex_meta,
         **runtime_profile_meta,
-        **omx_box_meta,
         **codex_box_meta,
         **role_meta,
         **process_meta,
@@ -1044,7 +975,6 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
             **package_env_meta,
             **flex_meta,
             **runtime_profile_meta,
-            **omx_box_meta,
             **codex_box_meta,
             **role_meta,
             **process_meta,
@@ -1097,7 +1027,6 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "runtime_capsule_launch": registered.get("runtime_capsule_launch"),
         **flex_meta,
         **runtime_profile_meta,
-        **omx_box_meta,
         **codex_box_meta,
         **role_meta,
         **process_meta,
@@ -1188,7 +1117,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 pass
         if not prompt_result.get("ok"):
             result["prompt_error"] = prompt_result.get("error")
-        elif runtime in {"codex", "omx"} and hasattr(terminal, "send_keys"):
+        elif runtime == "codex" and hasattr(terminal, "send_keys"):
             prompt_delivery["submit_retry"] = _retry_codex_prompt_submit(
                 terminal=terminal,
                 target=prompt_target,
@@ -1311,7 +1240,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
 
 
 def _runtime_session_readiness(*, runtime: str, observation: dict | None) -> dict | None:
-    if runtime not in {"codex", "omx"} or not observation:
+    if runtime != "codex" or not observation:
         return None
     status = observation.get("status")
     session_id = observation.get("runtime_session_id") or observation.get("session_id")
@@ -1332,7 +1261,7 @@ def _runtime_session_readiness(*, runtime: str, observation: dict | None) -> dic
 
 
 def _should_send_codex_startup_handshake(*, runtime: str, resume_session: str | None, fork_session: str | None = None) -> bool:
-    if runtime not in {"codex", "omx"} or resume_session or fork_session:
+    if runtime != "codex" or resume_session or fork_session:
         return False
     value = os.environ.get("AURA_CODEX_STARTUP_HANDSHAKE", "0").strip().lower()
     return value not in {"0", "false", "no", "off"}
@@ -1354,7 +1283,7 @@ def _spawn_preflight(
     inline_env: dict[str, str] = {}
     parse_warning = None
 
-    if runtime in {"codex", "omx"} and custom_launch_command:
+    if runtime == "codex" and custom_launch_command:
         try:
             parts = shlex.split(custom_launch_command)
         except ValueError as exc:
@@ -1379,7 +1308,7 @@ def _spawn_preflight(
                 "code": "manual-resume-command-without-resume-session",
                 "detail": "Use --resume-session so Aura can bind the runtime session exactly.",
             })
-        for key in ("CODEX_HOME", "OMX_ROOT", "OMX_TEAM_STATE_ROOT"):
+        for key in ("CODEX_HOME",):
             if key not in inline_env or key not in launch_env:
                 continue
             if str(inline_env[key]) != str(launch_env[key]):
@@ -1436,8 +1365,6 @@ def _custom_command_is_manual_resume(runtime: str, argv: list[str]) -> bool:
         return False
     executable = Path(argv[0]).name
     if runtime == "codex" and executable == "codex":
-        return "resume" in argv[1:]
-    if runtime == "omx" and executable == "omx":
         return "resume" in argv[1:]
     return False
 
@@ -1577,9 +1504,9 @@ def _augment_runtime_prompt(
 ) -> str:
     # For codex/omx the first line embeds the launch_id nonce that
     # sessions._codex_session_from_nonce greps for in the Codex JSONL.
-    # Removing this nonce (regression in 443b47c) caused fresh codex/omx
+    # Removing this nonce (regression in 443b47c) caused fresh codex
     # spawns to find no session evidence and never auto-bind.
-    if runtime not in {"codex", "omx"}:
+    if runtime != "codex":
         return prompt_text
     lines = [f"[aura-seat fleet={fleet} seat={seat} launch={launch_id}]", ""]
     if flex_packet:
@@ -1638,7 +1565,7 @@ def _codex_cwd_choice_from_capture(capture: list[str], desired_cwd: str | None) 
 
 
 def _resolve_codex_cwd_choice(*, runtime: str, resume_session: str | None, terminal, target: str | None, desired_cwd: str | None) -> dict | None:
-    if runtime not in {"codex", "omx"} or not resume_session or not target or not hasattr(terminal, "capture_output"):
+    if runtime != "codex" or not resume_session or not target or not hasattr(terminal, "capture_output"):
         return None
     attempts = int(os.environ.get("AURA_CODEX_CWD_CHOICE_ATTEMPTS", "8"))
     for index in range(max(1, attempts)):
@@ -1813,7 +1740,7 @@ def _observe_spawn_session(
     high/exact confidence; bind-current remains the repair path for ambiguous
     sessions.
     """
-    if runtime not in {"codex", "omx"}:
+    if runtime != "codex":
         return {"status": "skipped", "reason": "runtime-not-observed-at-spawn", "runtime": runtime}
 
     from lib import runtime_session
@@ -2000,36 +1927,6 @@ def _record_workspace_spawn(workdir: Path, result: dict, *, runtime: str) -> Non
             "pane_ref": result.get("pane_ref"),
             "flex_project_manifest": result.get("flex_project_manifest"),
             "flex_project_root": result.get("flex_project_root"),
-            "omx_isolation": result.get("omx_isolation"),
-            "omx_package_root": result.get("omx_package_root"),
-            "omx_package_codex_home": result.get("omx_package_codex_home"),
-            "omx_package_omx_root": result.get("omx_package_omx_root"),
-            "omx_package_omx_state": result.get("omx_package_omx_state"),
-            "omx_package_team_state_root": result.get("omx_package_team_state_root"),
-            "omx_runtime_base_source": result.get("omx_runtime_base_source"),
-            "omx_runtime_base_root": result.get("omx_runtime_base_root"),
-            "omx_runtime_base_applied": result.get("omx_runtime_base_applied"),
-            "omx_runtime_base_templates_applied": result.get("omx_runtime_base_templates_applied"),
-            "omx_setup_ran": result.get("omx_setup_ran"),
-            "omx_setup_skipped": result.get("omx_setup_skipped"),
-            "omx_auth_seeded": result.get("omx_auth_seeded"),
-            "omx_config_seeded": result.get("omx_config_seeded"),
-            "omx_source_cwd_trusted": result.get("omx_source_cwd_trusted"),
-            "omx_box_root": result.get("omx_box_root"),
-            "omx_box_home": result.get("omx_box_home"),
-            "omx_box_codex_home": result.get("omx_box_codex_home"),
-            "omx_box_omx_root": result.get("omx_box_omx_root"),
-            "omx_box_omx_state": result.get("omx_box_omx_state"),
-            "omx_box_team_state_root": result.get("omx_box_team_state_root"),
-            "omx_box_runtime": result.get("omx_box_runtime"),
-            "omx_box_setup_ran": result.get("omx_box_setup_ran"),
-            "omx_box_setup_skipped": result.get("omx_box_setup_skipped"),
-            "omx_box_auth_seeded": result.get("omx_box_auth_seeded"),
-            "omx_box_config_seeded": result.get("omx_box_config_seeded"),
-            "omx_profile": result.get("omx_profile"),
-            "omx_profile_root": result.get("omx_profile_root"),
-            "omx_profile_applied": result.get("omx_profile_applied"),
-            "omx_profile_templates_applied": result.get("omx_profile_templates_applied"),
             "codex_isolation": result.get("codex_isolation"),
             "codex_package_root": result.get("codex_package_root"),
             "codex_package_codex_home": result.get("codex_package_codex_home"),

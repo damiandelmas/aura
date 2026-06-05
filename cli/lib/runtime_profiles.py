@@ -112,7 +112,6 @@ _DENIED_EXACT_FILENAMES = {
     "secret.json",
     "token.json",
     "tokens.json",
-    "opencode.db",
     "sessions.db",
     "history",
 }
@@ -211,18 +210,6 @@ def classify_runtime_profile_adapter(runtime: str) -> RuntimeAdapterDescriptor:
             kind=RuntimeProfileKind.BOXED_TEMPLATE,
             supports_box=True,
             notes="Codex uses Aura-boxed CODEX_HOME templates.",
-        ),
-        "omx": RuntimeAdapterDescriptor(
-            runtime="omx",
-            kind=RuntimeProfileKind.BOXED_TEMPLATE,
-            supports_box=True,
-            notes="OMX uses a dedicated boxed Codex/OMX adapter.",
-        ),
-        "opencode": RuntimeAdapterDescriptor(
-            runtime="opencode",
-            kind=RuntimeProfileKind.BOXED_XDG_HOME,
-            supports_box=True,
-            notes="Future adapter: boxed HOME/XDG plus OPENCODE_CONFIG.",
         ),
         "claude-code": RuntimeAdapterDescriptor(
             runtime="claude-code",

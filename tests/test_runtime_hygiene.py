@@ -19,11 +19,9 @@ def test_package_runtime_findings_report_residue_and_env_drift(tmp_path):
     (root / "runtime-session.json").write_text("{}\n", encoding="utf-8")
     (root / "agent.json").write_text("{}\n", encoding="utf-8")
     manifest = {
-        "runtime": "omx",
+        "runtime": "codex",
         "env": {
             "CODEX_HOME": "/home/axp/.codex",
-            "OMX_ROOT": ".",
-            "OMX_TEAM_STATE_ROOT": "../shared-omx-state",
         },
     }
 
@@ -40,13 +38,11 @@ def test_package_runtime_findings_report_residue_and_env_drift(tmp_path):
     }
     assert {finding["env"] for finding in by_code["package-runtime-env-drift"]} == {
         "CODEX_HOME",
-        "OMX_TEAM_STATE_ROOT",
     }
     assert [finding["code"] for finding in runtime_hygiene.severe_findings(findings)] == [
         "package-runtime-residue",
         "package-runtime-residue",
         "package-runtime-residue",
-        "package-runtime-env-drift",
         "package-runtime-env-drift",
     ]
 
@@ -228,40 +224,6 @@ def test_hermes_startup_prompt_is_refused_before_terminal(monkeypatch, tmp_path)
     assert result["ok"] is False
     assert result["error"] == "hermes-startup-prompt-disabled"
     assert result["prompt_requested"] is True
-
-
-def test_omx_package_box_does_not_pollute_source_cwd(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
-
-    from lib import omx, omx_adapter
-
-    source = tmp_path / "source"
-    (source / ".git" / "info").mkdir(parents=True)
-    package = tmp_path / "state" / "agents" / "i_omx"
-    monkeypatch.setattr(
-        omx.omx_adapter,
-        "apply_adapter",
-        lambda **_: omx_adapter.OmxAdapterResult(enabled=True),
-    )
-
-    box = omx.prepare_box(
-        fleet="fleet",
-        seat="seat",
-        source_cwd=str(source),
-        profile=None,
-        root_override=package,
-        package_layout=True,
-    )
-    launch_env = box.launch_env(str(source))
-
-    assert launch_env["CODEX_HOME"] == str(package / ".codex")
-    assert launch_env["OMX_ROOT"] == str(package.resolve())
-    assert launch_env["OMX_TEAM_STATE_ROOT"] == str(package / ".omx" / "state")
-    assert not (source / ".codex").exists()
-    assert not (source / ".omx").exists()
-    assert not (source / ".git" / "info" / "exclude").exists()
 
 
 def test_global_aura_view_fleets_runs_from_clean_env(tmp_path):

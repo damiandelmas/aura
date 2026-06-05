@@ -104,16 +104,14 @@ def main():
                          help="Spawn without stealing focus (tmux -d). Use when spawning from a session a human is watching.")
     p_spawn.add_argument("--silent", dest="silent", action="store_true",
                          help="Silent keeper: skip AGENT_STARTED/AGENT_STOPPED lifecycle hooks for background launches.")
-    p_spawn.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "omx", "gajae-code", "opencode", "openclaw", "shell", "command"],
+    p_spawn.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "gajae-code", "shell", "command"],
                          help="Run a generic terminal-backed runtime instead of the Claude wrapper path")
     p_spawn.add_argument("--profile", metavar="NAME",
-                         help="Runtime profile name. Hermes defaults to the seat name; for OMX prefer --omx-profile.")
+                         help="Runtime profile name. Hermes defaults to the seat name.")
     p_spawn.add_argument("--runtime-profile", metavar="REF",
                          help="Explicit Aura runtime profile ref such as codex/dev")
     p_spawn.add_argument("--boxed", action="store_true",
                          help="Request an Aura-managed boxed runtime home when supported by the selected runtime")
-    p_spawn.add_argument("--omx-profile", metavar="NAME",
-                         help="Explicit OMX boxed-profile template under ~/.aura/runtime-profiles/omx/NAME")
     p_spawn.add_argument("--command", dest="launch_command", metavar="CMD",
                          help="Override runtime launch command for terminal-backed spawn")
     p_spawn.add_argument("--allow-native-subagent-spawn", action="store_true",
@@ -121,7 +119,7 @@ def main():
 
     # quick
     p_quick = subparsers.add_parser("quick", help="Launch a quick Aura-managed runtime seat from the current directory")
-    p_quick.add_argument("runtime", choices=["codex", "omx", "gajae-code", "hermes"], help="Runtime to launch")
+    p_quick.add_argument("runtime", choices=["codex", "gajae-code", "hermes"], help="Runtime to launch")
     profile_group = p_quick.add_mutually_exclusive_group()
     profile_group.add_argument("--default", action="store_true", help="Use or create the runtime default Aura profile")
     profile_group.add_argument("--new", nargs="?", const="", metavar="NAME", help="Create and use a new runtime profile")
@@ -144,14 +142,14 @@ def main():
     p_profile = subparsers.add_parser("profile", help="Manage runtime profile inventory and Aura-owned boxed templates")
     profile_sub = p_profile.add_subparsers(dest="profile_action", required=True)
     p_profile_list = profile_sub.add_parser("list", help="List runtime profiles and adapter classifications")
-    p_profile_list.add_argument("--runtime", choices=["codex", "omx", "hermes", "opencode", "claude-code", "goose", "aider"], help="Limit to one runtime")
+    p_profile_list.add_argument("--runtime", choices=["codex", "hermes", "claude-code", "goose", "aider"], help="Limit to one runtime")
     p_profile_list.add_argument("--include-future", action="store_true", help="Include deferred adapter classifications")
     p_profile_inspect = profile_sub.add_parser("inspect", help="Inspect one profile without reading secret contents")
     p_profile_inspect.add_argument("profile_ref", help="Profile ref such as codex/dev, or bare name with --runtime")
-    p_profile_inspect.add_argument("--runtime", choices=["codex", "omx", "hermes", "opencode", "claude-code", "goose", "aider"], help="Runtime for a bare profile name")
+    p_profile_inspect.add_argument("--runtime", choices=["codex", "hermes", "claude-code", "goose", "aider"], help="Runtime for a bare profile name")
     p_profile_create = profile_sub.add_parser("create", help="Create an Aura-owned boxed profile template")
-    p_profile_create.add_argument("profile_ref", help="Profile ref such as codex/dev or omx/dev, or bare name with --runtime")
-    p_profile_create.add_argument("--runtime", choices=["codex", "omx"], help="Runtime for a bare profile name")
+    p_profile_create.add_argument("profile_ref", help="Profile ref such as codex/dev, or bare name with --runtime")
+    p_profile_create.add_argument("--runtime", choices=["codex"], help="Runtime for a bare profile name")
     p_profile_create.add_argument("--from", dest="source_profile", help="Clone from an existing Aura-owned profile ref of the same runtime")
     p_profile_create.add_argument("--preset", choices=["aura-operator"], help="Seed a deterministic skill preset into the profile")
     p_profile_create.add_argument("--description", help="Optional README description for the template")
@@ -161,8 +159,8 @@ def main():
     agent_sub = p_agent.add_subparsers(dest="agent_action", required=True)
     p_agent_create = agent_sub.add_parser("create", help="Create a durable package-native agent")
     p_agent_create.add_argument("address", help="Logical address, e.g. flexgraph:chatbot:pipeline:conductor")
-    p_agent_create.add_argument("--runtime", required=True, choices=["codex", "omx", "gajae-code"], help="Runtime for the package")
-    p_agent_create.add_argument("--profile", metavar="REF", help="Runtime profile ref, e.g. omx/operator or operator")
+    p_agent_create.add_argument("--runtime", required=True, choices=["codex", "gajae-code"], help="Runtime for the package")
+    p_agent_create.add_argument("--profile", metavar="REF", help="Runtime profile ref, e.g. codex/operator or operator")
     p_agent_create.add_argument("--cwd", metavar="PATH", help="Default working directory")
     p_agent_create.add_argument("--fleet", metavar="NAME", help="Default Aura fleet/tmux session")
     p_agent_create.add_argument("--seat", metavar="NAME", help="Default Aura seat/tmux window")
@@ -195,6 +193,11 @@ def main():
     p_agent_inspect = agent_sub.add_parser("inspect", help="Inspect a package-native agent")
     p_agent_inspect.add_argument("ref", help="Agent id, address, or alias")
     agent_sub.add_parser("census", help="Classify package bodies against registry bindings")
+    p_agent_archive = agent_sub.add_parser("archive", help="Lineage-preserving retirement of a durable package body")
+    p_agent_archive.add_argument("ref", help="Agent id, address, or alias")
+    p_agent_archive.add_argument("--reason", metavar="TEXT", help="Human-readable retirement reason")
+    p_agent_archive.add_argument("--dry-run", action="store_true", help="Report what would happen without performing any writes or moves")
+    p_agent_archive.add_argument("--force", action="store_true", help="Proceed even if a registry row has a live pane")
     p_agent_history = agent_sub.add_parser("history", help="Project package-native agent history from Aura registry state")
     p_agent_history.add_argument("ref", help="Agent id, address, or alias")
     p_agent_history.add_argument("--write", action="store_true", help="Write the derived projection to <agent-root>/aura.json")
@@ -350,7 +353,7 @@ def main():
     p_seat_restart = seat_sub.add_parser("restart", help="Replace a seat runtime while preserving logical identity")
     p_seat_restart.add_argument("target", help="Seat ref, usually fleet:seat")
     p_seat_restart.add_argument("--cwd", help="Override relaunch working directory")
-    p_seat_restart.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "omx", "gajae-code", "opencode", "openclaw", "shell", "command"],
+    p_seat_restart.add_argument("--runtime", choices=["claude-code", "claude", "hermes", "codex", "gajae-code", "shell", "command"],
                                 help="Override runtime for relaunch")
     p_seat_restart.add_argument("--prompt", help="Optional restart bootstrap prompt")
     p_seat_restart.add_argument("--force", action="store_true",
@@ -365,7 +368,7 @@ def main():
     p_seat_rollover.add_argument("--cwd", help="Override relaunch working directory")
     p_seat_rollover.add_argument(
         "--runtime",
-        choices=["claude-code", "claude", "hermes", "codex", "omx", "gajae-code", "opencode", "openclaw", "shell", "command"],
+        choices=["claude-code", "claude", "hermes", "codex", "gajae-code", "shell", "command"],
         help="Override runtime for relaunch",
     )
     p_seat_rollover.add_argument("--prompt", help="Optional first prompt for the fresh runtime session")
@@ -453,6 +456,18 @@ def main():
                             help="Remove a key entirely; repeatable.")
     p_seat_tag.add_argument("--expect-seat-instance-id", metavar="ID",
                             help="Only tag if the current row has this seat_instance_id.")
+    p_seat_gc = seat_sub.add_parser(
+        "gc",
+        help="TTL-based auto-archival of cruft registry rows (unbound, no resumable session, older than TTL)",
+    )
+    p_seat_gc.add_argument("--ttl", type=int, default=7, metavar="DAYS",
+                           help="Age threshold in days; rows older than TTL are candidates (default: 7)")
+    p_seat_gc.add_argument("--fleet", "-f", metavar="NAME",
+                           help="Limit to one fleet")
+    p_seat_gc.add_argument("--dry-run", action="store_true",
+                           help="Report candidates without writing anything (default behaviour without --confirm)")
+    p_seat_gc.add_argument("--confirm", action="store_true",
+                           help="Actually remove cruft rows (required to perform any writes)")
 
 
     # write
@@ -691,7 +706,7 @@ def main():
                             help="For footer/bind-footer, number of target pane lines to inspect")
     p_sessions.add_argument("--no-follow-aliases", action="store_true",
                             help="For seat-history, do not follow rename/alias chains")
-    p_sessions.add_argument("--runtime", choices=["codex", "claude-code", "claude", "hermes", "omx", "gajae-code", "opencode", "openclaw", "shell", "command"],
+    p_sessions.add_argument("--runtime", choices=["codex", "claude-code", "claude", "hermes", "gajae-code", "shell", "command"],
                             help="For sessions self, override runtime inference")
     p_sessions.add_argument("--session-id",
                             help="For bind-hook, exact runtime session id from the native hook payload")

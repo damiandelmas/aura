@@ -98,12 +98,6 @@ def package_runtime_findings(
     expected_env: dict[str, str] = {}
     if runtime_name == "codex":
         expected_env = {"CODEX_HOME": ".codex"}
-    elif runtime_name == "omx":
-        expected_env = {
-            "CODEX_HOME": ".codex",
-            "OMX_ROOT": ".",
-            "OMX_TEAM_STATE_ROOT": ".omx/state",
-        }
     elif runtime_name == "gajae-code":
         expected_env = {
             "GJC_CONFIG_DIR": ".gjc",

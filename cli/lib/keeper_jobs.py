@@ -1103,30 +1103,10 @@ def _codex_profile_templates() -> list[Path]:
     return sorted(path / "codex-home-template" for path in root.iterdir() if path.is_dir())
 
 
-def _omx_profile_templates() -> list[Path]:
-    root = state.state_root() / "runtime-profiles" / "omx"
-    if not root.is_dir():
-        return []
-    return sorted(path / "codex-home-template" for path in root.iterdir() if path.is_dir())
-
-
-def _with_omx_probes_disabled(call):
-    previous = os.environ.get("AURA_OMX_ADAPTER_PROBE")
-    os.environ["AURA_OMX_ADAPTER_PROBE"] = "0"
-    try:
-        return call()
-    finally:
-        if previous is None:
-            os.environ.pop("AURA_OMX_ADAPTER_PROBE", None)
-        else:
-            os.environ["AURA_OMX_ADAPTER_PROBE"] = previous
-
-
 def install_hooks(*, agents: bool = True, profiles: bool = True, dry_run: bool = False) -> dict[str, Any]:
     """Refresh Aura keeper hook installation across durable homes/templates."""
 
     from lib import codex as codex_lib
-    from lib import omx_adapter
 
     installed: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -1151,18 +1131,6 @@ def install_hooks(*, agents: bool = True, profiles: bool = True, dry_run: bool =
                 installed.append({"scope": "agent", "root": str(root), "runtime": runtime, "codex_home": str(codex_home), "dry_run": True})
             elif runtime == "codex":
                 installed.append({"scope": "agent", "root": str(root), "runtime": runtime, **codex_lib.install_aura_package_hooks(codex_home)})
-            elif runtime == "omx":
-                adapter = _with_omx_probes_disabled(
-                    lambda root=root, codex_home=codex_home: omx_adapter.apply_adapter(
-                        root=root,
-                        codex_home=codex_home,
-                        runtime=root / "runtime",
-                    )
-                )
-                if adapter.enabled:
-                    installed.append({"scope": "agent", "root": str(root), "runtime": runtime, "codex_home": str(codex_home), **adapter.metadata()})
-                else:
-                    skipped.append({"scope": "agent", "root": str(root), "runtime": runtime, "reason": "omx-adapter-disabled", "detail": adapter.error})
             else:
                 skipped.append({"scope": "agent", "root": str(root), "runtime": runtime, "reason": "unsupported-runtime"})
 
@@ -1173,25 +1141,6 @@ def install_hooks(*, agents: bool = True, profiles: bool = True, dry_run: bool =
                 installed.append({"scope": "profile", "runtime": "codex", "root": str(root), "codex_home": str(codex_home), "dry_run": True})
             else:
                 installed.append({"scope": "profile", "runtime": "codex", "root": str(root), **codex_lib.install_aura_package_hooks(codex_home)})
-        for codex_home in _omx_profile_templates():
-            root = codex_home.parent
-            hooks_path = codex_home / "hooks.json"
-            if dry_run:
-                installed.append({"scope": "profile", "runtime": "omx", "root": str(root), "codex_home": str(codex_home), "dry_run": True})
-            elif not hooks_path.is_file():
-                skipped.append({"scope": "profile", "runtime": "omx", "root": str(root), "reason": "missing-hooks-json"})
-            else:
-                adapter = _with_omx_probes_disabled(
-                    lambda root=root, codex_home=codex_home: omx_adapter.apply_adapter(
-                        root=root,
-                        codex_home=codex_home,
-                        runtime=root / "runtime-template",
-                    )
-                )
-                if adapter.enabled:
-                    installed.append({"scope": "profile", "runtime": "omx", "root": str(root), "codex_home": str(codex_home), **adapter.metadata()})
-                else:
-                    skipped.append({"scope": "profile", "runtime": "omx", "root": str(root), "reason": "omx-adapter-disabled", "detail": adapter.error})
 
     return {
         "ok": True,

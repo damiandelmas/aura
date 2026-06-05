@@ -16,6 +16,7 @@ for legacy sessions.
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 
 AURA_BIN = "/home/axp/.local/bin/aura"
@@ -78,16 +79,22 @@ def inject(workdir: str, emit_lifecycle: bool = True) -> dict:
         current = {}
         if settings_path.exists():
             try:
-                current = json.loads(settings_path.read_text())
+                parsed = json.loads(settings_path.read_text())
+                current = parsed if isinstance(parsed, dict) else {}
             except Exception:
                 current = {}
 
         hooks_section = current.setdefault("hooks", {})
+        if not isinstance(hooks_section, dict):
+            hooks_section = {}
+            current["hooks"] = hooks_section
         ours = default_hooks()
 
         injected = []
         for event, entries in ours.items():
             existing = hooks_section.get(event, [])
+            if not isinstance(existing, list):
+                existing = []
             # dedupe: skip if any existing entry already contains our aura command
             has_ours = any(
                 AURA_BIN in json.dumps(e) for e in existing
@@ -102,5 +109,25 @@ def inject(workdir: str, emit_lifecycle: bool = True) -> dict:
 
         return {"hooks": "injected" if injected else "already-present",
                 "events": injected, "path": str(settings_path)}
+    except Exception as e:
+        return {"hooks": "error", "reason": str(e)}
+
+
+def inject_compact_recovery(workdir: str, document: str) -> dict[str, Any]:
+    """Merge Claude Code compact recovery into <workdir>/.claude/settings.json."""
+    try:
+        from lib import compact_recovery
+
+        wd = Path(workdir)
+        if not wd.is_dir():
+            return {"hooks": "skipped", "reason": f"workdir not a dir: {workdir}"}
+        doc = Path(document).expanduser()
+        result = compact_recovery.write_claude_compact_recovery_settings(wd, doc)
+        return {
+            "hooks": "injected" if result.get("changed") else "already-present",
+            "event": "SessionStart",
+            "matcher": "compact",
+            **result,
+        }
     except Exception as e:
         return {"hooks": "error", "reason": str(e)}

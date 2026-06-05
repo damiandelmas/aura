@@ -16,10 +16,7 @@ def _profile_name(ref: str | None) -> str | None:
 
 
 def _package_runtime_profile(record: dict) -> str | None:
-    profile = record.get("profile")
-    if record.get("runtime") == "omx" and profile == "omx/default":
-        return None
-    return profile
+    return record.get("profile")
 
 
 def _resume_session(record: dict, args) -> str | None:
@@ -106,7 +103,6 @@ def _spawn_args(record: dict, args) -> argparse.Namespace:
         profile=None,
         runtime_profile=runtime_profile,
         boxed=runtime == "codex",
-        omx_profile=None,
         launch_command=None,
         _agent_package={
             "agent_id": record["agent_id"],
@@ -201,6 +197,16 @@ def run(args):
             return {"ok": True, "history": agent_history.build(args.ref)}
         except Exception as exc:
             return {"ok": False, "error": "agent-history-failed", "detail": str(exc), "ref": args.ref}
+    if action == "archive":
+        try:
+            return agent_packages.archive(
+                args.ref,
+                reason=getattr(args, "reason", None),
+                dry_run=bool(getattr(args, "dry_run", False)),
+                force=bool(getattr(args, "force", False)),
+            )
+        except Exception as exc:
+            return {"ok": False, "error": "agent-archive-failed", "detail": str(exc), "ref": args.ref}
     if action == "spawn":
         try:
             record = agent_packages.resolve(args.ref)

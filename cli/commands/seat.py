@@ -867,11 +867,9 @@ def _restart_record_is_package_agent(record: dict) -> bool:
         "agent_package_root",
         "package_root",
         "codex_package_root",
-        "omx_package_root",
         "runtime_home",
         "runtime_capsule_root",
         "codex_box_root",
-        "omx_box_root",
     ):
         value = record.get(key)
         if not value:
@@ -1588,12 +1586,6 @@ def _infer_adoption_runtime(pane_command: str | None, pane_argv: list[str] | Non
         return "claude-code"
     if "hermes" in argv_str:
         return "hermes"
-    if "omx" in argv_str:
-        return "omx"
-    if "openclaw" in argv_str:
-        return "openclaw"
-    if "opencode" in argv_str:
-        return "opencode"
     if cmd in {"bash", "zsh", "sh", "fish", "dash"}:
         return "shell"
     if cmd == "node":
@@ -2314,6 +2306,170 @@ def _rename(args, registry) -> dict:
     return result
 
 
+def _gc(args) -> dict:
+    """TTL-based auto-archival of CRUFT registry rows.
+
+    Replaces manual ``aura seat sweep`` for the common case of rows that are
+    truly orphaned: pane gone, no resumable runtime session, and older than
+    *ttl* days.  Resumable lineage is unconditionally KEPT.
+
+    This is an EXPLICIT write command. --confirm is required to perform any
+    removal; --dry-run (or the absence of --confirm) only reports.
+    """
+    from datetime import datetime, timezone
+    from lib import registry, tmux_mirror, runtime_session
+
+    ttl: int = getattr(args, "ttl", None) or 7
+    fleet_filter = getattr(args, "fleet", None)
+    dry_run = bool(getattr(args, "dry_run", False))
+    confirm = bool(getattr(args, "confirm", False))
+
+    records = registry.list_agents(fleet_filter, include_hidden=True)
+
+    mirror = tmux_mirror.list_physical_panes()
+    if not mirror.get("ok"):
+        return {
+            "ok": False,
+            "error": "tmux-mirror-unavailable",
+            "detail": mirror.get("error") or "tmux list-panes failed",
+        }
+
+    joined = tmux_mirror.join_managed(mirror["panes"], records)
+    missing_managed = joined.get("missing_managed", [])
+
+    # Build a logical_ref -> full record map so we can look up the rich row
+    # from the compact entries returned by join_managed.
+    ref_to_record: dict = {}
+    for rec in records:
+        seat_name = rec.get("seat") or rec.get("name")
+        fleet_name = rec.get("fleet")
+        if not seat_name:
+            continue
+        logical_ref = f"{fleet_name}:{seat_name}" if fleet_name else str(seat_name)
+        ref_to_record[logical_ref] = rec
+
+    now = datetime.now(timezone.utc)
+
+    archived: list[dict] = []
+    kept: list[dict] = []
+
+    for entry in missing_managed:
+        logical_ref = entry.get("logical_ref")
+        if not logical_ref:
+            continue
+        record = ref_to_record.get(logical_ref)
+        if not record:
+            # Cannot find full record — skip conservatively
+            kept.append({"ref": logical_ref, "reason": "record-not-found"})
+            continue
+
+        # KEEP: resumable lineage
+        if runtime_session.is_bound_session(record):
+            kept.append({"ref": logical_ref, "reason": "resumable"})
+            continue
+
+        # KEEP: fork-in-progress — carries a source_session_id (fork lineage) even
+        # though no child runtime_session_id is bound yet. Never auto-archive it.
+        if record.get("runtime_session_binding") == "pending-fork-child" or record.get("source_session_id"):
+            kept.append({"ref": logical_ref, "reason": "fork-lineage"})
+            continue
+
+        # KEEP: already retired / terminal
+        if record.get("terminal_state") == "terminal" or record.get("restore_suppressed"):
+            kept.append({"ref": logical_ref, "reason": "already-archived"})
+            continue
+
+        # AGE: parse created_at conservatively
+        created_at_raw = record.get("created_at")
+        if not created_at_raw:
+            kept.append({"ref": logical_ref, "reason": "no-created-at"})
+            continue
+        try:
+            created_at = datetime.fromisoformat(str(created_at_raw))
+            # Ensure timezone-aware comparison
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            kept.append({"ref": logical_ref, "reason": "no-created-at"})
+            continue
+
+        age_days = (now - created_at).days
+        if age_days <= ttl:
+            kept.append({"ref": logical_ref, "reason": "within-ttl", "age_days": age_days})
+            continue
+
+        # ARCHIVE: unbound + no resumable session + older than TTL
+        archived.append({
+            "ref": logical_ref,
+            "seat": record.get("seat") or record.get("name"),
+            "fleet": record.get("fleet"),
+            "age_days": age_days,
+            "created_at": created_at_raw,
+        })
+
+    # Perform removals only when --confirm is set (never on --dry-run or default)
+    removed_refs: list[str] = []
+    if confirm and not dry_run:
+        now_iso = registry.now_iso()
+        for row in archived:
+            seat_name = row["seat"]
+            fleet_name = row["fleet"]
+            record = ref_to_record.get(row["ref"])
+            if not record:
+                continue
+            after = {
+                **record,
+                "terminal_state": "terminal",
+                "restore_suppressed": True,
+                "archived_at": now_iso,
+                "archive_reason": "ttl-gc",
+            }
+            try:
+                from lib import session_ledger
+                session_ledger.append_seat_event(
+                    event="seat_auto_archived",
+                    before=record,
+                    after=after,
+                    source_command="aura seat gc",
+                )
+            except Exception:
+                pass
+            if registry.remove_agent(seat_name, fleet=fleet_name):
+                removed_refs.append(row["ref"])
+
+        # Single batch invalidation after all removals
+        if removed_refs:
+            try:
+                from lib import diagnostic_cache
+                for ref in removed_refs:
+                    diagnostic_cache.invalidate(
+                        ref,
+                        reason="seat-auto-archived-ttl-gc",
+                        source_command="aura seat gc",
+                        evidence={"ttl_days": ttl},
+                    )
+            except Exception:
+                pass
+
+    return {
+        "ok": True,
+        "schema": "aura.seat_gc.v1",
+        "dry_run": not confirm or dry_run,
+        "ttl_days": ttl,
+        "fleet": fleet_filter,
+        "archived": archived,
+        "removed": removed_refs,
+        "kept": kept,
+        "counts": {
+            "scanned": len(records),
+            "candidates": len(missing_managed),
+            "archived": len(archived),
+            "removed": len(removed_refs),
+            "kept": len(kept),
+        },
+    }
+
+
 def run(args):
     from lib import registry
 
@@ -2394,4 +2550,6 @@ def run(args):
         )
     if action == "rename":
         return _rename(args, registry)
+    if action == "gc":
+        return _gc(args)
     return {"ok": False, "error": f"unknown seat action: {action}"}

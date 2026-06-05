@@ -38,8 +38,6 @@ def test_runtime_profile_adapter_classification_matches_atlas():
 
     assert runtime_profiles.classify_runtime_profile_adapter("hermes").kind.value == "native-ref"
     assert runtime_profiles.classify_runtime_profile_adapter("codex").kind.value == "boxed-template"
-    assert runtime_profiles.classify_runtime_profile_adapter("omx").supports_box is True
-    assert runtime_profiles.classify_runtime_profile_adapter("opencode").kind.value == "boxed-xdg-home"
     assert runtime_profiles.classify_runtime_profile_adapter("aider").kind.value == "launch-preset"
 
 

@@ -13,20 +13,13 @@ CLI = ROOT / "cli" / "aura"
 sys.path.insert(0, str(ROOT / "cli"))
 
 
-def test_openclaw_and_shell_runtime_specs_exist():
+def test_shell_runtime_spec_exists():
     from lib import runtimes
 
-    openclaw_runtime, openclaw_spec = runtimes.resolve_runtime("openclaw")
     shell_runtime, shell_spec = runtimes.resolve_runtime("shell")
-    omx_runtime, omx_spec = runtimes.resolve_runtime("omx")
 
-    assert openclaw_runtime == "openclaw"
-    assert openclaw_spec["command"] == "openclaw"
     assert shell_runtime == "shell"
     assert "command" in shell_spec
-    assert omx_runtime == "omx"
-    assert omx_spec["command"] == "omx --direct --madmax"
-    assert omx_spec["native_state"] == ".omx"
     assert runtimes.graceful_exit("future-runtime") == "/exit"
 
 
@@ -53,12 +46,10 @@ def test_initial_prompt_argv_runtime_commands_quote_prompt():
     from lib import runtimes
 
     codex_runtime, codex_spec = runtimes.resolve_runtime("codex")
-    omx_runtime, omx_spec = runtimes.resolve_runtime("omx")
     claude_runtime, claude_spec = runtimes.resolve_runtime("claude-code")
     shell_runtime, shell_spec = runtimes.resolve_runtime("shell")
 
     assert runtimes.supports_initial_prompt_argv(codex_runtime, codex_spec) is True
-    assert runtimes.supports_initial_prompt_argv(omx_runtime, omx_spec) is True
     assert runtimes.supports_initial_prompt_argv(claude_runtime, claude_spec) is True
     assert runtimes.supports_initial_prompt_argv(shell_runtime, shell_spec) is False
 
@@ -69,12 +60,6 @@ def test_initial_prompt_argv_runtime_commands_quote_prompt():
         name="worker",
         prompt=codex_prompt,
     ) == f"codex --dangerously-bypass-approvals-and-sandbox {shlex.quote(codex_prompt)}"
-    assert runtimes.build_command(
-        "omx",
-        omx_spec,
-        name="worker",
-        prompt="say ready",
-    ) == "omx --direct --madmax 'say ready'"
     assert runtimes.build_command(
         "shell",
         shell_spec,
@@ -704,9 +689,9 @@ def test_tmux_create_window_scrubs_session_env_for_existing_session(monkeypatch,
         "late-seat",
         str(tmp_path),
         detached=True,
-        command="omx --direct --madmax",
-        env={"OMX_ROOT": "/state/omx-root", "OMX_TEAM_STATE_ROOT": "/state/omx-state"},
-        unset_env=["OMX_ROOT", "OMX_TEAM_STATE_ROOT", "CODEX_HOME"],
+        command="codex --dangerously-bypass-approvals-and-sandbox",
+        env={"CODEX_HOME": "/state/codex-home"},
+        unset_env=["CODEX_HOME", "AURA_AGENT_PACKAGE_ID", "AURA_AGENT_PACKAGE_ROOT"],
     )
 
     assert result["ok"] is True
@@ -714,19 +699,12 @@ def test_tmux_create_window_scrubs_session_env_for_existing_session(monkeypatch,
     set_env_calls = [c for c in calls if c[:3] == ["set-environment", "-t", "livefleet"]]
 
     # Unset keys scrubbed from session.
-    assert ["set-environment", "-t", "livefleet", "-u", "OMX_ROOT"] in set_env_calls
-    assert ["set-environment", "-t", "livefleet", "-u", "OMX_TEAM_STATE_ROOT"] in set_env_calls
     assert ["set-environment", "-t", "livefleet", "-u", "CODEX_HOME"] in set_env_calls
+    assert ["set-environment", "-t", "livefleet", "-u", "AURA_AGENT_PACKAGE_ID"] in set_env_calls
+    assert ["set-environment", "-t", "livefleet", "-u", "AURA_AGENT_PACKAGE_ROOT"] in set_env_calls
 
-    # Body-home keys in env set on session with correct values.
-    assert ["set-environment", "-t", "livefleet", "OMX_ROOT", "/state/omx-root"] in set_env_calls
-    assert ["set-environment", "-t", "livefleet", "OMX_TEAM_STATE_ROOT", "/state/omx-state"] in set_env_calls
-
-    # CODEX_HOME is not in env so no positive set for it.
-    assert not any(
-        c == ["set-environment", "-t", "livefleet", "CODEX_HOME", str]
-        for c in set_env_calls
-    )
+    # Body-home key in env set on session with correct value.
+    assert ["set-environment", "-t", "livefleet", "CODEX_HOME", "/state/codex-home"] in set_env_calls
 
     # new-window must have been issued (existing-session path).
     assert any(c[:3] == ["new-window", "-t", "livefleet"] for c in calls)
@@ -825,8 +803,6 @@ def test_spawn_runtime_session_env_scrub_covers_full_unset_list(monkeypatch, tmp
         "AURA_AGENT_PACKAGE_ADDRESS",
         "AURA_AGENT_PACKAGE_ALIAS",
         "AURA_RUNTIME_CAPSULE_REF",
-        "OMX_ROOT",
-        "OMX_TEAM_STATE_ROOT",
         "NO_COLOR",
         "AURA_RUNTIME_SESSION_ID",
         "AURA_SESSION_ID",
@@ -841,14 +817,13 @@ def test_spawn_runtime_session_env_scrub_covers_full_unset_list(monkeypatch, tmp
 
 
 def test_spawn_runtime_session_env_sets_body_home_on_session(monkeypatch, tmp_path):
-    """Integration: when spawn sets CODEX_HOME / OMX_ROOT / OMX_TEAM_STATE_ROOT in
-    launch_env, create_window propagates them to the tmux session env so runtime-
-    created child panes inherit the correct body home."""
+    """Integration: when spawn sets CODEX_HOME in launch_env, create_window
+    propagates it to the tmux session env so runtime-created child panes
+    inherit the correct body home."""
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "agents.json"))
     monkeypatch.setenv("AURA_FLEET", "bodyfleet")
     monkeypatch.setenv("AURA_TMUX_INDEX_DEFAULTS", "0")
-    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
 
     from commands import spawn
     from lib import tmux as tmux_lib
@@ -876,11 +851,13 @@ def test_spawn_runtime_session_env_sets_body_home_on_session(monkeypatch, tmp_pa
             return tmux_lib.create_window(name, workdir, detached=detached, command=command, env=env, unset_env=unset_env)
 
     args = argparse.Namespace(
-        name="omx-body-seat",
-        runtime="omx",
+        name="codex-body-seat",
+        runtime="codex",
         resume_session=None,
         launch_command=None,
         profile=None,
+        runtime_profile=None,
+        boxed=True,
         omx_profile=None,
         model=None,
         as_pane=True,
@@ -896,20 +873,17 @@ def test_spawn_runtime_session_env_sets_body_home_on_session(monkeypatch, tmp_pa
 
     set_env_calls = [c for c in tmux_calls if c[:3] == ["set-environment", "-t", "bodyfleet"]]
 
-    # The OMX box sets OMX_ROOT, OMX_TEAM_STATE_ROOT, and CODEX_HOME in launch_env.
-    # All three must be forwarded to the tmux session env.
+    # The codex box sets CODEX_HOME in launch_env.
+    # It must be forwarded to the tmux session env.
     body_home_keys_set = {
         c[3]: c[4]
         for c in set_env_calls
-        if len(c) == 5 and c[3] in ("CODEX_HOME", "OMX_ROOT", "OMX_TEAM_STATE_ROOT")
+        if len(c) == 5 and c[3] == "CODEX_HOME"
     }
     assert "CODEX_HOME" in body_home_keys_set, f"CODEX_HOME not set on session env; set_env_calls={set_env_calls}"
-    assert "OMX_ROOT" in body_home_keys_set, f"OMX_ROOT not set on session env"
-    assert "OMX_TEAM_STATE_ROOT" in body_home_keys_set, f"OMX_TEAM_STATE_ROOT not set on session env"
 
-    # Values must match what spawn computed (omx box roots under state dir).
+    # Value must match what spawn computed (codex box root under state dir).
     assert body_home_keys_set["CODEX_HOME"].startswith(str(tmp_path / "state" / "runtime-homes"))
-    assert body_home_keys_set["OMX_ROOT"].startswith(str(tmp_path / "state" / "runtime-homes"))
 
 
 def test_spawn_run_does_not_precreate_tmux_session(monkeypatch, tmp_path):
@@ -984,8 +958,6 @@ def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, 
                 "AURA_AGENT_PACKAGE_ADDRESS",
                 "AURA_AGENT_PACKAGE_ALIAS",
                 "AURA_RUNTIME_CAPSULE_REF",
-                "OMX_ROOT",
-                "OMX_TEAM_STATE_ROOT",
             ]
             return {"ok": True}
 
@@ -1121,8 +1093,6 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
         "AURA_AGENT_PACKAGE_ADDRESS",
         "AURA_AGENT_PACKAGE_ALIAS",
         "AURA_RUNTIME_CAPSULE_REF",
-        "OMX_ROOT",
-        "OMX_TEAM_STATE_ROOT",
     ]
     assert "Do the unit work." in sent[0][1]
     assert "launch=aura-launch-" in sent[0][1]
@@ -1159,26 +1129,6 @@ def test_resolve_package_env_sets_codex_home_for_codex_package(tmp_path):
     )
     assert env["CODEX_HOME"] == str((root / ".codex").resolve())
     assert meta == {}
-
-
-def test_resolve_package_env_sets_omx_roots_for_omx_package(tmp_path):
-    from commands import spawn
-
-    root = tmp_path / "i_omx"
-    env, _meta = spawn._resolve_package_env(
-        {
-            "root": str(root),
-            "env": {
-                "CODEX_HOME": ".codex",
-                "OMX_ROOT": ".",
-                "OMX_TEAM_STATE_ROOT": ".omx/state",
-            },
-        },
-        "omx",
-    )
-    assert env["CODEX_HOME"] == str((root / ".codex").resolve())
-    assert env["OMX_ROOT"] == str(root.resolve())
-    assert env["OMX_TEAM_STATE_ROOT"] == str((root / ".omx" / "state").resolve())
 
 
 def test_codex_package_spawn_sets_own_codex_home_over_contaminated_parent(monkeypatch, tmp_path):
@@ -1255,8 +1205,6 @@ def test_codex_package_spawn_sets_own_codex_home_over_contaminated_parent(monkey
         "AURA_AGENT_PACKAGE_ID",
         "AURA_AGENT_PACKAGE_ROOT",
         "AURA_RUNTIME_CAPSULE_REF",
-        "OMX_ROOT",
-        "OMX_TEAM_STATE_ROOT",
     ):
         assert key in unset_env
 
@@ -1302,404 +1250,6 @@ def test_spawn_non_codex_does_not_claim_agent_map_injected(monkeypatch, tmp_path
     assert result["ok"] is True
     assert "agent_map_included" not in result["prompt_delivery"]
     assert sent[0][1] == "hello"
-
-
-def test_spawn_omx_uses_aura_seat_box_without_project_mutation(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "agents.json"))
-    monkeypatch.setenv("AURA_FLEET", "unitfleet")
-    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
-
-    from commands import spawn
-
-    unit = tmp_path / "project"
-    unit.mkdir()
-    created = []
-
-    class FakeTerminal:
-        SESSION_NAME = "unitfleet"
-        BACKEND_NAME = "tmux"
-
-        @staticmethod
-        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
-            created.append((name, workdir, detached, command, env, unset_env))
-            return {"ok": True, "target": f"unitfleet:{name}", "pane_id": "%77"}
-
-    args = argparse.Namespace(
-        name="omx-seat",
-        runtime="omx",
-        resume_session=None,
-        launch_command=None,
-        profile=None,
-        omx_profile=None,
-        model=None,
-        as_pane=True,
-        prompt=None,
-        work=None,
-        cwd=str(unit),
-        context=None,
-    )
-
-    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
-
-    assert result["ok"] is True
-    assert result["runtime"] == "omx"
-    assert result["command"] == "omx --direct --madmax"
-    assert result["omx_isolation"] == "aura-seat-box"
-    assert "profile" not in result
-    assert result["omx_profile_applied"] is False
-    assert result["omx_profile_templates_applied"] == []
-    assert result["omx_box_team_state_root"] == str(
-        tmp_path / "state" / "runtime-homes" / "omx" / "unitfleet" / "omx-seat" / "omx-root" / ".omx" / "state"
-    )
-    assert result["runtime_home"] == result["omx_box_root"]
-    assert result["native_state_ref"] == result["omx_box_omx_state"]
-    assert not (unit / ".codex").exists()
-    assert not (unit / ".omx").exists()
-
-    _, workdir, _, command, env, _ = created[0]
-    assert workdir == str(unit)
-    assert command == "omx --direct --madmax"
-    assert env["OMX_LAUNCH_POLICY"] == "direct"
-    assert env["OMXBOX_ACTIVE"] == "1"
-    assert env["OMX_AUTO_UPDATE"] == "0"
-    assert env["OMX_NOTIFY_FALLBACK"] == "0"
-    assert env["OMX_SOURCE_CWD"] == str(unit)
-    assert "AURA_OMX_PROFILE" not in env
-    assert env["OMX_TEAM_STATE_ROOT"] == str(
-        tmp_path / "state" / "runtime-homes" / "omx" / "unitfleet" / "omx-seat" / "omx-root" / ".omx" / "state"
-    )
-    assert env["HOME"].startswith(str(tmp_path / "state" / "runtime-homes" / "omx" / "unitfleet" / "omx-seat"))
-    assert env["CODEX_HOME"] == str(tmp_path / "state" / "runtime-homes" / "omx" / "unitfleet" / "omx-seat" / "codex-home")
-    assert env["OMX_ROOT"] == str(tmp_path / "state" / "runtime-homes" / "omx" / "unitfleet" / "omx-seat" / "omx-root")
-    assert result["omx_box_star_prompt_preseeded"] is True
-    assert result["omx_box_source_cwd_trusted"] is True
-
-    box = tmp_path / "state" / "runtime-homes" / "omx" / "unitfleet" / "omx-seat"
-    assert (box / "home" / ".omx" / "state" / "star-prompt.json").is_file()
-    config = (box / "codex-home" / "config.toml").read_text(encoding="utf-8")
-    assert f'[projects."{unit}"]' in config
-    assert 'trust_level = "trusted"' in config
-
-
-def test_spawn_omx_trusts_effective_git_root_for_source_subdir(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "agents.json"))
-    monkeypatch.setenv("AURA_FLEET", "unitfleet")
-    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
-
-    from commands import spawn
-
-    repo = tmp_path / "repo"
-    unit = repo / "nested" / "project"
-    unit.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
-    created = []
-
-    class FakeTerminal:
-        SESSION_NAME = "unitfleet"
-        BACKEND_NAME = "tmux"
-
-        @staticmethod
-        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
-            created.append((name, workdir, detached, command, env, unset_env))
-            return {"ok": True, "target": f"unitfleet:{name}", "pane_id": "%79"}
-
-    args = argparse.Namespace(
-        name="omx-git-root-seat",
-        runtime="omx",
-        resume_session=None,
-        launch_command=None,
-        profile=None,
-        omx_profile=None,
-        model=None,
-        as_pane=True,
-        prompt=None,
-        work=None,
-        cwd=str(unit),
-        context=None,
-    )
-
-    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
-
-    assert result["ok"] is True
-    config = (
-        tmp_path
-        / "state"
-        / "runtime-homes" / "omx"
-        / "unitfleet"
-        / "omx-git-root-seat"
-        / "codex-home"
-        / "config.toml"
-    ).read_text(encoding="utf-8")
-    assert f'[projects."{unit}"]' in config
-    assert f'[projects."{repo}"]' in config
-    assert created[0][1] == str(unit)
-
-
-def test_spawn_omx_trusts_ancestor_codex_project_config_root(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "agents.json"))
-    monkeypatch.setenv("AURA_FLEET", "unitfleet")
-    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
-
-    from commands import spawn
-
-    project_root = tmp_path / "project-root"
-    unit = project_root / "nested" / "project"
-    unit.mkdir(parents=True)
-    (project_root / ".codex").mkdir()
-    created = []
-
-    class FakeTerminal:
-        SESSION_NAME = "unitfleet"
-        BACKEND_NAME = "tmux"
-
-        @staticmethod
-        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
-            created.append((name, workdir, detached, command, env, unset_env))
-            return {"ok": True, "target": f"unitfleet:{name}", "pane_id": "%80"}
-
-    args = argparse.Namespace(
-        name="omx-codex-root-seat",
-        runtime="omx",
-        resume_session=None,
-        launch_command=None,
-        profile=None,
-        omx_profile=None,
-        model=None,
-        as_pane=True,
-        prompt=None,
-        work=None,
-        cwd=str(unit),
-        context=None,
-    )
-
-    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
-
-    assert result["ok"] is True
-    config = (
-        tmp_path
-        / "state"
-        / "runtime-homes" / "omx"
-        / "unitfleet"
-        / "omx-codex-root-seat"
-        / "codex-home"
-        / "config.toml"
-    ).read_text(encoding="utf-8")
-    assert f'[projects."{unit}"]' in config
-    assert f'[projects."{project_root}"]' in config
-    assert created[0][1] == str(unit)
-
-
-def test_spawn_omx_applies_explicit_profile_template_to_seat_box(monkeypatch, tmp_path):
-    state_dir = tmp_path / "state"
-    monkeypatch.setenv("AURA_STATE_DIR", str(state_dir))
-    monkeypatch.setenv("AURA_REGISTRY_PATH", str(state_dir / "registry" / "agents.json"))
-    monkeypatch.setenv("AURA_FLEET", "unitfleet")
-    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
-
-    from commands import spawn
-
-    unit = tmp_path / "project"
-    unit.mkdir()
-
-    profile_root = state_dir / "runtime-profiles" / "omx" / "dev"
-    codex_template = profile_root / "codex-home-template"
-    omx_template = profile_root / "omx-root-template"
-    codex_template.mkdir(parents=True)
-    omx_template.mkdir(parents=True)
-    (codex_template / "profile-note.md").write_text("template note\n", encoding="utf-8")
-    (codex_template / "keep-existing.md").write_text("template value\n", encoding="utf-8")
-    (omx_template / "seed.txt").write_text("omx seed\n", encoding="utf-8")
-
-    box_codex_home = state_dir / "runtime-homes" / "omx" / "unitfleet" / "omx-profile-seat" / "codex-home"
-    box_codex_home.mkdir(parents=True)
-    (box_codex_home / "keep-existing.md").write_text("existing value\n", encoding="utf-8")
-
-    created = []
-
-    class FakeTerminal:
-        SESSION_NAME = "unitfleet"
-        BACKEND_NAME = "tmux"
-
-        @staticmethod
-        def create_window(name, workdir, detached=False, command=None, env=None, unset_env=None):
-            created.append((name, workdir, detached, command, env, unset_env))
-            return {"ok": True, "target": f"unitfleet:{name}", "pane_id": "%78"}
-
-    args = argparse.Namespace(
-        name="omx-profile-seat",
-        runtime="omx",
-        resume_session=None,
-        launch_command=None,
-        profile=None,
-        omx_profile="dev",
-        model=None,
-        as_pane=True,
-        prompt=None,
-        work=None,
-        cwd=str(unit),
-        context=None,
-    )
-
-    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
-
-    assert result["ok"] is True
-    assert result["runtime"] == "omx"
-    assert result["profile"] == "dev"
-    assert result["omx_profile"] == "dev"
-    assert result["omx_profile_root"] == str(profile_root)
-    assert result["omx_profile_applied"] is True
-    assert result["omx_profile_templates_applied"] == ["codex-home-template", "omx-root-template"]
-    assert (box_codex_home / "profile-note.md").read_text(encoding="utf-8") == "template note\n"
-    assert (box_codex_home / "keep-existing.md").read_text(encoding="utf-8") == "existing value\n"
-    assert (
-        state_dir
-        / "runtime-homes" / "omx"
-        / "unitfleet"
-        / "omx-profile-seat"
-        / "omx-root"
-        / "seed.txt"
-    ).read_text(encoding="utf-8") == "omx seed\n"
-    assert not (unit / ".codex").exists()
-    assert not (unit / ".omx").exists()
-
-    _, workdir, _, command, env, _ = created[0]
-    assert workdir == str(unit)
-    assert command == "omx --direct --madmax"
-    assert env["AURA_OMX_PROFILE"] == "dev"
-    assert env["CODEX_HOME"] == str(box_codex_home)
-    assert env["OMX_TEAM_STATE_ROOT"] == str(
-        state_dir / "runtime-homes" / "omx" / "unitfleet" / "omx-profile-seat" / "omx-root" / ".omx" / "state"
-    )
-
-
-def test_spawn_omx_missing_explicit_profile_fails(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "agents.json"))
-    monkeypatch.setenv("AURA_FLEET", "unitfleet")
-    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
-
-    from commands import spawn
-
-    unit = tmp_path / "project"
-    unit.mkdir()
-
-    class FakeTerminal:
-        SESSION_NAME = "unitfleet"
-
-        @staticmethod
-        def create_window(*args, **kwargs):
-            raise AssertionError("OMX spawn should fail before creating a terminal")
-
-    args = argparse.Namespace(
-        name="omx-seat",
-        runtime="omx",
-        resume_session=None,
-        launch_command=None,
-        profile=None,
-        omx_profile="missing",
-        model=None,
-        as_pane=True,
-        prompt=None,
-        work=None,
-        cwd=str(unit),
-        context=None,
-    )
-
-    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
-
-    assert result["ok"] is False
-    assert result["error"] == "omx-box-setup-failed"
-    assert "omx profile not found" in result["detail"]
-    assert not (unit / ".codex").exists()
-    assert not (unit / ".omx").exists()
-
-
-def test_spawn_omx_rejects_profile_template_symlink(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "agents.json"))
-    monkeypatch.setenv("AURA_FLEET", "unitfleet")
-    monkeypatch.setenv("AURA_OMX_BOX_SETUP", "0")
-
-    from commands import spawn
-
-    unit = tmp_path / "project"
-    unit.mkdir()
-    outside = tmp_path / "outside-secret.txt"
-    outside.write_text("do not copy\n", encoding="utf-8")
-    profile_template = tmp_path / "state" / "runtime-profiles" / "omx" / "unsafe" / "codex-home-template"
-    profile_template.mkdir(parents=True)
-    os.symlink(outside, profile_template / "leak.txt")
-
-    class FakeTerminal:
-        SESSION_NAME = "unitfleet"
-
-        @staticmethod
-        def create_window(*args, **kwargs):
-            raise AssertionError("OMX spawn should fail before creating a terminal")
-
-    args = argparse.Namespace(
-        name="omx-seat",
-        runtime="omx",
-        resume_session=None,
-        launch_command=None,
-        profile=None,
-        omx_profile="unsafe",
-        model=None,
-        as_pane=True,
-        prompt=None,
-        work=None,
-        cwd=str(unit),
-        context=None,
-    )
-
-    result = spawn._spawn_terminal_runtime(args, FakeTerminal, lambda x: x)
-
-    assert result["ok"] is False
-    assert result["error"] == "omx-box-setup-failed"
-    assert "symlink rejected" in result["detail"]
-    assert not (
-        tmp_path
-        / "state"
-        / "runtime-homes" / "omx"
-        / "unitfleet"
-        / "omx-seat"
-        / "codex-home"
-        / "leak.txt"
-    ).exists()
-
-
-def test_spawn_omx_profile_flags_conflict(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "state" / "registry" / "agents.json"))
-    monkeypatch.setenv("AURA_FLEET", "unitfleet")
-
-    from commands import spawn
-
-    unit = tmp_path / "project"
-    unit.mkdir()
-
-    args = argparse.Namespace(
-        name="omx-seat",
-        runtime="omx",
-        resume_session=None,
-        launch_command=None,
-        profile="legacy",
-        omx_profile="modern",
-        model=None,
-        as_pane=True,
-        prompt=None,
-        work=None,
-        cwd=str(unit),
-        context=None,
-    )
-
-    result = spawn._spawn_terminal_runtime(args, object(), lambda x: x)
-
-    assert result["ok"] is False
-    assert result["error"] == "conflicting-omx-profile"
 
 
 def test_spawn_hermes_profile_behavior_unchanged(monkeypatch, tmp_path):
@@ -2851,7 +2401,7 @@ def test_event_target_blocker_detects_active_composer(monkeypatch):
     assert result["blocker"] is None
 
 
-def test_spawn_runtime_choices_include_openclaw_and_shell():
+def test_spawn_runtime_choices_include_shell():
     help_result = subprocess.run(
         [sys.executable, str(CLI), "spawn", "--help"],
         cwd=ROOT,
@@ -2860,9 +2410,7 @@ def test_spawn_runtime_choices_include_openclaw_and_shell():
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
     )
     assert help_result.returncode == 0
-    assert "openclaw" in help_result.stdout
     assert "shell" in help_result.stdout
-    assert "omx" in help_result.stdout
     assert "--cwd" in help_result.stdout
     assert "--work" in help_result.stdout
     assert "--context" in help_result.stdout

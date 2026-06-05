@@ -15,7 +15,7 @@ from pathlib import Path
 
 from lib import runtime_boxes, runtime_profiles, state
 
-SUPPORTED_BASE_RUNTIMES = {"codex", "omx"}
+SUPPORTED_BASE_RUNTIMES = {"codex"}
 
 AURA_OPERATOR_SKILL_ALLOWLIST = (
     "aura",
@@ -43,19 +43,9 @@ SUPPORTED_PROFILE_PRESETS = {"aura-operator": AURA_OPERATOR_SKILL_ALLOWLIST}
 
 CODEX_DEFAULT_CONFIG = """# Aura-owned boxed Codex runtime base.
 # This file intentionally avoids copying ~/.codex/config.toml so boxed Codex
-# seats do not inherit global/user behavior accidentally. Codex/default keeps
-# the lightweight global Codex status shape, including session id, without
-# OMX budget/context counters.
-[tui]
-status_line = ["model-with-reasoning", "git-branch", "current-dir", "session-id"]
-"""
-
-OMX_CODEX_CONFIG = """# Aura-owned boxed OMX runtime Codex home base.
-# This file intentionally avoids copying ~/.codex/config.toml so boxed OMX
 # seats do not inherit global/user behavior accidentally.
 [tui]
-# omx:managed-status-line
-status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"]
+status_line = ["model-with-reasoning", "git-branch", "current-dir", "session-id"]
 """
 
 
@@ -74,27 +64,17 @@ def runtime_base_root(runtime: str, base: str = "default") -> Path:
 
 def template_names(runtime: str) -> tuple[str, ...]:
     runtime = _validate_supported_runtime(runtime)
-    if runtime == "codex":
-        return ("home-template", "codex-home-template", "runtime-template")
-    return ("home-template", "codex-home-template", "omx-root-template")
+    return ("home-template", "codex-home-template", "runtime-template")
 
 
-def template_mappings(runtime: str, *, home: Path, codex_home: Path, runtime_root: Path | None = None, omx_root: Path | None = None) -> dict[str, Path]:
+def template_mappings(runtime: str, *, home: Path, codex_home: Path, runtime_root: Path | None = None) -> dict[str, Path]:
     runtime = _validate_supported_runtime(runtime)
-    if runtime == "codex":
-        if runtime_root is None:
-            raise ValueError("codex runtime base requires runtime_root")
-        return {
-            "home-template": home,
-            "codex-home-template": codex_home,
-            "runtime-template": runtime_root,
-        }
-    if omx_root is None:
-        raise ValueError("omx runtime base requires omx_root")
+    if runtime_root is None:
+        raise ValueError("codex runtime base requires runtime_root")
     return {
         "home-template": home,
         "codex-home-template": codex_home,
-        "omx-root-template": omx_root,
+        "runtime-template": runtime_root,
     }
 
 
@@ -103,7 +83,7 @@ def _write_default_files(root: Path, runtime: str) -> None:
         (root / dirname).mkdir(parents=True, exist_ok=True)
     config_path = root / "codex-home-template" / "config.toml"
     if not config_path.exists():
-        config_path.write_text(CODEX_DEFAULT_CONFIG if runtime == "codex" else OMX_CODEX_CONFIG, encoding="utf-8")
+        config_path.write_text(CODEX_DEFAULT_CONFIG, encoding="utf-8")
 
 
 def validate_runtime_base(root: Path, runtime: str) -> list[runtime_profiles.TemplateSafetyFinding]:

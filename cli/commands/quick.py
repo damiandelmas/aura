@@ -12,7 +12,7 @@ from pathlib import Path
 from commands import spawn
 from lib import agent_packages, runtime_bases, runtime_boxes
 
-SUPPORTED_RUNTIMES = {"codex", "gajae-code", "hermes", "omx"}
+SUPPORTED_RUNTIMES = {"codex", "gajae-code", "hermes"}
 
 PRESET_SKILLS = {
     "minimal": (),
@@ -72,8 +72,6 @@ def _preset_warning(runtime: str, preset: str | None) -> str | None:
 def _profile_root(runtime: str, profile: str) -> Path:
     if runtime == "codex":
         return runtime_boxes.runtime_profile_root("codex", profile)
-    if runtime == "omx":
-        return runtime_boxes.runtime_profile_root("omx", profile)
     if runtime == "hermes":
         if profile == "default":
             return (Path.home() / ".hermes").resolve()
@@ -84,7 +82,7 @@ def _profile_root(runtime: str, profile: str) -> Path:
 
 
 def _skill_destination(runtime: str, profile_root: Path) -> Path:
-    if runtime in {"codex", "omx"}:
+    if runtime == "codex":
         return profile_root / "codex-home-template" / "skills"
     if runtime == "hermes":
         return profile_root / "skills"
@@ -95,7 +93,7 @@ def _skill_destination(runtime: str, profile_root: Path) -> Path:
 
 def _ensure_profile_skeleton(runtime: str, profile: str, *, existed: bool) -> Path:
     root = _profile_root(runtime, profile)
-    if runtime in {"codex", "omx"}:
+    if runtime == "codex":
         if not existed:
             runtime_bases.create_profile_from_base(runtime, root)
         else:
@@ -173,9 +171,7 @@ def _resolve_profile(args) -> tuple[str | None, dict[str, object] | None]:
 def _profile_ref(runtime: str, profile: str | None) -> str | None:
     if not profile:
         return None
-    if runtime in {"codex", "gajae-code", "omx", "hermes"}:
-        if runtime == "gajae-code":
-            return None
+    if runtime in {"codex", "hermes"}:
         return f"{runtime}/{profile}"
     return None
 
@@ -198,7 +194,7 @@ def _ensure_quick_agent(
 ) -> dict[str, object] | None:
     """Create or reuse the canonical package-native quick body for a runtime."""
 
-    if runtime not in {"codex", "gajae-code", "omx"}:
+    if runtime not in {"codex", "gajae-code"}:
         return None
     alias = _quick_agent_alias(runtime)
     try:
@@ -255,7 +251,6 @@ def attach_to_result(result: dict[str, object]) -> str | None:
 def _spawn_args(args, *, profile: str | None, quick_agent: dict[str, object] | None) -> argparse.Namespace:
     runtime = _validate_runtime(args.runtime)
     runtime_profile = _profile_ref(runtime, profile)
-    omx_profile = None
     boxed = runtime == "codex"
     return argparse.Namespace(
         name=args.seat or generated_seat(runtime),
@@ -279,7 +274,6 @@ def _spawn_args(args, *, profile: str | None, quick_agent: dict[str, object] | N
         profile=None,
         runtime_profile=runtime_profile,
         boxed=boxed,
-        omx_profile=omx_profile,
         launch_command=None,
         identity_provider="aura-agent" if quick_agent else None,
         identity_id=quick_agent.get("agent_id") if quick_agent else None,

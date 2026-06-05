@@ -321,51 +321,6 @@ def test_restart_package_codex_does_not_write_capsule_residue(monkeypatch, tmp_p
     assert not (package / "artifacts").exists()
 
 
-def test_restart_rehydrates_boxed_omx_capsule_env_and_manifest(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-
-    from commands import seat
-    from lib import registry
-
-    capsule = tmp_path / "omx-capsule"
-    runtime = capsule / "runtime"
-    for rel in ("home", "codex-home", "omx-root", "omx-root/.omx/state", "runtime/bin"):
-        (capsule / rel).mkdir(parents=True, exist_ok=True)
-
-    RestartTerminal.reset()
-    registry.upsert_agent(_record(
-        tmp_path,
-        runtime="omx",
-        command="omx --high",
-        runtime_home=str(capsule),
-        omx_box_root=str(capsule),
-        omx_box_home=str(capsule / "home"),
-        omx_box_codex_home=str(capsule / "codex-home"),
-        omx_box_omx_root=str(capsule / "omx-root"),
-        omx_box_team_state_root=str(capsule / "omx-root" / ".omx" / "state"),
-        omx_box_runtime=str(runtime),
-    ))
-
-    result = seat._restart(_args(prompt="fresh start"), registry, RestartTerminal)
-
-    assert result["ok"] is True
-    env = RestartTerminal.respawned[0][3]
-    assert env["HOME"] == str(capsule / "home")
-    assert env["CODEX_HOME"] == str(capsule / "codex-home")
-    assert env["OMX_ROOT"] == str(capsule / "omx-root")
-    assert env["OMX_TEAM_STATE_ROOT"] == str(capsule / "omx-root" / ".omx" / "state")
-    assert env["OMXBOX_ACTIVE"] == "1"
-    assert env["OMX_AUTO_UPDATE"] == "0"
-    assert env["OMX_NOTIFY_FALLBACK"] == "0"
-    assert env["AURA_OMX_BOX"] == str(capsule)
-    assert str(runtime / "bin") in env["PATH"].split(":")
-    body = json.loads((capsule / "aura-launch.json").read_text(encoding="utf-8"))
-    assert body["env_roots"]["CODEX_HOME"] == str(capsule / "codex-home")
-    assert body["env_roots"]["OMX_ROOT"] == str(capsule / "omx-root")
-    assert body["env_roots"]["OMX_TEAM_STATE_ROOT"] == str(capsule / "omx-root" / ".omx" / "state")
-
-
 def test_restart_resolves_codex_cwd_choice_in_same_viewport(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_REGISTRY_PATH", str(tmp_path / "agents.json"))
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))

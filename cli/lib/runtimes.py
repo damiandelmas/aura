@@ -23,15 +23,6 @@ RUNTIMES: dict[str, dict] = {
             "session_id_source": "none",
         },
     },
-    "openclaw": {
-        "command": "openclaw",
-        "graceful_exit": "/exit",
-        "submit_key": "Enter",
-        "capabilities": {
-            "supports_resume": False,
-            "session_id_source": "unknown",
-        },
-    },
     "claude-code": {
         "command": "claude --dangerously-skip-permissions",
         "graceful_exit": "/exit",
@@ -72,22 +63,6 @@ RUNTIMES: dict[str, dict] = {
             "fork_command": "codex --dangerously-bypass-approvals-and-sandbox fork {session_id}{prompt_arg}",
         },
     },
-    "omx": {
-        # Aura owns the tmux fleet/pane. OMX must run direct inside that pane and
-        # its Codex/OMX homes are boxed by cli.lib.omx so project cwd is not
-        # mutated into an OMX workspace for later non-OMX Codex seats.
-        "command": "omx --direct --madmax",
-        "graceful_exit": "/exit",
-        "submit_key": "Enter",
-        "native_state": ".omx",
-        "context_candidates": ["AGENTS.md"],
-        "capabilities": {
-            "supports_resume": True,
-            "supports_initial_prompt_argv": True,
-            "session_id_source": "boxed-codex-state-or-hook",
-            "resume_command": "omx resume --dangerously-bypass-approvals-and-sandbox{cwd_arg} {session_id}",
-        },
-    },
     "gajae-code": {
         "command": "gjc",
         "graceful_exit": "/exit",
@@ -98,15 +73,6 @@ RUNTIMES: dict[str, dict] = {
             "supports_resume": False,
             "supports_fork": False,
             "session_id_source": "package-gjc-state",
-        },
-    },
-    "opencode": {
-        "command": "opencode",
-        "graceful_exit": "/exit",
-        "submit_key": "Enter",
-        "capabilities": {
-            "supports_resume": False,
-            "session_id_source": "unknown",
         },
     },
 }

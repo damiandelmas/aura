@@ -26,7 +26,7 @@ from lib import runtime_boxes, runtime_profiles, state
 AGENT_SCHEMA = "aura.agent_manifest.v1"
 INDEX_SCHEMA = "aura.agent_package.index.v1"
 
-SUPPORTED_RUNTIMES = {"codex", "gajae-code", "omx"}
+SUPPORTED_RUNTIMES = {"codex", "gajae-code"}
 
 
 def _empty_index() -> dict[str, Any]:
@@ -225,14 +225,8 @@ def resolve(ref: str) -> dict[str, Any]:
 
 def package_dirs(root: Path, runtime: str | None = None) -> dict[str, str]:
     dirs = {"root": str(root)}
-    if runtime in {None, "codex", "omx"}:
+    if runtime in {None, "codex"}:
         dirs["codex_home"] = str(root / ".codex")
-    if runtime == "omx":
-        dirs.update({
-            "omx_root": str(root),
-            "omx_state": str(root / ".omx"),
-            "omx_team_state": str(root / ".omx" / "state"),
-        })
     if runtime == "gajae-code":
         dirs.update({
             "gjc_config": str(root / ".gjc"),
@@ -247,11 +241,7 @@ def _spawn_env(runtime: str) -> dict[str, str]:
             "GJC_CONFIG_DIR": ".gjc",
             "GJC_CODING_AGENT_DIR": ".gjc/agent",
         }
-    env = {"CODEX_HOME": ".codex"}
-    if runtime == "omx":
-        env["OMX_ROOT"] = "."
-        env["OMX_TEAM_STATE_ROOT"] = ".omx/state"
-    return env
+    return {"CODEX_HOME": ".codex"}
 
 
 def _spawn_argv(runtime: str) -> list[str]:
@@ -298,7 +288,7 @@ def create(
     agent_id = new_agent_id()
     root = package_root(agent_id)
     dirs = package_dirs(root, runtime)
-    for key in ("codex_home", "omx_team_state", "gjc_agent"):
+    for key in ("codex_home", "gjc_agent"):
         if key in dirs:
             Path(dirs[key]).mkdir(parents=True, exist_ok=True)
 
@@ -312,7 +302,7 @@ def create(
         "seat": seat,
         **({"profile": profile_ref} if profile_ref else {}),
     }
-    if runtime in {"codex", "omx"}:
+    if runtime == "codex":
         record["resume"] = {"default": "latest"}
     _atomic_write_json(manifest_path(root), record)
 
@@ -471,17 +461,6 @@ def promote_seat(
                 root / ".codex",
                 label="codex home",
             )
-        elif runtime == "omx":
-            _copy_required_dir(
-                row.get("omx_package_codex_home") or row.get("omx_box_codex_home"),
-                root / ".codex",
-                label="codex home",
-            )
-            _copy_required_dir(
-                row.get("omx_package_omx_state") or row.get("omx_box_omx_state") or row.get("native_state_ref"),
-                root / ".omx",
-                label="omx state",
-            )
         elif runtime == "gajae-code":
             _copy_required_dir(
                 row.get("gajae_code_package_gjc_config")
@@ -499,7 +478,7 @@ def promote_seat(
             "seat": row.get("name") or row.get("seat"),
             **({"profile": row.get("runtime_profile")} if row.get("runtime_profile") else {}),
         }
-        if runtime in {"codex", "omx"}:
+        if runtime == "codex":
             manifest["resume"] = {"default": "latest"}
         _atomic_write_json(manifest_path(root), manifest)
         index.setdefault("agents", {})[agent_id] = {
@@ -664,10 +643,10 @@ def _hook_presence(codex_home: Path) -> tuple[list[str], dict[str, bool]]:
 def _hook_records(ref: str | None) -> list[dict[str, Any]]:
     if ref:
         record = resolve(ref)
-        return [record] if record.get("runtime") in {"codex", "omx"} else []
+        return [record] if record.get("runtime") == "codex" else []
     records: list[dict[str, Any]] = []
     for row in census()["packages"]:
-        if row.get("runtime") not in {"codex", "omx"}:
+        if row.get("runtime") != "codex":
             continue
         if "missing-package-root" in row.get("findings", []) or "missing-manifest" in row.get("findings", []):
             continue
@@ -800,10 +779,8 @@ def _runtime_root_findings(root: Path, manifest: dict[str, Any] | None) -> list[
         return []
     runtime = str(manifest.get("runtime") or "")
     findings: list[str] = []
-    if runtime in {"codex", "omx"} and not (root / ".codex").is_dir():
+    if runtime == "codex" and not (root / ".codex").is_dir():
         findings.append("missing-runtime-root:.codex")
-    if runtime == "omx" and not (root / ".omx").is_dir():
-        findings.append("missing-runtime-root:.omx")
     if runtime == "gajae-code" and not (root / ".gjc" / "agent").is_dir():
         findings.append("missing-runtime-root:.gjc/agent")
     return findings
@@ -900,4 +877,186 @@ def census() -> dict[str, Any]:
         },
         "counts": counts,
         "packages": packages,
+    }
+
+
+def _archive_root_path() -> Path:
+    return state.state_root() / "_archive" / "agents"
+
+
+def _unique_archive_dest(target_dir: Path, basename: str) -> Path:
+    dest = target_dir / basename
+    if not dest.exists():
+        return dest
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return target_dir / f"{basename}-{ts}"
+
+
+def _is_pane_live(pane_ref: str | None, live_pane_ids: set[str]) -> bool:
+    """Return True if pane_ref resolves to a pane id that is in live_pane_ids."""
+    if not pane_ref:
+        return False
+    subject = str(pane_ref)
+    if subject.startswith("tmux:"):
+        subject = subject[len("tmux:"):]
+    if ":" in subject:
+        _, pane_id = subject.rsplit(":", 1)
+    else:
+        pane_id = subject
+    return pane_id.startswith("%") and pane_id in live_pane_ids
+
+
+def archive(
+    ref: str,
+    *,
+    reason: str | None = None,
+    dry_run: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Lineage-preserving retirement of a durable package body.
+
+    Moves the body directory under ``~/.aura/_archive/agents/``, removes all
+    registry rows that belong to this package (writing ``seat_archived`` ledger
+    events for each), and drops the ``agents.<id>`` entry from the index.
+    """
+    from lib import registry as reg
+    from lib import tmux_mirror
+
+    # 1. Resolve the body.
+    try:
+        record = resolve(ref)
+    except (FileNotFoundError, ValueError) as exc:
+        return {"ok": False, "error": "agent-not-found", "detail": str(exc), "ref": ref}
+
+    agent_id = record["agent_id"]
+    root = Path(record["root"])
+
+    # 2. Find all registry rows for this package.
+    all_rows = reg.list_agents(include_hidden=True)
+    package_rows = [
+        row for row in all_rows
+        if (row.get("agent_package_id") == agent_id or row.get("identity_id") == agent_id
+            or str(row.get("agent_package_root") or "") == str(root))
+    ]
+
+    # 3. Check liveness.
+    mirror = tmux_mirror.list_physical_panes()
+    live_pane_ids: set[str] = set()
+    if mirror.get("ok"):
+        for pane in mirror.get("panes", []):
+            pid = str(pane.get("pane_id") or "")
+            if pid.startswith("%"):
+                live_pane_ids.add(pid)
+
+    live_rows = [
+        row for row in package_rows
+        if _is_pane_live(row.get("pane_ref"), live_pane_ids)
+    ]
+    if live_rows and not force:
+        return {
+            "ok": False,
+            "error": "agent-has-live-seat",
+            "detail": "refusing to archive a package with live panes; pass --force only after manual verification",
+            "live": [
+                {
+                    "ref": row.get("seat_ref") or f"{row.get('fleet')}:{row.get('name') or row.get('seat')}",
+                    "pane_ref": row.get("pane_ref"),
+                }
+                for row in live_rows
+            ],
+        }
+
+    # 4. Compute archive destination.
+    archive_dir = _archive_root_path()
+    basename = root.name
+    dest = _unique_archive_dest(archive_dir, basename)
+
+    # 5. Build the planned actions report.
+    row_refs = [
+        row.get("seat_ref") or f"{row.get('fleet')}:{row.get('name') or row.get('seat')}"
+        for row in package_rows
+    ]
+    plan = {
+        "agent_id": agent_id,
+        "body_root": str(root),
+        "body_archive_dest": str(dest),
+        "rows_to_archive": row_refs,
+        "deindex": True,
+        "dry_run": dry_run,
+    }
+
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "plan": plan,
+            "agent_id": agent_id,
+        }
+
+    # 6. Archive each registry row.
+    reason_text = reason or "agent-package-archived"
+    now = reg.now_iso()
+    archived_rows: list[dict[str, Any]] = []
+    for row in package_rows:
+        seat_name = row.get("name") or row.get("seat") or ""
+        fleet_name = row.get("fleet") or ""
+        seat_ref_str = row.get("seat_ref") or f"{fleet_name}:{seat_name}"
+        after = {
+            **row,
+            "status": "archived",
+            "archived_at": now,
+            "archive_reason": reason_text,
+            "terminal_state": "historical",
+        }
+        event_id = None
+        try:
+            from lib import session_ledger
+
+            event = session_ledger.append_seat_event(
+                event="seat_archived",
+                before=row,
+                after=after,
+                evidence={
+                    "source_command": "aura agent archive",
+                    "reason": reason_text,
+                    "force": bool(force),
+                    "agent_package_id": agent_id,
+                },
+                source_command="aura agent archive",
+            )
+            event_id = (event or {}).get("event_id")
+        except Exception:
+            pass
+        reg.remove_agent(seat_name, fleet=fleet_name)
+        try:
+            from lib import diagnostic_cache
+
+            diagnostic_cache.invalidate(
+                seat_ref_str,
+                reason="agent-package-archived",
+                source_command="aura agent archive",
+                evidence={"archive_reason": reason_text, "agent_package_id": agent_id},
+            )
+        except Exception:
+            pass
+        archived_rows.append({
+            "ref": seat_ref_str,
+            "event_id": event_id,
+        })
+
+    # 7. Move the body directory.
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(root), str(dest))
+
+    # 8. Deindex.
+    index = read_index()
+    index.setdefault("agents", {}).pop(agent_id, None)
+    write_index(index)
+
+    return {
+        "ok": True,
+        "agent_id": agent_id,
+        "archived_rows": archived_rows,
+        "body_archived_to": str(dest),
+        "deindexed": True,
     }

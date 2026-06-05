@@ -18,21 +18,15 @@ LAUNCH_MANIFEST = "aura-launch.json"
 SESSION_MANIFEST = "runtime-session.json"
 LAUNCH_SCHEMA = "aura.runtime_capsule.launch.v1"
 SESSION_SCHEMA = "aura.runtime_capsule.session.v1"
-ENV_ROOT_KEYS = ("HOME", "CODEX_HOME", "OMX_ROOT", "OMX_TEAM_STATE_ROOT")
+ENV_ROOT_KEYS = ("HOME", "CODEX_HOME")
 
 _CAPSULE_ROOT_KEYS = (
-    "omx_box_root",
     "codex_box_root",
     "runtime_capsule_root",
     "runtime_home",
 )
 _CODEX_HOME_KEYS = (
-    "omx_box_codex_home",
     "codex_box_codex_home",
-)
-_OMX_ROOT_KEYS = (
-    "omx_box_omx_root",
-    "omx_box_team_state_root",
 )
 _LAUNCH_FIELDS = (
     "name",
@@ -65,12 +59,6 @@ _LAUNCH_FIELDS = (
     "identity_provider",
     "identity_id",
     "identity_label",
-    "omx_box_root",
-    "omx_box_home",
-    "omx_box_codex_home",
-    "omx_box_omx_root",
-    "omx_box_omx_state",
-    "omx_box_team_state_root",
     "codex_box_root",
     "codex_box_home",
     "codex_box_codex_home",
@@ -161,7 +149,7 @@ def capsule_root(record_or_root: dict[str, Any] | str | Path | None) -> Path | N
     if isinstance(record_or_root, (str, Path)):
         return _as_path(record_or_root)
     runtime = str(record_or_root.get("runtime") or "").strip().lower()
-    if runtime not in {"codex", "omx"}:
+    if runtime != "codex":
         return None
     for key in _CAPSULE_ROOT_KEYS:
         root = _as_path(record_or_root.get(key))
@@ -178,16 +166,6 @@ def codex_home(record_or_root: dict[str, Any] | str | Path | None) -> Path | Non
                 return path
     root = capsule_root(record_or_root)
     return root / "codex-home" if root else None
-
-
-def omx_root(record_or_root: dict[str, Any] | str | Path | None) -> Path | None:
-    if isinstance(record_or_root, dict):
-        for key in _OMX_ROOT_KEYS:
-            path = _as_path(record_or_root.get(key))
-            if path:
-                return path
-    root = capsule_root(record_or_root)
-    return root / "omx-root" if root else None
 
 
 def ensure_capsule_dirs(root: Path) -> None:
@@ -229,34 +207,6 @@ def boxed_launch_env_from_record(record: dict[str, Any], source_cwd: str) -> dic
         env["AURA_CODEX_SOURCE_CWD"] = source_cwd
         if record.get("codex_profile"):
             env["AURA_CODEX_PROFILE"] = str(record["codex_profile"])
-    elif runtime == "omx" and record.get("omx_box_root"):
-        home = record.get("omx_box_home")
-        codex = record.get("omx_box_codex_home")
-        omx = record.get("omx_box_omx_root")
-        team_state = record.get("omx_box_team_state_root")
-        if home:
-            env["HOME"] = str(home)
-        if codex:
-            env["CODEX_HOME"] = str(codex)
-        if omx:
-            env["OMX_ROOT"] = str(omx)
-        if team_state:
-            env["OMX_TEAM_STATE_ROOT"] = str(team_state)
-        env.update({
-            "OMX_LAUNCH_POLICY": "direct",
-            "OMXBOX_ACTIVE": "1",
-            "OMX_AUTO_UPDATE": "0",
-            "OMX_NOTIFY_FALLBACK": "0",
-            "OMX_SOURCE_CWD": source_cwd,
-            "AURA_OMX_BOX": str(record["omx_box_root"]),
-        })
-        if record.get("omx_profile"):
-            env["AURA_OMX_PROFILE"] = str(record["omx_profile"])
-        runtime_path = _as_path(record.get("omx_box_runtime"))
-        if runtime_path:
-            from lib import omx_adapter
-
-            env["PATH"] = omx_adapter.adapter_path_prefix(runtime_path)
     return {key: value for key, value in env.items() if value is not None and str(value).strip()}
 
 
@@ -294,7 +244,6 @@ def write_runtime_session(record: dict[str, Any], *, extra: dict[str, Any] | Non
         "capsule_root": str(root),
         **_selected(record, _SESSION_FIELDS),
         "codex_home": str(codex_home(record)) if codex_home(record) else None,
-        "omx_root": str(omx_root(record)) if omx_root(record) else None,
     }
     if extra:
         payload.update(extra)

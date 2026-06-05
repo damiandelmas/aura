@@ -157,8 +157,6 @@ def create_window(
     # inherited from the spawning process.
     _BODY_HOME_KEYS = (
         "CODEX_HOME",
-        "OMX_ROOT",
-        "OMX_TEAM_STATE_ROOT",
     )
 
     def _scrub_session_env() -> None:

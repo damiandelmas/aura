@@ -51,20 +51,6 @@ def test_profile_create_codex_from_aura_base_without_auth_or_global_config(monke
     assert not (root / "codex-home-template" / "credentials.json").exists()
 
 
-def test_profile_create_omx_uses_unified_omx_profile_root(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-
-    from commands import profile
-
-    result = profile.run(_args("create", profile_ref="omx/dev"))
-
-    root = tmp_path / "state" / "runtime-profiles" / "omx" / "dev"
-    assert result["ok"] is True
-    assert result["profile"]["root"] == str(root)
-    assert (root / "codex-home-template" / "config.toml").is_file()
-    assert (root / "omx-root-template").is_dir()
-
-
 def test_profile_create_existing_fails_explicitly(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
@@ -76,38 +62,6 @@ def test_profile_create_existing_fails_explicitly(monkeypatch, tmp_path):
     assert result["ok"] is False
     assert result["schema"] == "aura.profile.error.v1"
     assert result["error"] == "profile-exists"
-
-
-def test_profile_create_from_existing_omx_profile_with_aura_operator_preset(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
-    skills = tmp_path / "skills"
-    _write_skill(skills, "aura")
-    _write_skill(skills, "aura-operator")
-    _write_skill(skills, "desks")
-    _write_skill(skills, "not-allowed")
-    monkeypatch.setenv("AURA_PROFILE_SKILLS_SOURCE", str(skills))
-
-    from commands import profile
-
-    assert profile.run(_args("create", profile_ref="omx/default"))["ok"] is True
-    result = profile.run(
-        _args(
-            "create",
-            profile_ref="omx/aura-operator",
-            source_profile="omx/default",
-            preset="aura-operator",
-        )
-    )
-
-    root = tmp_path / "state" / "runtime-profiles" / "omx" / "aura-operator"
-    skill_root = root / "codex-home-template" / "skills"
-    assert result["ok"] is True
-    assert result["source_profile_ref"] == "omx/default"
-    assert result["preset"] == "aura-operator"
-    assert set(result["skills_applied"]) >= {"aura", "aura-operator", "desks"}
-    assert "not-allowed" not in result["skills_applied"]
-    assert (skill_root / "aura-operator" / "SKILL.md").is_file()
-    assert not (skill_root / "not-allowed").exists()
 
 
 def test_profile_create_from_rejects_paths_and_over_nested_refs(monkeypatch, tmp_path):
@@ -131,11 +85,11 @@ def test_profile_create_preset_rejects_symlink_before_publish(monkeypatch, tmp_p
 
     from commands import profile
 
-    result = profile.run(_args("create", profile_ref="omx/aura-operator", preset="aura-operator"))
+    result = profile.run(_args("create", profile_ref="codex/aura-operator", preset="aura-operator"))
 
     assert result["ok"] is False
     assert result["error"] == "unsafe-template"
-    assert not (tmp_path / "state" / "runtime-profiles" / "omx" / "aura-operator").exists()
+    assert not (tmp_path / "state" / "runtime-profiles" / "codex" / "aura-operator").exists()
 
 
 def test_profile_create_from_rejects_source_root_symlink_before_publish(monkeypatch, tmp_path):
@@ -143,15 +97,15 @@ def test_profile_create_from_rejects_source_root_symlink_before_publish(monkeypa
 
     from commands import profile
 
-    assert profile.run(_args("create", profile_ref="omx/default"))["ok"] is True
-    source_root = tmp_path / "state" / "runtime-profiles" / "omx" / "default"
+    assert profile.run(_args("create", profile_ref="codex/default"))["ok"] is True
+    source_root = tmp_path / "state" / "runtime-profiles" / "codex" / "default"
     (source_root / "README.md").symlink_to(tmp_path)
 
-    result = profile.run(_args("create", profile_ref="omx/aura-operator", source_profile="omx/default"))
+    result = profile.run(_args("create", profile_ref="codex/aura-operator", source_profile="codex/default"))
 
     assert result["ok"] is False
     assert result["error"] == "unsafe-template"
-    assert not (tmp_path / "state" / "runtime-profiles" / "omx" / "aura-operator").exists()
+    assert not (tmp_path / "state" / "runtime-profiles" / "codex" / "aura-operator").exists()
 
 
 def test_profile_list_includes_profiles_and_future_classifications(monkeypatch, tmp_path):
@@ -166,7 +120,6 @@ def test_profile_list_includes_profiles_and_future_classifications(monkeypatch, 
     refs = {row["ref"] for row in result["profiles"]}
     assert "codex/dev" in refs
     kinds = {row["runtime"]: row["kind"] for row in result["classifications"]}
-    assert kinds["opencode"] == "boxed-xdg-home"
     assert kinds["aider"] == "launch-preset"
 
 
@@ -245,8 +198,8 @@ def test_profile_create_rejects_future_runtime_as_unsupported(monkeypatch, tmp_p
 
     from commands import profile
 
-    result = profile.run(_args("create", profile_ref="opencode/dev"))
+    result = profile.run(_args("create", profile_ref="claude-code/dev"))
 
     assert result["ok"] is False
     assert result["error"] == "profile-create-unsupported"
-    assert result["classification"]["kind"] == "boxed-xdg-home"
+    assert result["classification"]["kind"] == "boxed-home"
