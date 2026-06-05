@@ -323,11 +323,10 @@ def test_aura_rename_same_fleet_mirrors_terminal_without_unsafe_flag(tmp_path, m
         "backend_ref": "unitfleet:old-seat",
     })
 
-    def fake_move_terminal(record, *, fleet, name, index):
+    def fake_rename_terminal_exact(record, *, fleet, name):
         assert record["pane_ref"] == "tmux:unitfleet:%12"
         assert fleet == "unitfleet"
         assert name == "new-seat"
-        assert index is None
         return {
             "ok": True,
             "terminal_ref": "unitfleet:new-seat",
@@ -336,7 +335,7 @@ def test_aura_rename_same_fleet_mirrors_terminal_without_unsafe_flag(tmp_path, m
             "physical_fleet": "unitfleet",
         }
 
-    monkeypatch.setattr(seat, "_move_terminal", fake_move_terminal)
+    monkeypatch.setattr(seat, "_rename_terminal_exact", fake_rename_terminal_exact)
     result = seat.run(argparse.Namespace(
         seat_action="rename",
         source="unitfleet:old-seat",
@@ -353,7 +352,7 @@ def test_aura_rename_same_fleet_mirrors_terminal_without_unsafe_flag(tmp_path, m
     assert result["alias"]["reason"] == "rename"
 
 
-def test_move_terminal_prefers_exact_cached_source_for_plain_rename(monkeypatch):
+def test_rename_terminal_exact_never_rediscovers_or_moves_for_plain_rename(monkeypatch):
     from commands import seat
 
     record = {
@@ -371,31 +370,21 @@ def test_move_terminal_prefers_exact_cached_source_for_plain_rename(monkeypatch)
 
     monkeypatch.setattr(seat, "_list_tmux_panes", lambda: [
         {"session": "flexchat-marketing", "window_index": "2", "window_name": "outreach", "pane_id": "%64", "pane_pid": 640},
-        {"session": "flexchat-marketing", "window_index": "4", "window_name": "bash", "pane_id": "%130", "pane_pid": 130},
+        {"session": "flexchat-marketing", "window_index": "4", "window_name": "shopify-scout", "pane_id": "%130", "pane_pid": 130},
     ])
-
-    def fake_discover(_record, pane):
-        if pane["pane_id"] == "%130":
-            return {
-                "runtime_session_id": "session-outreach",
-                "runtime_session_evidence": {"aura_launch_id": "aura-launch-outreach"},
-            }
-        return {}
-
-    monkeypatch.setattr(seat, "_discover_pane", fake_discover)
 
     def fake_run_tmux(args):
         if args[:3] == ["display-message", "-p", "-t"]:
             target = args[3]
             fmt = args[4]
-            if target == "flexchat-marketing:%64" and "pane_pid" in fmt:
-                return subprocess.CompletedProcess(args, 0, stdout="flexchat-marketing\t2\toutreach\t%64\t640\n", stderr="")
-            if target == "flexchat-marketing:%64" and fmt == "#{session_name}:#{window_index}:#{pane_id}":
-                return subprocess.CompletedProcess(args, 0, stdout="flexchat-marketing:2:%64\n", stderr="")
+            if target == "flexchat-marketing:%64" and fmt == "#{session_name}:#{window_index}:#{window_name}:#{pane_id}":
+                return subprocess.CompletedProcess(args, 0, stdout="flexchat-marketing:2:outreach:%64\n", stderr="")
             if target == "%64" and fmt == "#{session_name}:#{window_index}:#{window_name}:#{pane_id}":
                 return subprocess.CompletedProcess(args, 0, stdout="flexchat-marketing:2:marketing-manager:%64\n", stderr="")
         if args[:2] == ["has-session", "-t"]:
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:1] == ["move-window"]:
+            raise AssertionError("plain seat rename must never move a tmux window")
         if args[:2] == ["rename-window", "-t"]:
             assert args[2] == "%64"
             assert args[3] == "marketing-manager"
@@ -404,11 +393,111 @@ def test_move_terminal_prefers_exact_cached_source_for_plain_rename(monkeypatch)
 
     monkeypatch.setattr(seat, "_run_tmux", fake_run_tmux)
 
-    result = seat._move_terminal(record, fleet="flexchat-marketing", name="marketing-manager", index=None)
+    result = seat._rename_terminal_exact(record, fleet="flexchat-marketing", name="marketing-manager")
 
     assert result["ok"] is True
     assert result["pane_ref"] == "tmux:flexchat-marketing:%64"
-    assert result["source_refreshed"] is False
+
+
+def test_rename_terminal_exact_refuses_cross_fleet_source(monkeypatch):
+    from commands import seat
+
+    record = {
+        "name": "scout",
+        "seat": "scout",
+        "fleet": "flexchat-prospecting",
+        "runtime": "codex",
+        "pane_ref": "tmux:flexchat-prospecting:%210",
+        "terminal_ref": "flexchat-prospecting:scout",
+        "backend_ref": "flexchat-prospecting:scout",
+    }
+
+    calls = []
+
+    def fake_run_tmux(args):
+        calls.append(args)
+        if args[:3] == ["display-message", "-p", "-t"]:
+            return subprocess.CompletedProcess(args, 0, stdout="other-fleet:3:scout:%210\n", stderr="")
+        if args[:2] == ["has-session", "-t"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:1] in (["rename-window"], ["move-window"]):
+            raise AssertionError(f"unexpected mutating tmux command: {args}")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr=f"unexpected {args}")
+
+    monkeypatch.setattr(seat, "_run_tmux", fake_run_tmux)
+
+    result = seat._rename_terminal_exact(record, fleet="flexchat-prospecting", name="fitcert-scout")
+
+    assert result["ok"] is False
+    assert result["error"] == "rename-source-fleet-mismatch"
+    assert not any(call[:1] == ["rename-window"] for call in calls)
+    assert not any(call[:1] == ["move-window"] for call in calls)
+
+
+def test_aura_rename_stays_on_source_pane_with_neighbor_session_match(tmp_path, monkeypatch):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    from commands import seat
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "scout",
+        "fleet": "flexchat-prospecting",
+        "runtime": "codex",
+        "pane_ref": "tmux:flexchat-prospecting:%210",
+        "terminal_ref": "flexchat-prospecting:scout",
+        "backend_ref": "flexchat-prospecting:scout",
+        "runtime_session_id": "019e2d69-fitcert",
+    })
+    registry.upsert_agent({
+        "name": "shopify-scout",
+        "fleet": "flexchat-prospecting",
+        "runtime": "codex",
+        "pane_ref": "tmux:flexchat-prospecting:%214",
+        "terminal_ref": "flexchat-prospecting:shopify-scout",
+        "backend_ref": "flexchat-prospecting:shopify-scout",
+        "runtime_session_id": "019e95d8-shopify",
+    })
+
+    monkeypatch.setattr(seat, "_list_tmux_panes", lambda: [
+        {"session": "flexchat-prospecting", "window_index": "1", "window_name": "scout", "pane_id": "%210", "pane_pid": 48932},
+        {"session": "flexchat-prospecting", "window_index": "2", "window_name": "shopify-scout", "pane_id": "%214", "pane_pid": 60847},
+    ])
+
+    def fake_run_tmux(args):
+        if args[:3] == ["display-message", "-p", "-t"]:
+            target = args[3]
+            fmt = args[4]
+            if target == "flexchat-prospecting:%210" and fmt == "#{session_name}:#{window_index}:#{window_name}:#{pane_id}":
+                return subprocess.CompletedProcess(args, 0, stdout="flexchat-prospecting:1:scout:%210\n", stderr="")
+            if target == "%210" and fmt == "#{session_name}:#{window_index}:#{window_name}:#{pane_id}":
+                return subprocess.CompletedProcess(args, 0, stdout="flexchat-prospecting:1:fitcert-scout:%210\n", stderr="")
+            if target == "flexchat-prospecting:%214":
+                raise AssertionError("rename must not inspect the neighboring Shopify pane")
+        if args[:2] == ["has-session", "-t"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:1] == ["move-window"]:
+            raise AssertionError("seat rename must never move a tmux window")
+        if args[:2] == ["rename-window", "-t"]:
+            assert args[2] == "%210"
+            assert args[3] == "fitcert-scout"
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr=f"unexpected {args}")
+
+    monkeypatch.setattr(seat, "_run_tmux", fake_run_tmux)
+
+    result = seat.run(argparse.Namespace(
+        seat_action="rename",
+        source="flexchat-prospecting:scout",
+        name="fitcert-scout",
+    ))
+
+    assert result["ok"] is True
+    fitcert = registry.get_agent("flexchat-prospecting:fitcert-scout")
+    shopify = registry.get_agent("flexchat-prospecting:shopify-scout")
+    assert fitcert["pane_ref"] == "tmux:flexchat-prospecting:%210"
+    assert fitcert["runtime_session_id"] == "019e2d69-fitcert"
+    assert shopify["pane_ref"] == "tmux:flexchat-prospecting:%214"
+    assert shopify["runtime_session_id"] == "019e95d8-shopify"
 
 def test_seat_cut_routes_through_cut_command(monkeypatch):
     from commands import seat

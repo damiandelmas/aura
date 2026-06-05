@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+import subprocess
 import shlex
+import tempfile
 from typing import Any
 
 from commands import list as list_cmd
@@ -17,6 +22,13 @@ def run(args) -> dict:
         return _resolve(getattr(args, "target", None))
     if action == "history":
         return fleet_history(getattr(args, "target", None))
+    if action == "rename":
+        return _rename(
+            getattr(args, "old", None),
+            getattr(args, "new", None),
+            dry_run=bool(getattr(args, "dry_run", False) or not getattr(args, "confirm", False)),
+            confirm=bool(getattr(args, "confirm", False)),
+        )
     return {"ok": False, "error": f"unknown fleets action: {action}"}
 
 
@@ -70,6 +82,427 @@ def _resolve(target: str | None) -> dict:
         "schema": "aura.fleet_resolve.v1",
         "target": target,
         "fleet": record,
+    }
+
+
+def _run_tmux(args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(["tmux", *args], capture_output=True, text=True)
+
+
+def _tmux_session_exists(name: str) -> bool:
+    return _run_tmux(["has-session", "-t", name]).returncode == 0
+
+
+def _tmux_live_keys() -> set[tuple[str, str]]:
+    from lib import tmux_mirror
+
+    mirror = tmux_mirror.list_physical_panes()
+    if not mirror.get("ok"):
+        return set()
+    keys = set()
+    for pane in mirror.get("panes") or []:
+        session = pane.get("tmux_session") or pane.get("physical_fleet") or pane.get("session_name") or pane.get("session")
+        pane_id = pane.get("pane_id")
+        if session and pane_id:
+            keys.add((str(session), str(pane_id)))
+    return keys
+
+
+def _pane_ref_key(value: Any) -> tuple[str | None, str | None]:
+    subject = str(value or "")
+    if subject.startswith("tmux:"):
+        subject = subject[len("tmux:"):]
+    if ":" in subject:
+        session, pane_id = subject.rsplit(":", 1)
+        return session or None, pane_id if pane_id.startswith("%") else None
+    return None, subject if subject.startswith("%") else None
+
+
+def _replace_ref(value: Any, *, old: str, new: str, seats: set[str] | None = None) -> Any:
+    if not isinstance(value, str):
+        return value
+    if value == old:
+        return new
+    prefix = f"{old}:"
+    if value.startswith(prefix):
+        seat = value[len(prefix):]
+        if seats is None or seat in seats:
+            return f"{new}:{seat}"
+    tmux_prefix = f"tmux:{old}:"
+    if value.startswith(tmux_prefix):
+        return f"tmux:{new}:{value[len(tmux_prefix):]}"
+    return value
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
+def _rewrite_placements(*, old: str, new: str, moved_seats: set[str], dry_run: bool) -> list[dict[str, Any]]:
+    from lib import placements
+
+    data = placements.read_placements()
+    changed = []
+    for pid, record in data.items():
+        mutated = False
+        members = []
+        for member in record.get("members") or []:
+            updated = dict(member)
+            before = dict(updated)
+            updated["seat_ref"] = _replace_ref(updated.get("seat_ref"), old=old, new=new, seats=moved_seats)
+            if updated.get("logical_fleet") == old:
+                seat = updated.get("logical_seat") or str(before.get("seat_ref") or "").split(":", 1)[-1]
+                if seat in moved_seats:
+                    updated["logical_fleet"] = new
+            if updated.get("physical_fleet") == old:
+                seat = updated.get("logical_seat") or str(before.get("seat_ref") or "").split(":", 1)[-1]
+                if seat in moved_seats:
+                    updated["physical_fleet"] = new
+            updated["pane_ref"] = _replace_ref(updated.get("pane_ref"), old=old, new=new, seats=None)
+            mutated = mutated or updated != before
+            members.append(updated)
+        if mutated:
+            record["members"] = sorted(members, key=lambda m: m.get("seat_ref") or "")
+            changed.append({"placement_id": pid, "name": record.get("name"), "members": len(members)})
+    if changed and not dry_run:
+        placements.write_placements(data)
+    return changed
+
+
+def _rewrite_queue(*, old: str, new: str, moved_seats: set[str], dry_run: bool) -> list[dict[str, Any]]:
+    from lib import queued_messages
+
+    changed = []
+    for record in queued_messages.list_records():
+        if record.get("status") not in {"pending", "scheduled", "release_failed"}:
+            continue
+        updated = dict(record)
+        before = dict(updated)
+        for key in ("target", "sender"):
+            updated[key] = _replace_ref(updated.get(key), old=old, new=new, seats=moved_seats)
+        if updated != before:
+            changed.append({"queue_id": record.get("queue_id"), "status": record.get("status")})
+            if not dry_run:
+                queued_messages.save(updated)
+    return changed
+
+
+def _rewrite_events(*, old: str, new: str, moved_seats: set[str], dry_run: bool) -> list[dict[str, Any]]:
+    from lib import events
+
+    changed = []
+    for job in events.iter_jobs():
+        if job.get("status") not in {"running", "paused"}:
+            continue
+        updated = dict(job)
+        before = dict(updated)
+        for key in ("target", "sender"):
+            updated[key] = _replace_ref(updated.get(key), old=old, new=new, seats=moved_seats)
+        if updated != before:
+            changed.append({"job_id": job.get("job_id"), "name": job.get("name"), "status": job.get("status")})
+            if not dry_run:
+                events.save_state(updated)
+    return changed
+
+
+def _rewrite_report_subscriptions(*, old: str, new: str, moved_seats: set[str], dry_run: bool) -> list[dict[str, Any]]:
+    from lib import report_subscriptions
+
+    changed = []
+    for record in report_subscriptions.list_records(include_removed=True):
+        if record.get("status") not in {"active", "paused"}:
+            continue
+        updated = dict(record)
+        before = dict(updated)
+        if updated.get("fleet") == old:
+            updated["fleet"] = new
+        for key in ("target", "to", "sender"):
+            updated[key] = _replace_ref(updated.get(key), old=old, new=new, seats=moved_seats)
+        if updated != before:
+            changed.append({"subscription_id": record.get("subscription_id"), "name": record.get("name"), "status": record.get("status")})
+            if not dry_run:
+                report_subscriptions.save(updated)
+    return changed
+
+
+def _rewrite_discord_bindings(*, old: str, new: str, moved_seats: set[str], dry_run: bool) -> list[dict[str, Any]]:
+    from lib import state
+
+    path = state.state_root() / "discord" / "channel-bindings.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return [{"path": str(path), "warning": "discord-bindings-unreadable"}]
+    if not isinstance(data, dict):
+        return [{"path": str(path), "warning": "discord-bindings-unknown-shape"}]
+
+    changed = []
+    bindings = data.get("bindings") if isinstance(data.get("bindings"), dict) else data
+    if isinstance(bindings, dict):
+        for channel, binding in bindings.items():
+            if not isinstance(binding, dict):
+                continue
+            before = json.dumps(binding, sort_keys=True)
+            for key in ("default_target", "target", "aura_target"):
+                binding[key] = _replace_ref(binding.get(key), old=old, new=new, seats=moved_seats)
+            aliases = binding.get("aliases")
+            if isinstance(aliases, dict):
+                for alias, value in list(aliases.items()):
+                    aliases[alias] = _replace_ref(value, old=old, new=new, seats=moved_seats)
+            after = json.dumps(binding, sort_keys=True)
+            if after != before:
+                changed.append({"channel": channel})
+    if changed and not dry_run:
+        _atomic_write_json(path, data)
+    return changed
+
+
+def _package_manifest_path(row: dict[str, Any]) -> Path | None:
+    root = row.get("agent_package_root")
+    if root:
+        path = Path(str(root)).expanduser() / "manifest.json"
+        if path.exists():
+            return path
+    package_id = row.get("agent_package_id") or row.get("identity_id")
+    if package_id and str(package_id).startswith("i_"):
+        from lib import agent_packages
+
+        path = agent_packages.package_root(str(package_id)) / "manifest.json"
+        if path.exists():
+            return path
+    return None
+
+
+def _rewrite_package_manifests(*, rows: list[dict[str, Any]], old: str, new: str, dry_run: bool) -> list[dict[str, Any]]:
+    changed = []
+    seen: set[str] = set()
+    for row in rows:
+        path = _package_manifest_path(row)
+        if not path or str(path) in seen:
+            continue
+        seen.add(str(path))
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            changed.append({"path": str(path), "warning": "manifest-unreadable"})
+            continue
+        if not isinstance(payload, dict):
+            changed.append({"path": str(path), "warning": "manifest-unknown-shape"})
+            continue
+        before = dict(payload)
+        for key in ("fleet", "default_fleet"):
+            if payload.get(key) == old:
+                payload[key] = new
+        if payload != before:
+            changed.append({"path": str(path), "agent_package_id": row.get("agent_package_id") or row.get("identity_id")})
+            if not dry_run:
+                _atomic_write_json(path, payload)
+    return changed
+
+
+def _rewrite_live_registry(*, old: str, new: str, live_keys: set[tuple[str, str]], fleet_id: str | None, dry_run: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    from lib import registry
+
+    data = registry.read_registry()
+    moved: list[dict[str, Any]] = []
+    kept: list[dict[str, Any]] = []
+    rewritten = dict(data)
+    aliases = []
+    for ref, row in sorted(data.items()):
+        if row.get("fleet") != old:
+            continue
+        pane_session, pane_id = _pane_ref_key(row.get("pane_ref"))
+        live = bool(pane_session == old and pane_id and (old, pane_id) in live_keys)
+        seat = row.get("seat") or row.get("name")
+        if not live:
+            kept.append({"ref": ref, "reason": "historical-or-missing-pane"})
+            continue
+        if not seat:
+            kept.append({"ref": ref, "reason": "missing-seat-name"})
+            continue
+        new_ref = f"{new}:{seat}"
+        if new_ref in data and new_ref != ref:
+            raise ValueError(f"target seat already exists: {new_ref}")
+        updated = dict(row)
+        updated["fleet"] = new
+        updated["logical_fleet"] = new
+        updated["logical_ref"] = new_ref
+        updated["seat_ref"] = new_ref
+        updated["target"] = new_ref
+        updated["physical_fleet"] = new
+        updated["pane_ref"] = _replace_ref(updated.get("pane_ref"), old=old, new=new)
+        updated["terminal_ref"] = f"{new}:{seat}"
+        updated["backend_ref"] = f"{new}:{seat}"
+        if fleet_id:
+            updated["fleet_id"] = fleet_id
+        updated["last_seen"] = registry.now_iso()
+        rewritten.pop(ref, None)
+        rewritten[new_ref] = updated
+        moved.append({"source": ref, "target": new_ref, "seat": seat, "pane_ref": updated.get("pane_ref"), "record": updated})
+        aliases.append({"source": ref, "target": new_ref})
+    if moved and not dry_run:
+        registry.write_registry(rewritten)
+        for alias in aliases:
+            registry.add_alias(alias["source"], alias["target"], reason="fleet-rename")
+    return moved, kept
+
+
+def _update_fleet_registry(*, old: str, new: str, dry_run: bool) -> dict[str, Any]:
+    from lib import fleets
+
+    data = fleets.read_fleets()
+    old_record = fleets.resolve(old)
+    if not old_record:
+        if dry_run:
+            old_record = {
+                "schema": "aura.fleet.v1",
+                "fleet_id": None,
+                "current_name": old,
+                "aliases": [],
+                "tmux_session": old,
+            }
+        else:
+            old_record = fleets.ensure_fleet(old)
+    if not old_record:
+        raise ValueError(f"fleet not found: {old}")
+    fleet_id = old_record.get("fleet_id")
+    existing_new = fleets.resolve(new)
+    if existing_new and (not fleet_id or existing_new.get("fleet_id") != fleet_id):
+        raise ValueError(f"target fleet already exists: {new}")
+    updated = dict(old_record)
+    aliases = list(updated.get("aliases") or [])
+    if old not in aliases:
+        aliases.append(old)
+    updated["aliases"] = sorted(set(aliases))
+    updated["current_name"] = new
+    updated["tmux_session"] = new
+    updated["last_seen_at"] = fleets.now_iso()
+    if not dry_run:
+        data[fleet_id] = updated
+        fleets.write_fleets(data)
+    return updated
+
+
+def _rename(old: str | None, new: str | None, *, dry_run: bool, confirm: bool) -> dict:
+    if not old or not new:
+        return {"ok": False, "error": "usage", "detail": "rename requires OLD and NEW fleet names"}
+    if ":" in old or ":" in new:
+        return {"ok": False, "error": "fleet-name-must-not-contain-colon"}
+    if old == new:
+        return {"ok": True, "renamed": False, "source": old, "target": new, "dry_run": dry_run}
+    if _tmux_session_exists(new):
+        return {"ok": False, "error": "target-tmux-session-exists", "target": new}
+    if not _tmux_session_exists(old):
+        return {"ok": False, "error": "source-tmux-session-missing", "source": old}
+
+    try:
+        fleet_record = _update_fleet_registry(old=old, new=new, dry_run=True)
+        live_keys = _tmux_live_keys()
+        moved, kept = _rewrite_live_registry(
+            old=old,
+            new=new,
+            live_keys=live_keys,
+            fleet_id=fleet_record.get("fleet_id"),
+            dry_run=True,
+        )
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+    moved_records = [row["record"] for row in moved]
+    moved_seats = {str(row["seat"]) for row in moved if row.get("seat")}
+    plan = {
+        "tmux": {"rename_session": {"source": old, "target": new}},
+        "fleet": fleet_record,
+        "moved": [{k: v for k, v in row.items() if k != "record"} for row in moved],
+        "kept": kept,
+        "active_refs": {
+            "placements": _rewrite_placements(old=old, new=new, moved_seats=moved_seats, dry_run=True),
+            "queue": _rewrite_queue(old=old, new=new, moved_seats=moved_seats, dry_run=True),
+            "events": _rewrite_events(old=old, new=new, moved_seats=moved_seats, dry_run=True),
+            "report_subscriptions": _rewrite_report_subscriptions(old=old, new=new, moved_seats=moved_seats, dry_run=True),
+            "discord_bindings": _rewrite_discord_bindings(old=old, new=new, moved_seats=moved_seats, dry_run=True),
+        },
+        "package_manifests": _rewrite_package_manifests(rows=moved_records, old=old, new=new, dry_run=True),
+        "warnings": [
+            "running process env may still contain the old AURA_FLEET until restart/rollover; alias canonicalization preserves address resolution",
+            "historical ledgers, reports, deliveries, and runtime-native transcripts are not rewritten",
+        ],
+    }
+    if dry_run or not confirm:
+        return {
+            "ok": True,
+            "schema": "aura.fleet_rename_plan.v1",
+            "dry_run": True,
+            "source": old,
+            "target": new,
+            "plan": plan,
+        }
+
+    tmux = _run_tmux(["rename-session", "-t", old, new])
+    if tmux.returncode != 0:
+        return {"ok": False, "error": tmux.stderr.strip() or "tmux rename-session failed", "plan": plan}
+    try:
+        applied_fleet = _update_fleet_registry(old=old, new=new, dry_run=False)
+        moved, kept = _rewrite_live_registry(
+            old=old,
+            new=new,
+            live_keys=live_keys,
+            fleet_id=applied_fleet.get("fleet_id"),
+            dry_run=False,
+        )
+        moved_records = [row["record"] for row in moved]
+        moved_seats = {str(row["seat"]) for row in moved if row.get("seat")}
+        active_refs = {
+            "placements": _rewrite_placements(old=old, new=new, moved_seats=moved_seats, dry_run=False),
+            "queue": _rewrite_queue(old=old, new=new, moved_seats=moved_seats, dry_run=False),
+            "events": _rewrite_events(old=old, new=new, moved_seats=moved_seats, dry_run=False),
+            "report_subscriptions": _rewrite_report_subscriptions(old=old, new=new, moved_seats=moved_seats, dry_run=False),
+            "discord_bindings": _rewrite_discord_bindings(old=old, new=new, moved_seats=moved_seats, dry_run=False),
+        }
+        manifests = _rewrite_package_manifests(rows=moved_records, old=old, new=new, dry_run=False)
+        try:
+            from lib import session_ledger
+
+            for row in moved:
+                session_ledger.append_seat_event(
+                    event="seat_readdressed",
+                    before={"fleet": old, "seat": row.get("seat"), "seat_ref": row.get("source")},
+                    after=row.get("record"),
+                    evidence={"source_fleet": old, "target_fleet": new, "fleet_id": applied_fleet.get("fleet_id")},
+                    source_command="aura fleets rename",
+                    source_ref=row.get("source"),
+                    target_ref=row.get("target"),
+                )
+        except Exception:
+            pass
+    except Exception as exc:
+        return {"ok": False, "error": f"fleet registry rewrite failed after tmux rename: {exc}", "tmux_renamed": True}
+    return {
+        "ok": True,
+        "schema": "aura.fleet_rename.v1",
+        "dry_run": False,
+        "renamed": True,
+        "source": old,
+        "target": new,
+        "fleet": applied_fleet,
+        "moved": [{k: v for k, v in row.items() if k != "record"} for row in moved],
+        "kept": kept,
+        "active_refs": active_refs,
+        "package_manifests": manifests,
+        "warnings": plan["warnings"],
     }
 
 

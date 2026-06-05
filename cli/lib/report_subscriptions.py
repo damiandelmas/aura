@@ -56,6 +56,10 @@ def _save(record: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
+def save(record: dict[str, Any]) -> dict[str, Any]:
+    return _save(record)
+
+
 def create(
     *,
     name: str,

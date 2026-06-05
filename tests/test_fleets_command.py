@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -156,3 +157,187 @@ def test_fleet_history_does_not_restore_keeper_worker_threads(monkeypatch, tmp_p
     assert result["seats"][0]["restore"]["ready"] is True
     assert "--resume-session real-thread" in result["seats"][0]["restore"]["command"]
     assert "keeper-thread" not in result["seats"][0]["restore"]["command"]
+
+
+def test_fleet_rename_dry_run_writes_nothing(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import fleets as fleets_cmd
+    from lib import fleets, registry, tmux_mirror
+
+    original_fleet = fleets.ensure_fleet("oldfleet")
+    registry.upsert_agent({
+        "name": "worker",
+        "seat": "worker",
+        "fleet": "oldfleet",
+        "runtime": "codex",
+        "registered": True,
+        "pane_ref": "tmux:oldfleet:%77",
+        "terminal_ref": "oldfleet:worker",
+        "backend_ref": "oldfleet:worker",
+        "fleet_id": original_fleet["fleet_id"],
+    })
+    monkeypatch.setattr(fleets_cmd, "_tmux_session_exists", lambda name: name == "oldfleet")
+    monkeypatch.setattr(tmux_mirror, "list_physical_panes", lambda **_kw: {
+        "ok": True,
+        "panes": [{"tmux_session": "oldfleet", "physical_fleet": "oldfleet", "pane_id": "%77"}],
+    })
+
+    result = fleets_cmd.run(argparse.Namespace(
+        fleets_action="rename",
+        old="oldfleet",
+        new="newfleet",
+        dry_run=True,
+        confirm=False,
+    ))
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert registry.get_agent("oldfleet:worker") is not None
+    assert registry.get_agent("newfleet:worker") is None
+    assert registry.read_aliases() == {}
+    assert fleets.resolve("oldfleet")["current_name"] == "oldfleet"
+
+
+def test_fleet_rename_confirm_readdresses_live_topology(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import fleets as fleets_cmd
+    from lib import events, fleets, placements, queued_messages, registry, report_subscriptions, tmux_mirror
+
+    package_root = tmp_path / "state" / "agents" / "i_worker"
+    package_root.mkdir(parents=True)
+    manifest_path = package_root / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"schema": "aura.agent_manifest.v1", "runtime": "codex", "fleet": "oldfleet", "seat": "worker"}) + "\n",
+        encoding="utf-8",
+    )
+
+    fleet_record = fleets.ensure_fleet("oldfleet")
+    registry.upsert_agent({
+        "name": "worker",
+        "seat": "worker",
+        "fleet": "oldfleet",
+        "runtime": "codex",
+        "registered": True,
+        "pane_ref": "tmux:oldfleet:%77",
+        "terminal_ref": "oldfleet:worker",
+        "backend_ref": "oldfleet:worker",
+        "fleet_id": fleet_record["fleet_id"],
+        "agent_package_id": "i_worker",
+        "agent_package_root": str(package_root),
+    })
+    registry.upsert_agent({
+        "name": "stale",
+        "seat": "stale",
+        "fleet": "oldfleet",
+        "runtime": "codex",
+        "registered": True,
+        "pane_ref": "tmux:oldfleet:%88",
+        "terminal_ref": "oldfleet:stale",
+        "backend_ref": "oldfleet:stale",
+        "fleet_id": fleet_record["fleet_id"],
+    })
+    registry.upsert_agent({
+        "name": "lead",
+        "seat": "lead",
+        "fleet": "oldfleet",
+        "runtime": "codex",
+        "registered": True,
+        "pane_ref": "tmux:oldfleet:%78",
+        "terminal_ref": "oldfleet:lead",
+        "backend_ref": "oldfleet:lead",
+        "fleet_id": fleet_record["fleet_id"],
+    })
+    placements.add_member("ops-wave", "oldfleet:worker", role="worker")
+    queued_messages.create(target="oldfleet:worker", message="next", sender="oldfleet:lead")
+    job = {
+        "schema": "aura.event.job.v1",
+        "job_id": "evt_unit",
+        "name": "ops",
+        "kind": "interval",
+        "target": "oldfleet:worker",
+        "sender": "oldfleet:lead",
+        "status": "running",
+    }
+    events.save_state(job)
+    report_subscriptions.create(name="ops-checkins", to="oldfleet:lead", fleet="oldfleet", target="oldfleet:worker")
+    discord_dir = tmp_path / "state" / "discord"
+    discord_dir.mkdir(parents=True)
+    (discord_dir / "channel-bindings.json").write_text(json.dumps({
+        "schema": "aura.discord.channel_bindings.v1",
+        "bindings": {
+            "chan": {
+                "default_target": "oldfleet:worker",
+                "aliases": {"lead": "oldfleet:lead"},
+            }
+        },
+    }) + "\n", encoding="utf-8")
+
+    tmux_calls = []
+    monkeypatch.setattr(fleets_cmd, "_tmux_session_exists", lambda name: name == "oldfleet")
+    monkeypatch.setattr(fleets_cmd, "_run_tmux", lambda args: (
+        tmux_calls.append(args) or __import__("subprocess").CompletedProcess(args, 0, stdout="", stderr="")
+    ))
+    monkeypatch.setattr(tmux_mirror, "list_physical_panes", lambda **_kw: {
+        "ok": True,
+        "panes": [
+            {"tmux_session": "oldfleet", "physical_fleet": "oldfleet", "pane_id": "%77"},
+            {"tmux_session": "oldfleet", "physical_fleet": "oldfleet", "pane_id": "%78"},
+        ],
+    })
+
+    result = fleets_cmd.run(argparse.Namespace(
+        fleets_action="rename",
+        old="oldfleet",
+        new="newfleet",
+        dry_run=False,
+        confirm=True,
+    ))
+
+    assert result["ok"] is True
+    assert ["rename-session", "-t", "oldfleet", "newfleet"] in tmux_calls
+    moved = registry.get_agent("newfleet:worker")
+    stale = registry.get_agent("oldfleet:stale")
+    assert moved["pane_ref"] == "tmux:newfleet:%77"
+    assert moved["terminal_ref"] == "newfleet:worker"
+    assert stale is not None
+    assert registry.read_aliases()["oldfleet:worker"]["target"] == "newfleet:worker"
+    renamed_fleet = fleets.resolve("newfleet")
+    assert renamed_fleet["fleet_id"] == fleet_record["fleet_id"]
+    assert "oldfleet" in renamed_fleet["aliases"]
+    assert placements.get_placement("ops-wave")["members"][0]["seat_ref"] == "newfleet:worker"
+    assert queued_messages.list_records()[0]["target"] == "newfleet:worker"
+    assert queued_messages.list_records()[0]["sender"] == "newfleet:lead"
+    assert events.load_state("evt_unit")["target"] == "newfleet:worker"
+    subscription = report_subscriptions.load("ops-checkins")
+    assert subscription["fleet"] == "newfleet"
+    assert subscription["target"] == "newfleet:worker"
+    assert subscription["to"] == "newfleet:lead"
+    bindings = json.loads((discord_dir / "channel-bindings.json").read_text(encoding="utf-8"))
+    assert bindings["bindings"]["chan"]["default_target"] == "newfleet:worker"
+    assert bindings["bindings"]["chan"]["aliases"]["lead"] == "newfleet:lead"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["fleet"] == "newfleet"
+
+
+def test_fleet_rename_refuses_target_fleet_collision(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import fleets as fleets_cmd
+    from lib import fleets
+
+    fleets.ensure_fleet("oldfleet")
+    fleets.ensure_fleet("newfleet")
+    monkeypatch.setattr(fleets_cmd, "_tmux_session_exists", lambda name: name == "oldfleet")
+
+    result = fleets_cmd.run(argparse.Namespace(
+        fleets_action="rename",
+        old="oldfleet",
+        new="newfleet",
+        dry_run=False,
+        confirm=True,
+    ))
+
+    assert result["ok"] is False
+    assert "target fleet already exists" in result["error"]

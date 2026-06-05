@@ -61,117 +61,6 @@ def _list_tmux_panes() -> list[dict]:
     return panes
 
 
-def _discovery_matches_record(record: dict, discovery: dict) -> bool:
-    if not discovery:
-        return False
-    expected_session = record.get("runtime_session_id") or record.get("session_id")
-    discovered_session = discovery.get("runtime_session_id") or discovery.get("session_id")
-    if expected_session and discovered_session and str(expected_session) == str(discovered_session):
-        return True
-    evidence = discovery.get("runtime_session_evidence") or {}
-    launch_id = record.get("aura_launch_id")
-    return bool(launch_id and evidence.get("aura_launch_id") == launch_id)
-
-
-def _discover_pane(record: dict, pane: dict) -> dict:
-    from lib import runtime_session
-
-    discovered = runtime_session.discover_from_pane_pid(
-        record.get("runtime"),
-        pane.get("pane_pid"),
-        seat_name=record.get("name") or record.get("seat"),
-        launch_id=record.get("aura_launch_id"),
-    )
-    return discovered or {}
-
-
-def _verified_move_source(record: dict) -> dict:
-    """Resolve the real pane for a seat before moving it.
-
-    Registry pane refs are cached operational state. Window rename/adopt
-    operations are physical operations, so prefer launch/session evidence when
-    it can identify the live pane more accurately than the cached ref.
-    """
-    source = record.get("pane_ref") or record.get("terminal_ref")
-    if not record.get("aura_launch_id") and not (record.get("runtime_session_id") or record.get("session_id")):
-        return {"ok": True, "source": source, "refreshed": False}
-
-    stale_source_discovery = {}
-    if source:
-        source_target = _tmux_target(source)
-        info = _run_tmux([
-            "display-message",
-            "-p",
-            "-t",
-            source_target,
-            "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}",
-        ])
-        if info.returncode == 0:
-            parts = info.stdout.strip().split("\t")
-            if len(parts) == 5:
-                pane = {
-                    "session": parts[0],
-                    "window_index": parts[1],
-                    "window_name": parts[2],
-                    "pane_id": parts[3],
-                    "pane_pid": int(parts[4]) if parts[4].isdigit() else None,
-                }
-                expected_name = str(record.get("name") or record.get("seat") or "")
-                expected_fleet = str(record.get("physical_fleet") or record.get("fleet") or "")
-                if pane["window_name"] == expected_name and pane["session"] == expected_fleet:
-                    return {"ok": True, "source": source, "refreshed": False, "discovery": stale_source_discovery}
-                stale_source_discovery = _discover_pane(record, pane)
-                if _discovery_matches_record(record, stale_source_discovery):
-                    return {"ok": True, "source": source, "refreshed": False, "discovery": stale_source_discovery}
-
-    matches = []
-    for pane in _list_tmux_panes():
-        discovered = _discover_pane(record, pane)
-        if not _discovery_matches_record(record, discovered):
-            continue
-        matches.append({**pane, "discovery": discovered})
-
-    if len(matches) == 1:
-        pane = matches[0]
-        return {
-            "ok": True,
-            "source": f"tmux:{pane['session']}:{pane['pane_id']}",
-            "refreshed": True,
-            "pane_ref": f"tmux:{pane['session']}:{pane['pane_id']}",
-            "pane_pid": pane.get("pane_pid"),
-            "discovery": pane.get("discovery"),
-            "previous_source": source,
-        }
-    if len(matches) > 1:
-        return {
-            "ok": False,
-            "error": "multiple tmux panes match seat launch/session evidence; refusing physical move",
-            "matches": [
-                {
-                    "session": pane.get("session"),
-                    "window_index": pane.get("window_index"),
-                    "window_name": pane.get("window_name"),
-                    "pane_id": pane.get("pane_id"),
-                    "pane_pid": pane.get("pane_pid"),
-                    "runtime_session_id": (pane.get("discovery") or {}).get("runtime_session_id"),
-                }
-                for pane in matches
-            ],
-            "previous_source": source,
-            "previous_discovery": stale_source_discovery,
-        }
-
-    if source:
-        return {
-            "ok": True,
-            "source": source,
-            "refreshed": False,
-            "warning": "could not verify pane by launch/session evidence; using cached source",
-            "previous_discovery": stale_source_discovery,
-        }
-    return {"ok": False, "error": "seat has no pane_ref or terminal_ref to move"}
-
-
 def _tmux_target_info(target: str | None) -> dict | None:
     if not target:
         return None
@@ -326,13 +215,20 @@ def _order(args) -> dict:
     }
 
 
-def _move_terminal(record: dict, *, fleet: str, name: str, index: str | None) -> dict:
-    verified = _verified_move_source(record)
-    if not verified.get("ok"):
-        return verified
-    source = verified.get("source")
+def _rename_terminal_exact(record: dict, *, fleet: str, name: str) -> dict:
+    """Rename exactly the registered live seat window.
+
+    A routine seat rename is a topology label change, not repair. It must not
+    rediscover a pane from runtime/session evidence and must not move windows
+    between fleets. Repair/adopt/bind commands are the explicit escape hatches.
+    """
+    source = record.get("pane_ref")
     if not source:
-        return {"ok": False, "error": "seat has no pane_ref or terminal_ref to move"}
+        return {
+            "ok": False,
+            "error": "rename-source-pane-missing",
+            "detail": "seat rename requires an exact registered pane_ref",
+        }
 
     source_target = _tmux_target(source)
     info = _run_tmux([
@@ -340,28 +236,37 @@ def _move_terminal(record: dict, *, fleet: str, name: str, index: str | None) ->
         "-p",
         "-t",
         source_target,
-        "#{session_name}:#{window_index}:#{pane_id}",
+        "#{session_name}:#{window_index}:#{window_name}:#{pane_id}",
     ])
     if info.returncode != 0:
-        return {"ok": False, "error": info.stderr.strip() or f"tmux target not found: {source}"}
+        return {
+            "ok": False,
+            "error": "rename-source-pane-missing",
+            "detail": info.stderr.strip() or f"tmux target not found: {source}",
+            "pane_ref": source,
+        }
 
-    current_fleet, current_index, pane_id = info.stdout.strip().split(":", 2)
+    current_fleet, current_index, current_name, pane_id = info.stdout.strip().split(":", 3)
     session = _run_tmux(["has-session", "-t", fleet])
     if session.returncode != 0:
         return {"ok": False, "error": f"tmux session not found: {fleet}"}
+    if current_fleet != fleet:
+        return {
+            "ok": False,
+            "error": "rename-source-fleet-mismatch",
+            "reason": "source-fleet-mismatch",
+            "expected_fleet": fleet,
+            "actual_fleet": current_fleet,
+            "pane_ref": source,
+            "pane_id": pane_id,
+            "window_name": current_name,
+        }
 
     collision = _destination_collision(fleet=fleet, name=name, source_pane_id=pane_id)
     if collision:
         return collision
 
-    destination = f"{fleet}:{index}" if index is not None else f"{fleet}:"
-    if current_fleet != fleet or (index is not None and current_index != str(index)):
-        move = _run_tmux(["move-window", "-s", f"{current_fleet}:{current_index}", "-t", destination])
-        if move.returncode != 0:
-            return {"ok": False, "error": move.stderr.strip() or "tmux move-window failed"}
-
-    rename_target = pane_id
-    rename = _run_tmux(["rename-window", "-t", rename_target, name])
+    rename = _run_tmux(["rename-window", "-t", pane_id, name])
     if rename.returncode != 0:
         return {"ok": False, "error": rename.stderr.strip() or "tmux rename-window failed"}
 
@@ -375,6 +280,13 @@ def _move_terminal(record: dict, *, fleet: str, name: str, index: str | None) ->
     if final.returncode != 0:
         return {"ok": False, "error": final.stderr.strip() or "tmux final target verification failed"}
     final_fleet, final_index, final_name, final_pane = final.stdout.strip().split(":", 3)
+    if final_fleet != fleet or final_pane != pane_id or final_name != name:
+        return {
+            "ok": False,
+            "error": "rename-final-verification-failed",
+            "expected": {"fleet": fleet, "name": name, "pane_id": pane_id},
+            "actual": {"fleet": final_fleet, "name": final_name, "pane_id": final_pane},
+        }
     return {
         "ok": True,
         "fleet": final_fleet,
@@ -385,9 +297,6 @@ def _move_terminal(record: dict, *, fleet: str, name: str, index: str | None) ->
         "terminal_ref": f"{final_fleet}:{final_name}",
         "backend_ref": f"{final_fleet}:{final_name}",
         "physical_fleet": final_fleet,
-        "source_refreshed": verified.get("refreshed", False),
-        "previous_pane_ref": verified.get("previous_source"),
-        "source_warning": verified.get("warning"),
     }
 
 
@@ -2255,20 +2164,15 @@ def _rename(args, registry) -> dict:
     if name == current_name:
         return {"ok": True, "renamed": False, "source": preflight.get("source"), "target": preflight.get("source")}
 
-    moved = _move_terminal(existing, fleet=fleet, name=name, index=None)
-    if not moved.get("ok"):
-        return moved
+    renamed_terminal = _rename_terminal_exact(existing, fleet=fleet, name=name)
+    if not renamed_terminal.get("ok"):
+        return renamed_terminal
     metadata = {
-        "terminal_ref": moved["terminal_ref"],
-        "backend_ref": moved["backend_ref"],
-        "pane_ref": moved["pane_ref"],
-        "physical_fleet": moved["physical_fleet"],
+        "terminal_ref": renamed_terminal["terminal_ref"],
+        "backend_ref": renamed_terminal["backend_ref"],
+        "pane_ref": renamed_terminal["pane_ref"],
+        "physical_fleet": renamed_terminal["physical_fleet"],
     }
-    if moved.get("source_refreshed"):
-        metadata["rename_source_refreshed"] = True
-        metadata["rename_previous_pane_ref"] = moved.get("previous_pane_ref")
-    if moved.get("source_warning"):
-        metadata["rename_source_warning"] = moved.get("source_warning")
 
     result = registry.rename_agent(source, new_name=name, metadata=metadata, alias_old=True)
     if result.get("ok"):

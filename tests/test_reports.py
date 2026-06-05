@@ -391,6 +391,28 @@ def test_report_release_matches_renamed_seat_alias(monkeypatch, tmp_path):
     assert queued_messages.load(queued["queue_id"])["release_report_id"] == report["report_id"]
 
 
+def test_report_infer_context_canonicalizes_renamed_fleet_alias(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AURA_FLEET", "oldfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+
+    from lib import registry, reports
+
+    registry.upsert_agent({
+        "name": "worker",
+        "seat": "worker",
+        "fleet": "newfleet",
+        "runtime": "codex",
+        "registered": True,
+    })
+    registry.add_alias("oldfleet:worker", "newfleet:worker", reason="fleet-rename")
+
+    context = reports.infer_context()
+
+    assert context["fleet"] == "newfleet"
+    assert context["seat"] == "worker"
+
+
 def test_queue_command_records_pending_message(tmp_path):
     env = {
         **os.environ,

@@ -382,3 +382,34 @@ def test_list_seat_statuses_single_mirror_join(aura_state, monkeypatch):
     assert by_name["alpha"]["liveness"] == "alive"
     assert by_name["beta"]["liveness"] == "missing"
     assert by_name["beta"]["managed_state"] == "missing_pane"
+
+
+def test_list_seat_statuses_liveness_is_session_aware(aura_state, monkeypatch):
+    from lib import registry, seat_status, tmux_mirror
+
+    monkeypatch.setattr(tmux_mirror, "list_physical_panes", lambda **_kw: {
+        "ok": True,
+        "schema": "aura.tmux_mirror.v1",
+        "panes": [
+            {
+                "pane_id": "%777",
+                "pane_ref": "tmux:new-fleet:%777",
+                "tmux_session": "new-fleet",
+                "physical_fleet": "new-fleet",
+            }
+        ],
+    })
+
+    registry.upsert_agent({
+        "name": "worker",
+        "fleet": "old-fleet",
+        "runtime": "codex",
+        "registered": True,
+        "pane_ref": "tmux:old-fleet:%777",
+    })
+
+    rows = seat_status.list_seat_statuses(fleet="old-fleet", terminal=None)
+
+    assert len(rows) == 1
+    assert rows[0]["liveness"] == "missing"
+    assert rows[0]["managed_state"] == "missing_pane"

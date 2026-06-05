@@ -892,18 +892,42 @@ def _unique_archive_dest(target_dir: Path, basename: str) -> Path:
     return target_dir / f"{basename}-{ts}"
 
 
-def _is_pane_live(pane_ref: str | None, live_pane_ids: set[str]) -> bool:
-    """Return True if pane_ref resolves to a pane id that is in live_pane_ids."""
+def _pane_ref_key(pane_ref: str | None) -> tuple[str | None, str] | None:
     if not pane_ref:
-        return False
+        return None
     subject = str(pane_ref)
     if subject.startswith("tmux:"):
         subject = subject[len("tmux:"):]
     if ":" in subject:
-        _, pane_id = subject.rsplit(":", 1)
-    else:
-        pane_id = subject
-    return pane_id.startswith("%") and pane_id in live_pane_ids
+        fleet, pane_id = subject.rsplit(":", 1)
+        return (fleet or None, pane_id) if pane_id.startswith("%") else None
+    return (None, subject) if subject.startswith("%") else None
+
+
+def _mirror_pane_key(pane: dict[str, Any]) -> tuple[str, str] | None:
+    session = pane.get("tmux_session") or pane.get("physical_fleet") or pane.get("session_name") or pane.get("session")
+    pane_id = pane.get("pane_id")
+    if not session or not pane_id:
+        return None
+    pane_id = str(pane_id)
+    if not pane_id.startswith("%"):
+        return None
+    return str(session), pane_id
+
+
+def _is_pane_live(
+    pane_ref: str | None,
+    live_pane_ids: set[str],
+    live_pane_keys: set[tuple[str, str]] | None = None,
+) -> bool:
+    """Return True when pane_ref resolves to the live tmux session + pane."""
+    key = _pane_ref_key(pane_ref)
+    if not key:
+        return False
+    fleet, pane_id = key
+    if live_pane_keys is not None and fleet is not None:
+        return (fleet, pane_id) in live_pane_keys
+    return pane_id in live_pane_ids
 
 
 def archive(
@@ -942,15 +966,19 @@ def archive(
     # 3. Check liveness.
     mirror = tmux_mirror.list_physical_panes()
     live_pane_ids: set[str] = set()
+    live_pane_keys: set[tuple[str, str]] = set()
     if mirror.get("ok"):
         for pane in mirror.get("panes", []):
             pid = str(pane.get("pane_id") or "")
             if pid.startswith("%"):
                 live_pane_ids.add(pid)
+            key = _mirror_pane_key(pane)
+            if key:
+                live_pane_keys.add(key)
 
     live_rows = [
         row for row in package_rows
-        if _is_pane_live(row.get("pane_ref"), live_pane_ids)
+        if _is_pane_live(row.get("pane_ref"), live_pane_ids, live_pane_keys)
     ]
     if live_rows and not force:
         return {

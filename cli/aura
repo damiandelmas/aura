@@ -733,6 +733,11 @@ def main():
     p_fleets_resolve.add_argument("target")
     p_fleets_history = fleets_sub.add_parser("history", help="Per-fleet history and restore plan")
     p_fleets_history.add_argument("target")
+    p_fleets_rename = fleets_sub.add_parser("rename", help="Rename a live fleet tmux session and active Aura refs")
+    p_fleets_rename.add_argument("old", help="Current fleet/tmux session name")
+    p_fleets_rename.add_argument("new", help="New fleet/tmux session name")
+    p_fleets_rename.add_argument("--dry-run", action="store_true", help="Plan only; write nothing")
+    p_fleets_rename.add_argument("--confirm", action="store_true", help="Apply the rename")
 
     # resolve
     p_resolve = subparsers.add_parser("resolve", help="Resolve agent name or tmux group → session_id + window + status")

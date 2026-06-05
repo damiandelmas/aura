@@ -55,18 +55,28 @@ def _target_exists(terminal, target: str | None) -> bool:
     return False
 
 
-def _extract_pane_id(pane_ref: str | None) -> str | None:
-    """Extract the bare %N pane id from a pane_ref like 'tmux:fleet:%N'."""
+def _extract_pane_key(pane_ref: str | None) -> tuple[str | None, str] | None:
+    """Extract the tmux session + %N key from a pane_ref."""
     if not pane_ref:
         return None
     subject = str(pane_ref)
     if subject.startswith("tmux:"):
         subject = subject[len("tmux:"):]
-    # subject is now e.g. "fleet:%42" or just "%42"
     if ":" in subject:
-        _, pane_id = subject.rsplit(":", 1)
-        return pane_id if pane_id.startswith("%") else None
-    return subject if subject.startswith("%") else None
+        session, pane_id = subject.rsplit(":", 1)
+        return (session or None, pane_id) if pane_id.startswith("%") else None
+    return (None, subject) if subject.startswith("%") else None
+
+
+def _mirror_pane_key(pane: dict[str, Any]) -> tuple[str, str] | None:
+    session = pane.get("tmux_session") or pane.get("physical_fleet") or pane.get("session_name") or pane.get("session")
+    pane_id = pane.get("pane_id")
+    if not session or not pane_id:
+        return None
+    pane_id = str(pane_id)
+    if not pane_id.startswith("%"):
+        return None
+    return str(session), pane_id
 
 
 def _terminal_status(
@@ -74,17 +84,24 @@ def _terminal_status(
     terminal=None,
     *,
     live_pane_ids: set[str] | None = None,
+    live_pane_keys: set[tuple[str, str]] | None = None,
 ) -> tuple[str, str, list[str]]:
     targets = _seat_targets(record)
-    if not terminal and live_pane_ids is None:
+    if not terminal and live_pane_ids is None and live_pane_keys is None:
         return "unknown", record.get("status") or "unknown", targets
 
     pane_ref = record.get("pane_ref")
-    pane_id = _extract_pane_id(pane_ref)
+    pane_key = _extract_pane_key(pane_ref)
 
     # Fast path: use the pre-built mirror snapshot when available.
-    if live_pane_ids is not None and pane_id is not None:
-        if pane_id in live_pane_ids:
+    if pane_key is not None and (live_pane_keys is not None or live_pane_ids is not None):
+        fleet_key, key_pane_id = pane_key
+        key_alive = False
+        if live_pane_keys is not None and fleet_key is not None:
+            key_alive = (fleet_key, key_pane_id) in live_pane_keys
+        elif live_pane_ids is not None:
+            key_alive = key_pane_id in live_pane_ids
+        if key_alive:
             # Pane is alive in the mirror — try to infer status via terminal if available.
             if terminal:
                 fleet = record.get("fleet")
@@ -293,11 +310,17 @@ def build_from_record(
     pending_by_target: dict[str, tuple[bool, bool]] | None = None,
     keeper_ids: set[str] | None = None,
     live_pane_ids: set[str] | None = None,
+    live_pane_keys: set[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     seat = _seat_name(record)
     fleet = record.get("fleet")
     target = _target(fleet, seat)
-    liveness, status, checked_targets = _terminal_status(record, terminal=terminal, live_pane_ids=live_pane_ids)
+    liveness, status, checked_targets = _terminal_status(
+        record,
+        terminal=terminal,
+        live_pane_ids=live_pane_ids,
+        live_pane_keys=live_pane_keys,
+    )
 
     bound_record = runtime_session.mark_binding(dict(record))
     binding = bound_record.get("runtime_session_binding") or (
@@ -421,7 +444,25 @@ def build_seat_status(target: str, *, terminal=None) -> dict[str, Any]:
         if mirror.get("ok")
         else None
     )
-    return {"ok": True, **build_from_record(record, terminal=terminal, live_pane_ids=live_pane_ids)}
+    live_pane_keys: set[tuple[str, str]] | None = (
+        {
+            key
+            for p in mirror.get("panes", [])
+            for key in [_mirror_pane_key(p)]
+            if key
+        }
+        if mirror.get("ok")
+        else None
+    )
+    return {
+        "ok": True,
+        **build_from_record(
+            record,
+            terminal=terminal,
+            live_pane_ids=live_pane_ids,
+            live_pane_keys=live_pane_keys,
+        ),
+    }
 
 
 def list_seat_statuses(
@@ -457,6 +498,16 @@ def list_seat_statuses(
         if mirror.get("ok")
         else None
     )
+    live_pane_keys: set[tuple[str, str]] | None = (
+        {
+            key
+            for p in mirror.get("panes", [])
+            for key in [_mirror_pane_key(p)]
+            if key
+        }
+        if mirror.get("ok")
+        else None
+    )
     return [
         build_from_record(
             record,
@@ -466,6 +517,7 @@ def list_seat_statuses(
             pending_by_target=pending_by_target,
             keeper_ids=keeper_ids,
             live_pane_ids=live_pane_ids,
+            live_pane_keys=live_pane_keys,
         )
         for record in _base_rows(fleet=fleet, include_hidden=include_hidden, include_ledger=include_ledger)
     ]

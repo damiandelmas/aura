@@ -53,7 +53,8 @@ def infer_context() -> dict[str, Any]:
 
     agent = registry.get_agent(seat, fleet=fleet) if seat else None
     if agent:
-        fleet = fleet or agent.get("fleet")
+        fleet = agent.get("fleet") or fleet
+        seat = agent.get("seat") or agent.get("name") or seat
         runtime = runtime or agent.get("runtime")
 
     session_id = (
