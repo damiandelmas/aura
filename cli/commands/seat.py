@@ -696,10 +696,10 @@ def _restart_plan(args, record: dict) -> dict:
             # build a native resume command for this seat.
             pass
 
-    if runtime == "claude-code" and command and "--session-id" in str(command) and not resume_session_id:
-        # A replayed claude command with a stale --session-id would refuse to
-        # start ("already in use"); without a resumable session, restart means
-        # a fresh session — strip the allocation and let the hook bind the new id.
+    if runtime == "claude-code" and command and "--session-id" in str(command):
+        # A replayed --session-id is never valid: a fresh start with a used id
+        # refuses ("already in use"), and resume rides claude-r, which never
+        # carries the flag. Strip it; a fresh session gets its id from the hook.
         command = re.sub(r"\s--session-id\s+\S+", "", str(command))
 
     prompt = getattr(args, "prompt", None) or role_prompt
@@ -2534,6 +2534,96 @@ def _alias_rm(args, registry):
     return {"ok": True, "dry_run": False, "removed": True, "alias": preview}
 
 
+def _whoami(args, registry) -> dict:
+    """Resolve a pane (or this process) to its managed seat identity. Read-only.
+
+    The CLI contract the tmux layer consumes: scripts pass --pane and read the
+    JSON (or the pre-rendered `block`) instead of importing registry internals.
+    """
+    pane_arg = getattr(args, "pane", None)
+    pane_ref = None
+    if pane_arg:
+        value = str(pane_arg)
+        if value.startswith("tmux:"):
+            pane_ref = value
+        elif value.startswith("%"):
+            probe = _run_tmux(["display-message", "-p", "-t", value, "#{session_name}"])
+            session = (probe.stdout or "").strip()
+            if probe.returncode != 0 or not session:
+                return {"ok": False, "error": "pane-not-found", "pane": value}
+            pane_ref = f"tmux:{session}:{value}"
+        else:
+            return {
+                "ok": False,
+                "error": "bad-pane-ref",
+                "detail": "expected tmux:SESSION:%N or a bare %N pane id",
+                "pane": value,
+            }
+        row = registry.resolve_occupant(pane_ref=pane_ref)
+    else:
+        env = os.environ
+        pane_id = env.get("TMUX_PANE")
+        if pane_id:
+            probe = _run_tmux(["display-message", "-p", "-t", pane_id, "#{session_name}"])
+            session = (probe.stdout or "").strip()
+            if probe.returncode == 0 and session:
+                pane_ref = f"tmux:{session}:{pane_id}"
+        row = registry.resolve_occupant(
+            seat_instance_id=env.get("AURA_SEAT_INSTANCE_ID"),
+            aura_launch_id=env.get("AURA_LAUNCH_ID"),
+            pane_ref=pane_ref,
+        )
+
+    if not row:
+        hint = (
+            f"aura seat adopt --pane {pane_ref} --as FLEET:SEAT --runtime RUNTIME"
+            if pane_ref
+            else None
+        )
+        block_lines = [f"- aura: unmanaged pane {pane_ref or 'unknown'}"]
+        if hint:
+            block_lines.append(f"  hint: {hint}")
+        return {
+            "ok": False,
+            "error": "unmanaged-pane",
+            "pane_ref": pane_ref,
+            "hint": hint,
+            "block": "\n".join(block_lines),
+        }
+
+    target = f"{row.get('fleet')}:{row.get('name') or row.get('seat')}"
+    agent = next(
+        (str(row.get(k)) for k in ("identity_id", "agent_package_id", "identity") if row.get(k)),
+        "",
+    )
+    lines = [f"- aura: {target}"]
+    if agent.startswith("i_"):
+        lines.append(f"  agent: {agent}")
+    if row.get("seat_instance_id"):
+        lines.append(f"  seat_instance: {row['seat_instance_id']}")
+    if row.get("runtime_session_id"):
+        lines.append(f"  session: {row['runtime_session_id']}")
+    elif row.get("aura_launch_id"):
+        lines.append(f"  launch: {row['aura_launch_id']}")
+    if row.get("runtime"):
+        lines.append(f"  runtime: {row['runtime']}")
+    if row.get("pane_ref"):
+        lines.append(f"  pane: {row['pane_ref']}")
+    return {
+        "ok": True,
+        "target": target,
+        "fleet": row.get("fleet"),
+        "seat": row.get("name") or row.get("seat"),
+        "runtime": row.get("runtime"),
+        "seat_instance_id": row.get("seat_instance_id"),
+        "runtime_session_id": row.get("runtime_session_id"),
+        "aura_launch_id": row.get("aura_launch_id"),
+        "agent_package_id": agent if agent.startswith("i_") else None,
+        "pane_ref": row.get("pane_ref"),
+        "block": "\n".join(lines),
+    }
+
+
 def run(args):
     from lib import registry
 
@@ -2625,4 +2715,6 @@ def run(args):
         return _gc(args)
     if action == "sync-windows":
         return _sync_windows(args)
+    if action == "whoami":
+        return _whoami(args, registry)
     return {"ok": False, "error": f"unknown seat action: {action}"}

@@ -473,6 +473,14 @@ def main():
         help="Re-assert tmux window names from managed seat names (label sync, idempotent)",
     )
     p_seat_sync.add_argument("--fleet", "-f", metavar="NAME", help="Limit to one fleet")
+    p_seat_whoami = seat_sub.add_parser(
+        "whoami",
+        help="Resolve a pane (or this process) to its managed seat identity (read-only)",
+    )
+    p_seat_whoami.add_argument(
+        "--pane", metavar="REF",
+        help="tmux:SESSION:%%N or a bare %%N pane id (default: this process's env/pane)",
+    )
     p_seat_gc = seat_sub.add_parser(
         "gc",
         help="TTL-based auto-archival of cruft registry rows (unbound, no resumable session, older than TTL)",
