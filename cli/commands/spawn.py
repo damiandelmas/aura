@@ -627,6 +627,17 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         prompt=augmented_prompt if native_initial_prompt_argv else None,
     )
 
+    # Launch-time session FK: Claude Code accepts a caller-chosen session id, so
+    # a fresh claude seat's session is ALLOCATED by Aura rather than discovered
+    # after the fact — the row is born bound and the id is readable from the
+    # pane's /proc env forever (exact evidence for the pane resolver).
+    preallocated_session_id = None
+    if runtime == "claude-code" and not resume_session and not fork_session and not launch_command:
+        import uuid as _uuid
+
+        preallocated_session_id = str(_uuid.uuid4())
+        command = f"{command} --session-id {preallocated_session_id}"
+
     launch_env = {
         "AURA_AGENT_NAME": args.name,
         "AURA_SEAT": args.name,
@@ -635,6 +646,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         "AURA_LAUNCH_ID": launch_id,
         "AURA_SEAT_INSTANCE_ID": seat_instance_id,
         "AURA_STATE_DIR": str(state.state_root()),
+        **({"AURA_RUNTIME_SESSION_ID": preallocated_session_id} if preallocated_session_id else {}),
         "AURA_REGISTRY_PATH": str(state.registry_path()),
         "AURA_SEAT_ALIASES_PATH": str(state.seat_aliases_path()),
         "AURA_FLEETS_PATH": str(state.fleet_registry_path()),
@@ -890,6 +902,37 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     # vet the record.  Now route the real session id through _bind_registry_session,
     # which applies the body-integrity veto before writing "bound" into the registry.
     resume_bind = None
+    if preallocated_session_id and not resume_session:
+        # Launch-time FK: the session id was allocated by Aura and passed as
+        # --session-id, so the row is born bound — same gated writer, no race.
+        from commands import sessions as sessions_cmd
+
+        bound = sessions_cmd._bind_registry_session(
+            fleet=fleet,
+            seat=args.name,
+            previous=registered,
+            session_id=preallocated_session_id,
+            source="spawn:session-id-argv",
+            confidence="exact",
+            evidence={
+                "reason": "claude-session-id-argv",
+                "bound_at_spawn": True,
+            },
+            cwd=workdir,
+            event="session_bound_argv",
+            env=None,
+        )
+        if bound.get("ok"):
+            registered = registry.resolve_live(args.name, fleet=fleet) or registered
+            session_meta = {
+                "session_id": preallocated_session_id,
+                "runtime_session_id": preallocated_session_id,
+                "runtime_session_source": "spawn:session-id-argv",
+                "runtime_session_binding": "bound",
+                "runtime_session_bind_method": bound.get("runtime_session_bind_method"),
+                "runtime_session_bind_source": "spawn:session-id-argv",
+                "runtime_session_confidence": "exact",
+            }
     if resume_session:
         from commands import sessions as sessions_cmd
 
@@ -911,7 +954,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         )
         if bound.get("ok"):
             # Re-fetch the now-bound row so the rest of the spawn flow sees it.
-            registered = registry.get_agent(args.name, fleet=fleet) or registered
+            registered = registry.resolve_live(args.name, fleet=fleet) or registered
             session_meta = {
                 "session_id": resume_session,
                 "runtime_session_id": resume_session,
@@ -1066,7 +1109,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         result["ready"] = bool(readiness.get("ready"))
         result["ready_reason"] = readiness.get("reason")
         if readiness.get("runtime_session_id"):
-            observation_session = registry.get_agent(args.name, fleet=fleet) or observation_session
+            observation_session = registry.resolve_live(args.name, fleet=fleet) or observation_session
             result.update({
                 key: readiness.get(key)
                 for key in (
@@ -1138,7 +1181,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         result["cwd_choice"] = cwd_choice
         if cwd_choice.get("detected") and cwd_choice.get("selected_path"):
             registry.upsert_agent({
-                **registry.get_agent(args.name, fleet=fleet),
+                **registry.resolve_live(args.name, fleet=fleet),
                 "name": args.name,
                 "fleet": fleet,
                 "cwd_choice": cwd_choice,
@@ -1225,7 +1268,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 result["ready"] = readiness["ready"]
                 result["ready_reason"] = readiness["ready_reason"]
             try:
-                current = registry.get_agent(args.name, fleet=fleet) or registered
+                current = registry.resolve_live(args.name, fleet=fleet) or registered
                 registry.upsert_agent({
                     **current,
                     "name": args.name,
@@ -1424,7 +1467,7 @@ def _wait_for_hook_bound_session(*, fleet: str, seat: str, timeout: float) -> di
     last = {}
     while True:
         attempts += 1
-        row = registry.get_agent(seat, fleet=fleet) or {}
+        row = registry.resolve_live(seat, fleet=fleet) or {}
         last = row
         if runtime_session.is_bound_session(row):
             session_id = row.get("runtime_session_id") or row.get("session_id")

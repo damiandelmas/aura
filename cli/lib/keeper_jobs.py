@@ -142,7 +142,7 @@ def resolve_target(ref: str) -> dict[str, Any]:
     if not raw:
         raise ValueError("target is required")
 
-    row = registry.get_agent(raw)
+    row = registry.resolve_live(raw)
     package: dict[str, Any] | None = None
     agent_id = _agent_id_from_record(row or {}) if row else None
 

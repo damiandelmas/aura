@@ -344,7 +344,7 @@ def _resolve_route_target(target: str) -> dict[str, Any]:
 
     if ":" in target and not target.startswith("tmux:"):
         fleet, name = target.split(":", 1)
-        agent = registry.get_agent(name, fleet=fleet)
+        agent = registry.resolve_live(name, fleet=fleet)
         if not agent:
             return {"ok": False, "error": f"unknown target `{target}`"}
         if registry.is_hidden_agent(agent):

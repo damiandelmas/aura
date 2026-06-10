@@ -151,6 +151,65 @@ def test_gc_keeps_resumable_row(gc_state, monkeypatch):
     assert registry.get_agent("resumable", fleet="test-fleet") is not None
 
 
+def test_gc_archives_bound_row_for_removed_runtime(gc_state, monkeypatch):
+    """A row bound to a runtime no longer in RUNTIMES (e.g. legacy omx) is false
+    lineage — you cannot resume into a deleted runtime — so it is ARCHIVED as
+    cruft despite being bound, not kept as resumable."""
+    from lib import registry, tmux_mirror, runtimes
+    from commands.seat import _gc
+
+    assert "omx" not in runtimes.RUNTIMES  # precondition: runtime was removed
+
+    registry.upsert_agent({
+        "name": "legacy-omx",
+        "fleet": "test-fleet",
+        "runtime": "omx",
+        "created_at": _iso(60),
+        "runtime_session_binding": "bound",
+        "runtime_session_id": "sess-omx-zombie",
+    })
+
+    monkeypatch.setattr(tmux_mirror, "list_physical_panes", lambda **_kw: _mirror_with_panes([]))
+
+    result = _gc(_make_args(ttl=7, confirm=True))
+
+    assert result["ok"] is True
+    archived_refs = {a["ref"]: a for a in result["archived"]}
+    assert "test-fleet:legacy-omx" in archived_refs
+    assert archived_refs["test-fleet:legacy-omx"]["reason"] == "removed-runtime"
+    assert "test-fleet:legacy-omx" in result["removed"]
+
+    # Row must be gone from the registry
+    assert registry.get_agent("legacy-omx", fleet="test-fleet") is None
+
+
+def test_gc_archives_removed_runtime_row_regardless_of_age(gc_state, monkeypatch):
+    """A removed-runtime row is TTL-EXEMPT: it can never resume, so no age grace
+    serves it — even a 1-day-old bound omx row is archived on the first gc."""
+    from lib import registry, tmux_mirror
+    from commands.seat import _gc
+
+    registry.upsert_agent({
+        "name": "recent-omx",
+        "fleet": "test-fleet",
+        "runtime": "omx",
+        "created_at": _iso(1),
+        "runtime_session_binding": "bound",
+        "runtime_session_id": "sess-omx-recent",
+    })
+
+    monkeypatch.setattr(tmux_mirror, "list_physical_panes", lambda **_kw: _mirror_with_panes([]))
+
+    result = _gc(_make_args(ttl=7, confirm=True))
+
+    assert result["ok"] is True
+    archived_refs = {a["ref"]: a for a in result["archived"]}
+    assert "test-fleet:recent-omx" in archived_refs
+    assert archived_refs["test-fleet:recent-omx"]["reason"] == "removed-runtime"
+    assert "test-fleet:recent-omx" in result["removed"]
+    assert registry.get_agent("recent-omx", fleet="test-fleet") is None
+
+
 def test_gc_keeps_fork_in_progress_row(gc_state, monkeypatch):
     """A pending-fork-child row carries fork lineage (source_session_id) and is KEPT even if old."""
     from lib import registry, tmux_mirror

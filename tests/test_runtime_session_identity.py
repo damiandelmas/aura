@@ -1677,7 +1677,11 @@ def test_sessions_bind_current_is_idempotent(monkeypatch, tmp_path):
     assert registry.get_agent("engineer", fleet="fleet-a")["runtime_session_confidence"] == "exact"
 
 
-def test_sessions_bind_hook_follows_rename_alias_without_recreating_source(monkeypatch, tmp_path):
+def test_sessions_bind_hook_rebinds_renamed_seat_by_occupant(monkeypatch, tmp_path):
+    # New contract: the bind hook is physical/occupant-keyed, NOT alias-following.
+    # A hook firing with a stale launch-time name but the seat's real
+    # seat_instance_id rebinds the renamed row BY OCCUPANT, never by chasing a
+    # name alias, and never recreates the stale source name.
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
 
     from commands import sessions
@@ -1697,19 +1701,52 @@ def test_sessions_bind_hook_follows_rename_alias_without_recreating_source(monke
     result = sessions.run(argparse.Namespace(
         sessions_action="bind-hook",
         runtime="codex",
-        target="aura-refresh-test:operator",
+        target="aura-refresh-test:operator",   # stale launch-time name
         session_id="thread-hook",
         nonce=None,
         transcript_path="/tmp/thread.jsonl",
         hook_event="UserPromptSubmit",
-        seat_instance_id="si_hook",
+        seat_instance_id="si_hook",             # the durable occupant id
     ))
 
     assert result["ok"] is True
     assert result["target"] == "aura-refresh-test:pilot"
     assert set(registry.read_registry().keys()) == {"aura-refresh-test:pilot"}
     assert registry.get_agent("aura-refresh-test:pilot")["runtime_session_id"] == "thread-hook"
-    assert registry.get_agent("aura-refresh-test:operator")["resolved_from"] == "aura-refresh-test:operator"
+
+
+def test_sessions_bind_hook_stale_name_wrong_occupant_does_not_bind(monkeypatch, tmp_path):
+    # The stale name must NOT alias-follow on its own: with a non-matching
+    # seat_instance_id there is no occupant to rebind, so the hook refuses
+    # rather than chasing the rename alias to pilot.
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+
+    from commands import sessions
+    from lib import registry
+
+    registry.upsert_agent({
+        "name": "operator",
+        "fleet": "aura-refresh-test",
+        "runtime": "codex",
+        "registered": True,
+        "seat_instance_id": "si_hook",
+        "pane_ref": "tmux:aura-refresh-test:%341",
+    })
+    registry.rename_agent("aura-refresh-test:operator", new_name="pilot")
+
+    result = sessions.run(argparse.Namespace(
+        sessions_action="bind-hook",
+        runtime="codex",
+        target="aura-refresh-test:operator",
+        session_id="thread-hook",
+        nonce=None,
+        transcript_path="/tmp/thread.jsonl",
+        hook_event="UserPromptSubmit",
+        seat_instance_id="si_other",   # not the pilot occupant
+    ))
+
+    assert result["ok"] is False
+    assert set(registry.read_registry().keys()) == {"aura-refresh-test:pilot"}
 
 
 def test_sessions_bind_current_requires_exact_session(monkeypatch):

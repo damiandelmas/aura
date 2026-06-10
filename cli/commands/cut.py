@@ -111,7 +111,7 @@ def run(args):
 
     force = getattr(args, 'force', False)
     graceful_attempted = False
-    reg_agent = registry.get_agent(args.name)
+    reg_agent = registry.resolve_live(args.name)
     agent_name = (reg_agent or {}).get("name")
     agent_fleet = (reg_agent or {}).get("fleet")
     if not agent_name and ":" in str(args.name) and not str(args.name).startswith("tmux:"):
@@ -167,7 +167,7 @@ def run(args):
 
     if force:
         mesh.unregister(args.name)
-        if reg_agent and not registry.get_agent(agent_name, fleet=agent_fleet):
+        if reg_agent and not registry.resolve_live(agent_name, fleet=agent_fleet):
             registry.mark_status(agent_name, "dead", fleet=agent_fleet)
 
     # Determine whether the pane was already absent (not just name-not-found).
@@ -198,7 +198,7 @@ def _record_stop(result: dict, reg_agent: dict | None, terminal_target: str) -> 
 
         after = None
         if reg_agent:
-            after = registry.get_agent(
+            after = registry.resolve_live(
                 reg_agent.get("name") or result.get("name"),
                 fleet=reg_agent.get("fleet"),
             )

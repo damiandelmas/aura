@@ -728,7 +728,7 @@ def test_codex_bind_hook_script_binds_capsule_session_quietly(monkeypatch, tmp_p
     assert '"ok": true' in receipt
 
 
-def test_codex_bind_hook_script_accepts_omx_package_without_capsule_residue(monkeypatch, tmp_path):
+def test_codex_bind_hook_script_refuses_removed_omx_runtime(monkeypatch, tmp_path):
     import json
     import os
     import subprocess
@@ -783,15 +783,15 @@ def test_codex_bind_hook_script_accepts_omx_package_without_capsule_residue(monk
         timeout=5,
     )
 
+    # omx is no longer a spawnable runtime, so its hook can never legitimately
+    # fire; bind-hook refuses the runtime and writes nothing. The hook script
+    # itself stays quiet and exits 0 (it never breaks a native session).
     assert result.returncode == 0
     assert result.stdout == ""
     row = registry.get_agent("pipeline", fleet="flexgraph-chatbot")
     assert row["runtime"] == "omx"
-    assert row["runtime_session_id"] == "thread-omx-hook"
-    assert "runtime_capsule_session" not in row
+    assert row.get("runtime_session_id") in (None, "")
     assert not (capsule / "runtime-session.json").exists()
-    assert not (capsule / "receipts").exists()
-    assert not (capsule / "artifacts").exists()
 
 
 def test_codex_bind_hook_ignores_mismatched_keeper_codex_home(monkeypatch, tmp_path):

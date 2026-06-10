@@ -35,6 +35,31 @@ def _atomic_write(path: Path, record: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _sender_occupant_fields(target: str) -> dict[str, Any]:
+    """Capture the target's live occupant ids at creation for continuity.
+
+    Continuity is sender->occupant: the record carries the occupant id of the
+    seat it is destined for, captured live so a later rename still matches.
+    Fields are additive/optional (schema stays v1).
+    """
+    try:
+        from lib import registry
+
+        row = registry.resolve_live(str(target))
+    except Exception:
+        row = None
+    if not row:
+        return {}
+    fields: dict[str, Any] = {}
+    if row.get("seat_instance_id"):
+        fields["occupant_seat_instance_id"] = row.get("seat_instance_id")
+    if row.get("aura_launch_id"):
+        fields["occupant_aura_launch_id"] = row.get("aura_launch_id")
+    if row.get("pane_ref"):
+        fields["occupant_pane_ref"] = row.get("pane_ref")
+    return fields
+
+
 def create(
     *,
     target: str,
@@ -57,6 +82,7 @@ def create(
     }
     if sender_kind is not None:
         record["sender_kind"] = sender_kind
+    record.update(_sender_occupant_fields(target))
     _atomic_write(queue_path(record["queue_id"]), record)
     return record
 
@@ -116,15 +142,26 @@ def _matches_report(record: dict[str, Any], report: dict[str, Any]) -> bool:
     target = record.get("target")
     if target in report_targets:
         return True
+    try:
+        from lib import registry
+    except Exception:
+        return False
+    # A live row blocks history reach-back: if the target name resolves to a
+    # live seat, only match when that physical seat is the report source.
     if target:
-        try:
-            from lib import registry
-
-            resolved, chain = registry.resolve_alias(str(target))
-            if chain and resolved in report_targets:
-                return True
-        except Exception:
-            pass
+        live = registry.resolve_live(str(target))
+        if live is not None:
+            return f"{live.get('fleet')}:{live.get('name')}" in report_targets
+    # No live row for the name -> match by the sender's captured occupant id.
+    occupant = record.get("occupant_seat_instance_id") or record.get("occupant_aura_launch_id") or record.get("occupant_pane_ref")
+    if occupant:
+        row = registry.resolve_occupant(
+            seat_instance_id=record.get("occupant_seat_instance_id"),
+            aura_launch_id=record.get("occupant_aura_launch_id"),
+            pane_ref=record.get("occupant_pane_ref"),
+        )
+        if row is not None:
+            return f"{row.get('fleet')}:{row.get('name')}" in report_targets
     return False
 
 

@@ -154,7 +154,7 @@ def _adopt(args) -> dict:
         discovered_by=f"holding:{args.holding_id}",
         source_command="aura holding adopt",
         registered_via="holding-adopt",
-        rename_window=bool(getattr(args, "rename_window", False)),
+        rename_window=bool(getattr(args, "rename_window", True)) and not bool(getattr(args, "keep_window_name", False)),
         adoption_source=args.holding_id,
     )
     if result.get("ok"):

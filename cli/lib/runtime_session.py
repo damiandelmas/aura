@@ -25,6 +25,7 @@ UUID_RE = re.compile(
 DEFAULT_CODEX_STATE_DB = Path.home() / ".codex" / "state_5.sqlite"
 BOUND_SESSION_SOURCES = {
     "spawn:resume-session": "spawn-resume-session",
+    "spawn:session-id-argv": "session-id-argv",
     "argv:codex-resume": "argv-resume",
     "codex-jsonl:nonce": "nonce-jsonl",
     "codex-hook:session-start": "codex-hook",
@@ -40,6 +41,8 @@ def binding_method_for_source(source: str | None) -> str | None:
         return BOUND_SESSION_SOURCES[source]
     if source.startswith("codex-hook:"):
         return "codex-hook"
+    if source.startswith("claude-hook:"):
+        return "claude-hook"
     if source.startswith("tmux-pane:"):
         return "tmux-pane"
     if source.startswith("env:"):

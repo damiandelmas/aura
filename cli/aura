@@ -431,14 +431,26 @@ def main():
     p_seat_flex.add_argument("--capture-lines", type=int, default=5000,
                              help="Terminal scrollback lines to inspect for the existing packet marker")
     seat_sub.add_parser("aliases", help="List seat aliases")
+    p_seat_alias = seat_sub.add_parser("alias", help="Inspect or prune the historical alias ledger")
+    alias_sub = p_seat_alias.add_subparsers(dest="alias_action", required=True)
+    p_seat_alias_ls = alias_sub.add_parser("ls", help="List historical aliases (source -> target)")
+    p_seat_alias_ls.add_argument("--fleet", help="Filter to aliases whose source or target is in this fleet")
+    p_seat_alias_ls.add_argument("--source", help="Filter to this exact alias source ref")
+    p_seat_alias_ls.add_argument("--target", help="Filter to this exact alias target ref")
+    p_seat_alias_rm = alias_sub.add_parser("rm", help="Remove one historical alias by source (ledger only)")
+    p_seat_alias_rm.add_argument("source", help="Alias source ref to remove")
+    p_seat_alias_rm.add_argument("--confirm", action="store_true", help="Actually write the removal")
+    p_seat_alias_rm.add_argument("--dry-run", action="store_true", help="Preview the removal without writing")
     p_seat_adopt = seat_sub.add_parser(
         "adopt",
         help="Adopt an unmanaged tmux pane into a managed Aura seat",
     )
     p_seat_adopt.add_argument("--pane", required=True, help="Explicit tmux pane ref, e.g. tmux:flex-leaders-2:%%48")
     p_seat_adopt.add_argument("--as", dest="target", required=True, help="Managed Aura target FLEET:SEAT")
-    p_seat_adopt.add_argument("--rename-window", action="store_true",
-                              help="Rename the tmux window to the adopted seat name")
+    p_seat_adopt.add_argument("--rename-window", action="store_true", default=True,
+                              help="Rename the tmux window to the adopted seat name (default)")
+    p_seat_adopt.add_argument("--keep-window-name", action="store_true",
+                              help="Keep the existing tmux window name instead of mirroring the seat")
     p_seat_adopt.add_argument("--runtime", help="Runtime name (codex, claude-code, shell, command)")
     p_seat_adopt.add_argument("--cwd", default="auto",
                               help="Registered cwd, or auto to use pane current path (default: auto)")
@@ -456,6 +468,11 @@ def main():
                             help="Remove a key entirely; repeatable.")
     p_seat_tag.add_argument("--expect-seat-instance-id", metavar="ID",
                             help="Only tag if the current row has this seat_instance_id.")
+    p_seat_sync = seat_sub.add_parser(
+        "sync-windows",
+        help="Re-assert tmux window names from managed seat names (label sync, idempotent)",
+    )
+    p_seat_sync.add_argument("--fleet", "-f", metavar="NAME", help="Limit to one fleet")
     p_seat_gc = seat_sub.add_parser(
         "gc",
         help="TTL-based auto-archival of cruft registry rows (unbound, no resumable session, older than TTL)",
@@ -516,8 +533,10 @@ def main():
     p_holding_adopt = holding_sub.add_parser("adopt", help="Adopt a holding record into a managed Aura seat")
     p_holding_adopt.add_argument("holding_id")
     p_holding_adopt.add_argument("--as", dest="target", required=True, help="Managed Aura target FLEET:SEAT")
-    p_holding_adopt.add_argument("--rename-window", action="store_true",
-                                 help="Rename the tmux window to the adopted seat name")
+    p_holding_adopt.add_argument("--rename-window", action="store_true", default=True,
+                                 help="Rename the tmux window to the adopted seat name (default)")
+    p_holding_adopt.add_argument("--keep-window-name", action="store_true",
+                                 help="Keep the existing tmux window name instead of mirroring the seat")
     p_holding_adopt.add_argument("--runtime", help="Runtime name override")
     p_holding_adopt.add_argument("--cwd", default="auto",
                                  help="Registered cwd, or auto to use pane current path (default: auto)")
@@ -680,7 +699,7 @@ def main():
     p_sessions.add_argument(
         "sessions_action",
         nargs="?",
-        choices=["latest", "all", "restore-plan", "self", "bind-current", "bind-hook", "bind-nonce", "resolve-pane", "bind-pane", "footer", "bind-footer", "seat-history", "fleets", "fleet-history", "heal"],
+        choices=["latest", "all", "restore-plan", "self", "bind-current", "bind-hook", "bind-nonce", "resolve-pane", "bind-pane", "footer", "bind-footer", "seat-history", "fleets", "fleet-history", "heal", "reconcile-orphans"],
                             help="Optional sessions action")
     p_sessions.add_argument("nonce", nargs="?",
                             help="For bind-nonce, unique marker written into the target Codex session; for seat-history, target seat ref")
@@ -738,6 +757,7 @@ def main():
     p_fleets_rename.add_argument("new", help="New fleet/tmux session name")
     p_fleets_rename.add_argument("--dry-run", action="store_true", help="Plan only; write nothing")
     p_fleets_rename.add_argument("--confirm", action="store_true", help="Apply the rename")
+    p_fleets_rename.add_argument("--reason", help="Operator reason recorded in the fleet movement ledger")
 
     # resolve
     p_resolve = subparsers.add_parser("resolve", help="Resolve agent name or tmux group → session_id + window + status")

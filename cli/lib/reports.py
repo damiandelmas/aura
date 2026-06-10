@@ -43,6 +43,30 @@ def _env_first(*names: str) -> str | None:
     return None
 
 
+def _resolve_sender_for_report(seat: str | None, fleet: str | None) -> dict[str, Any] | None:
+    """Occupant-keyed sender provenance. NO name fallback.
+
+    When birth-env occupant ids are present, the report's sender identity must
+    follow the occupant, never a possibly-reused name. If the occupant ids
+    resolve to nothing, return the env-inferred {fleet, seat} unchanged rather
+    than redirecting to whatever now holds that name.
+    """
+    si = _env_first("AURA_SEAT_INSTANCE_ID")
+    launch = _env_first("AURA_LAUNCH_ID")
+    pane = os.environ.get("TMUX_PANE")
+    if not (si or launch):
+        return None
+    row = registry.resolve_occupant(
+        seat_instance_id=si,
+        aura_launch_id=launch,
+        pane_ref=pane,
+        default_ref=None,
+    )
+    if row:
+        return {"fleet": row.get("fleet") or fleet, "seat": row.get("seat") or row.get("name") or seat}
+    return {"fleet": fleet, "seat": seat}
+
+
 def infer_context() -> dict[str, Any]:
     runtime = _env_first("AURA_RUNTIME")
     resolved = runtime_session.resolve_current_process(runtime)
@@ -51,7 +75,12 @@ def infer_context() -> dict[str, Any]:
     seat = _env_first("AURA_SEAT", "AURA_AGENT_NAME") or resolved.get("seat")
     runtime = runtime or resolved.get("runtime")
 
-    agent = registry.get_agent(seat, fleet=fleet) if seat else None
+    sender = _resolve_sender_for_report(seat, fleet)
+    if sender is not None:
+        fleet = sender.get("fleet") or fleet
+        seat = sender.get("seat") or seat
+
+    agent = registry.get_agent(seat, fleet=fleet) if (seat and sender is None) else None
     if agent:
         fleet = agent.get("fleet") or fleet
         seat = agent.get("seat") or agent.get("name") or seat
@@ -63,6 +92,17 @@ def infer_context() -> dict[str, Any]:
         or (agent or {}).get("session_id")
         or (agent or {}).get("runtime_session_id")
     )
+
+    # Last rung of the self-resolution ladder: a process that knows its own
+    # runtime session id (e.g. an adopted pane with no birth env) resolves to
+    # the registry row bound to that session. Exact evidence only — the session
+    # UUID is the continuity anchor.
+    if session_id and not (fleet and seat):
+        session_row = registry.resolve_live_by_session(session_id)
+        if session_row:
+            fleet = fleet or session_row.get("fleet")
+            seat = seat or session_row.get("seat") or session_row.get("name")
+            runtime = runtime or session_row.get("runtime")
 
     warnings = []
     if not seat:

@@ -149,13 +149,16 @@ def _matches_target(target: str, report: dict[str, Any]) -> bool:
     report_targets = _report_targets(report)
     if target in report_targets:
         return True
+    # A live row blocks history reach-back: match only the current physical seat.
     try:
         from lib import registry
 
-        resolved, chain = registry.resolve_alias(target)
-        return bool(chain and resolved in report_targets)
+        live = registry.resolve_live(str(target))
     except Exception:
         return False
+    if live is None:
+        return False
+    return f"{live.get('fleet')}:{live.get('name')}" in report_targets
 
 
 def _matches_placement(placement: str, report: dict[str, Any]) -> bool:
@@ -171,12 +174,9 @@ def _matches_placement(placement: str, report: dict[str, Any]) -> bool:
             if not seat_ref:
                 continue
             candidates = {str(seat_ref)}
-            try:
-                resolved, chain = registry.resolve_alias(str(seat_ref))
-                if chain and resolved:
-                    candidates.add(resolved)
-            except Exception:
-                pass
+            live = registry.resolve_live(str(seat_ref))
+            if live is not None:
+                candidates.add(f"{live.get('fleet')}:{live.get('name')}")
             if candidates & report_targets:
                 return True
         return False
@@ -205,13 +205,16 @@ def is_self_delivery(record: dict[str, Any], report: dict[str, Any]) -> bool:
 
 
 def canonical_target(target: str) -> str:
+    # Dedupe key by the current physical name (no alias reach-back).
     try:
         from lib import registry
 
-        resolved, chain = registry.resolve_alias(target)
-        return resolved if chain and resolved else target
+        live = registry.resolve_live(str(target))
     except Exception:
         return target
+    if live is None:
+        return target
+    return f"{live.get('fleet')}:{live.get('name')}"
 
 
 def schedule_for_report(report: dict[str, Any], *, delay_seconds: float = 1.5) -> list[dict[str, Any]]:

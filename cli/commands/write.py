@@ -20,7 +20,7 @@ def _parse_target(target: str, registry, terminal) -> tuple[str, str, str | None
             terminal.configure_session(fleet)
         return subject, target, fleet, f"tmux:{fleet}:{subject}", None
 
-    reg_agent = registry.get_agent(target)
+    reg_agent = registry.resolve_live(target)
     fleet = (reg_agent or {}).get("fleet")
     if fleet and hasattr(terminal, "configure_session"):
         terminal.configure_session(fleet)

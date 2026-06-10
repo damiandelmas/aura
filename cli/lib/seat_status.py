@@ -352,6 +352,8 @@ def build_from_record(
         risk_flags.append("possible_runtime_session_matches")
     if liveness == "missing":
         risk_flags.append("missing_pane")
+        if record.get("aura_launch_id"):
+            risk_flags.append("live_born_pane_without_row")
     if not identity:
         risk_flags.append("identity_missing")
     if identity_flag:
@@ -435,7 +437,7 @@ def build_from_record(
 def build_seat_status(target: str, *, terminal=None) -> dict[str, Any]:
     from lib import tmux_mirror
 
-    record = registry.get_agent(target)
+    record = registry.resolve_live(target)
     if not record:
         return {"ok": False, "error": f"seat not found: {target}", "target": target}
     mirror = tmux_mirror.list_physical_panes()
@@ -521,3 +523,40 @@ def list_seat_statuses(
         )
         for record in _base_rows(fleet=fleet, include_hidden=include_hidden, include_ledger=include_ledger)
     ]
+
+
+def list_orphaned_born_panes(*, fleet_filter: str | None = None) -> list[dict[str, Any]]:
+    """Live tmux panes that carry Aura birth env but have no registry pane_ref row.
+
+    These are Aura-born seats whose registry row is missing (e.g. a lost write or
+    a fleet rename). Each entry is the reconstructed thin row from the pane's
+    birth env, annotated with the live pane_ref. Returns [] when the tmux mirror
+    is unavailable.
+    """
+    from lib import pane_resolver, registry, tmux_mirror
+
+    mirror = tmux_mirror.list_physical_panes()
+    if not mirror.get("ok"):
+        return []
+
+    known_pane_refs = {
+        str(row.get("pane_ref"))
+        for row in registry.read_registry().values()
+        if row.get("pane_ref")
+    }
+
+    orphans: list[dict[str, Any]] = []
+    for pane in mirror.get("panes") or []:
+        pane_ref = pane.get("pane_ref")
+        if pane_ref and str(pane_ref) in known_pane_refs:
+            continue
+        birth_env = pane_resolver._read_birth_env(pane_resolver._pane_pid(pane))
+        if not birth_env:
+            continue
+        if fleet_filter and birth_env.get("AURA_FLEET") != fleet_filter:
+            continue
+        thin = pane_resolver._resolve_from_birth_env(pane, birth_env)
+        if thin is None:
+            continue
+        orphans.append(thin)
+    return orphans

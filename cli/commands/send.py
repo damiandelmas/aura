@@ -91,7 +91,7 @@ def run(args):
             "error": "aura send requires a managed Aura target; use aura write for raw tmux targets",
             "target": args.target,
         }
-    reg_agent = registry.get_agent(args.target)
+    reg_agent = registry.resolve_live(args.target)
     if ":" in args.target and not reg_agent:
         return {
             "ok": False,

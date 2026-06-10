@@ -27,7 +27,7 @@ def run(args):
     if action == "deliver":
         return event_sidecar.deliver_human_message(args.source, args.message, channel=getattr(args, "channel", None))
     if action == "register-seat":
-        agent = registry.get_agent(args.seat)
+        agent = registry.resolve_live(args.seat)
         if not agent:
             return {"ok": False, "error": f"unknown seat: {args.seat}"}
         runtime = {

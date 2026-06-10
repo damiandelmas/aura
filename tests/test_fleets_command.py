@@ -80,7 +80,7 @@ def test_fleet_history_builds_restore_commands(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
     from commands import fleets
-    from lib import registry, session_ledger
+    from lib import registry, session_ledger, tmux_mirror
 
     current = registry.upsert_agent({
         "name": "worker",
@@ -105,9 +105,9 @@ def test_fleet_history_builds_restore_commands(monkeypatch, tmp_path):
         source_command="test",
     )
     monkeypatch.setattr(
-        fleets.list_cmd,
-        "run",
-        lambda _args: [],
+        tmux_mirror,
+        "list_physical_panes",
+        lambda: {"ok": False, "panes": [], "error": "tmux unavailable"},
     )
 
     result = fleets.run(argparse.Namespace(fleets_action="history", target="unitfleet"))
@@ -128,7 +128,7 @@ def test_fleet_history_does_not_restore_keeper_worker_threads(monkeypatch, tmp_p
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
     from commands import fleets
-    from lib import registry, session_ledger
+    from lib import registry, session_ledger, tmux_mirror
 
     keeper_job = tmp_path / "state" / "keeper-jobs" / "memory.job"
     keeper_job.mkdir(parents=True)
@@ -149,7 +149,11 @@ def test_fleet_history_does_not_restore_keeper_worker_threads(monkeypatch, tmp_p
     keeper["session_id"] = "keeper-thread"
     session_ledger.append_seat_event(event="seat_spawned", after=real, source_command="test")
     session_ledger.append_seat_event(event="session_bound_hook", after=keeper, source_command="test")
-    monkeypatch.setattr(fleets.list_cmd, "run", lambda _args: [])
+    monkeypatch.setattr(
+        tmux_mirror,
+        "list_physical_panes",
+        lambda: {"ok": False, "panes": [], "error": "tmux unavailable"},
+    )
 
     result = fleets.run(argparse.Namespace(fleets_action="history", target="unitfleet"))
 
@@ -157,6 +161,65 @@ def test_fleet_history_does_not_restore_keeper_worker_threads(monkeypatch, tmp_p
     assert result["seats"][0]["restore"]["ready"] is True
     assert "--resume-session real-thread" in result["seats"][0]["restore"]["command"]
     assert "keeper-thread" not in result["seats"][0]["restore"]["command"]
+
+
+def test_fleet_history_does_not_count_unmanaged_physical_panes_as_live(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import fleets
+    from lib import registry, session_ledger, tmux_mirror
+
+    managed = registry.upsert_agent({
+        "name": "worker",
+        "seat": "worker",
+        "fleet": "unitfleet",
+        "runtime": "codex",
+        "cwd": str(tmp_path),
+        "registered": True,
+        "runtime_session_id": "session-1",
+        "runtime_session_binding": "bound",
+        "pane_ref": "tmux:unitfleet:%1",
+    })
+    session_ledger.append_seat_event(event="seat_spawned", after=managed, source_command="test")
+    monkeypatch.setattr(
+        tmux_mirror,
+        "list_physical_panes",
+        lambda: {
+            "ok": True,
+            "panes": [
+                {
+                    "tmux_session": "unitfleet",
+                    "physical_fleet": "unitfleet",
+                    "window_name": "worker",
+                    "pane_id": "%1",
+                    "pane_ref": "tmux:unitfleet:%1",
+                    "terminal_ref": "tmux:unitfleet:worker",
+                    "pane_current_command": "node",
+                    "pane_current_path": str(tmp_path),
+                },
+                {
+                    "tmux_session": "unitfleet",
+                    "physical_fleet": "unitfleet",
+                    "window_name": "scratch",
+                    "pane_id": "%2",
+                    "pane_ref": "tmux:unitfleet:%2",
+                    "terminal_ref": "tmux:unitfleet:scratch",
+                    "pane_current_command": "bash",
+                    "pane_current_path": str(tmp_path),
+                },
+            ],
+        },
+    )
+
+    result = fleets.run(argparse.Namespace(fleets_action="history", target="unitfleet"))
+
+    assert result["ok"] is True
+    assert result["state"] == "live"
+    assert result["current_source"] == "seat-status-live-topology"
+    assert result["summary"]["live_seats"] == 1
+    assert result["summary"]["unmanaged_physical"] == 1
+    assert result["discrepancies"]["unmanaged_physical"][0]["window_name"] == "scratch"
+    assert [row["seat"] for row in result["seats"]] == ["worker"]
 
 
 def test_fleet_rename_dry_run_writes_nothing(monkeypatch, tmp_path):
@@ -203,7 +266,7 @@ def test_fleet_rename_confirm_readdresses_live_topology(monkeypatch, tmp_path):
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
 
     from commands import fleets as fleets_cmd
-    from lib import events, fleets, placements, queued_messages, registry, report_subscriptions, tmux_mirror
+    from lib import events, fleets, placements, queued_messages, registry, report_subscriptions, session_ledger, tmux_mirror
 
     package_root = tmp_path / "state" / "agents" / "i_worker"
     package_root.mkdir(parents=True)
@@ -293,6 +356,7 @@ def test_fleet_rename_confirm_readdresses_live_topology(monkeypatch, tmp_path):
         new="newfleet",
         dry_run=False,
         confirm=True,
+        reason="Unit topology rename",
     ))
 
     assert result["ok"] is True
@@ -319,6 +383,19 @@ def test_fleet_rename_confirm_readdresses_live_topology(monkeypatch, tmp_path):
     assert bindings["bindings"]["chan"]["aliases"]["lead"] == "newfleet:lead"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["fleet"] == "newfleet"
+    ledger = session_ledger.iter_records()
+    fleet_events = [row for row in ledger if row.get("event") == "fleet_renamed"]
+    seat_events = [row for row in ledger if row.get("event") == "seat_readdressed"]
+    assert len(fleet_events) == 1
+    assert fleet_events[0]["schema"] == "aura.fleet_history.v1"
+    assert fleet_events[0]["movement_kind"] == "fleet-rename"
+    assert fleet_events[0]["subject"] == "oldfleet->newfleet"
+    assert fleet_events[0]["reason"] == "Unit topology rename"
+    assert fleet_events[0]["before"]["fleet"] == "oldfleet"
+    assert fleet_events[0]["after"]["current_name"] == "newfleet"
+    assert {row["target"] for row in fleet_events[0]["evidence"]["moved"]} == {"newfleet:worker", "newfleet:lead"}
+    assert result["fleet_event"]["event_id"] == fleet_events[0]["event_id"]
+    assert {row["target_ref"] for row in seat_events} == {"newfleet:worker", "newfleet:lead"}
 
 
 def test_fleet_rename_refuses_target_fleet_collision(monkeypatch, tmp_path):

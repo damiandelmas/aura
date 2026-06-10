@@ -32,6 +32,11 @@ RUNTIMES: dict[str, dict] = {
             "supports_resume": True,
             "supports_initial_prompt_argv": True,
             "session_id_source": "claude-jsonl-or-env",
+            # claude-r resolves the session's own project cwd before exec'ing
+            # `claude -r` — a bare `claude -r` only works from the directory the
+            # session was created in, because Claude Code sessions are
+            # project-scoped under ~/.claude/projects/<encoded-cwd>/.
+            "resume_command": "claude-r {session_id}",
         },
     },
     "claude": {

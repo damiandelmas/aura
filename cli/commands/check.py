@@ -11,7 +11,7 @@ def run(args):
     result = mesh.discover()
     agents = result.get("agents", []) if result.get("ok") else []
     mesh_agent = next((a for a in agents if a.get("name") == args.name), None)
-    reg_agent = registry.get_agent(args.name)
+    reg_agent = registry.resolve_live(args.name)
     agent = {**(reg_agent or {}), **(mesh_agent or {})} if (reg_agent or mesh_agent) else None
     if (agent or {}).get("fleet") and hasattr(terminal, "configure_session"):
         terminal.configure_session(agent.get("fleet"))

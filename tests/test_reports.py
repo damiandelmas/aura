@@ -361,10 +361,12 @@ def test_report_release_records_send_exception_without_breaking_report(monkeypat
     assert saved["attempts"][0]["result"]["error"] == "queue release send failed: boom"
 
 
-def test_report_release_matches_renamed_seat_alias(monkeypatch, tmp_path):
+def test_report_release_follows_renamed_seat_by_occupant(monkeypatch, tmp_path):
+    # New contract: queue continuity follows the seat by its captured occupant id
+    # (seat_instance_id), NOT by a name alias. A message queued to a live seat
+    # still releases after that seat is renamed, because the record captured the
+    # occupant at enqueue time.
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
-    monkeypatch.setenv("AURA_FLEET", "newfleet")
-    monkeypatch.setenv("AURA_SEAT", "worker")
 
     from commands import send
     from lib import queued_messages, registry, reports
@@ -376,19 +378,72 @@ def test_report_release_matches_renamed_seat_alias(monkeypatch, tmp_path):
         return {"ok": True, "message_id": "aura-msg-test"}
 
     monkeypatch.setattr(send, "run", fake_send)
-    registry.add_alias("oldfleet:worker", "newfleet:worker", reason="test")
+
+    registry.upsert_agent({
+        "name": "worker",
+        "fleet": "newfleet",
+        "runtime": "codex",
+        "registered": True,
+        "seat_instance_id": "si_worker1",
+        "pane_ref": "tmux:newfleet:%1",
+    })
 
     queued = queued_messages.create(
-        target="oldfleet:worker",
+        target="newfleet:worker",
         message="continue after report",
         sender="tester",
     )
+    # the record captured the live occupant at enqueue
+    assert queued.get("occupant_seat_instance_id") == "si_worker1"
+
+    # the seat is renamed; its row moves to a new name but keeps its occupant id
+    renamed = registry.rename_agent("newfleet:worker", new_name="worker2")
+    assert renamed["ok"] is True
+
+    # the seat now reports under its new identity (same occupant)
+    monkeypatch.setenv("AURA_FLEET", "newfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker2")
+    monkeypatch.setenv("AURA_SEAT_INSTANCE_ID", "si_worker1")
     report = reports.append_report({"state": "complete", "work": "done"})
     released = reports.release_queued_messages(report)
 
-    assert sent == ["oldfleet:worker"]
-    assert released[0]["status"] == "released"
+    assert sent == ["newfleet:worker"]
+    assert released and released[0]["status"] == "released"
     assert queued_messages.load(queued["queue_id"])["release_report_id"] == report["report_id"]
+
+
+def test_report_release_does_not_reach_back_through_alias(monkeypatch, tmp_path):
+    # New contract: a bare old name that is only an alias (no live row, no captured
+    # occupant) does NOT reach back through the alias to release on the renamed
+    # seat's report. Alias is historical, not a live router.
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("AURA_FLEET", "newfleet")
+    monkeypatch.setenv("AURA_SEAT", "worker")
+
+    from commands import send
+    from lib import queued_messages, registry, reports
+
+    sent = []
+    monkeypatch.setattr(
+        send, "run",
+        lambda args: (sent.append(args.target), {"ok": True, "message_id": "m"})[1],
+    )
+
+    registry.add_alias("oldfleet:worker", "newfleet:worker", reason="test")
+
+    # no live row at oldfleet:worker -> no occupant captured
+    queued = queued_messages.create(
+        target="oldfleet:worker",
+        message="should not release via alias",
+        sender="tester",
+    )
+    assert "occupant_seat_instance_id" not in queued
+
+    report = reports.append_report({"state": "complete", "work": "done"})
+    released = reports.release_queued_messages(report)
+
+    assert sent == []
+    assert released == []
 
 
 def test_report_infer_context_canonicalizes_renamed_fleet_alias(monkeypatch, tmp_path):
@@ -860,3 +915,60 @@ def test_report_subscription_dedupes_overlapping_recipients(monkeypatch, tmp_pat
         for row in released
     }
     assert set(states.values()) == {"notified", "deduped"}
+
+
+def test_infer_context_resolves_seat_from_bound_session_id(monkeypatch, tmp_path):
+    """An adopted pane has no birth env, but its process knows its own runtime
+    session id — infer_context must resolve the seat from the registry row
+    bound to that session (the last rung of the self-resolution ladder)."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    for var in ("AURA_FLEET", "AURA_SEAT", "AURA_AGENT_NAME", "AURA_SEAT_INSTANCE_ID",
+                "AURA_LAUNCH_ID", "TMUX_PANE", "CODEX_THREAD_ID", "AURA_RUNTIME_SESSION_ID",
+                "AURA_SESSION_ID"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "c4e128a2-0000-0000-0000-000000000000")
+
+    import sys
+    sys.path.insert(0, str(ROOT / "cli"))
+    from lib import registry, reports, identity
+
+    registry.upsert_agent({
+        "name": "architect",
+        "fleet": "salesfleet",
+        "runtime": "claude-code",
+        "runtime_session_id": "c4e128a2-0000-0000-0000-000000000000",
+        "runtime_session_binding": "bound",
+    })
+
+    ctx = reports.infer_context()
+    assert ctx["fleet"] == "salesfleet"
+    assert ctx["seat"] == "architect"
+    assert identity.managed_sender() == "salesfleet:architect"
+
+
+def test_infer_context_ambiguous_session_does_not_guess(monkeypatch, tmp_path):
+    """Two current rows claiming one session id is ambiguity — resolve to
+    nothing rather than guessing a seat."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    for var in ("AURA_FLEET", "AURA_SEAT", "AURA_AGENT_NAME", "AURA_SEAT_INSTANCE_ID",
+                "AURA_LAUNCH_ID", "TMUX_PANE", "CODEX_THREAD_ID", "AURA_RUNTIME_SESSION_ID",
+                "AURA_SESSION_ID"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "dup-session-0000")
+
+    import sys
+    sys.path.insert(0, str(ROOT / "cli"))
+    from lib import registry, reports
+
+    for name in ("seat-a", "seat-b"):
+        registry.upsert_agent({
+            "name": name,
+            "fleet": "dupfleet",
+            "runtime": "claude-code",
+            "runtime_session_id": "dup-session-0000",
+            "runtime_session_binding": "bound",
+        })
+
+    ctx = reports.infer_context()
+    assert ctx["fleet"] is None
+    assert ctx["seat"] is None

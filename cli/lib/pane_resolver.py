@@ -57,6 +57,63 @@ def _pane_env(pane_pid: int | None) -> dict[str, str]:
     return merged
 
 
+# Birth-env keys captured at spawn that identify the Aura seat a born pane belongs to.
+_BIRTH_ENV_KEYS = (
+    "AURA_FLEET",
+    "AURA_SEAT",
+    "AURA_LAUNCH_ID",
+    "AURA_SEAT_INSTANCE_ID",
+)
+# Markers that indicate a pane is a forked child whose AURA_SEAT_INSTANCE_ID is
+# inherited from its parent and therefore unsafe to self-heal onto the parent row.
+_FORK_MARKER_KEYS = ("AURA_FORK_SOURCE", "CODEX_FORK_SOURCE", "CODEX_FORK")
+
+
+def _is_fork_child(pane_env: dict[str, str]) -> bool:
+    """A pane whose env carries a fork marker is a fork child with inherited ids."""
+    return any(pane_env.get(key) for key in _FORK_MARKER_KEYS)
+
+
+def _read_birth_env(pane_pid: int | None) -> dict[str, str]:
+    """Read the Aura birth-env subset from a pane's process tree.
+
+    Returns only the spawn-time identity keys. Empty for fork children (their
+    AURA_SEAT_INSTANCE_ID is inherited and must not be used to reconstruct a row).
+    """
+    env = _pane_env(pane_pid)
+    if _is_fork_child(env):
+        return {}
+    return {key: env[key] for key in _BIRTH_ENV_KEYS if env.get(key)}
+
+
+def _resolve_from_birth_env(pane_rec: dict[str, Any], birth_env: dict[str, str]) -> dict | None:
+    """Reconstruct a complete thin registry row from a born pane's birth env.
+
+    Requires fleet + seat + (launch_id or seat_instance_id). Returns None for
+    incomplete env or fork children (which carry no usable birth env).
+    """
+    fleet = (birth_env or {}).get("AURA_FLEET")
+    seat = (birth_env or {}).get("AURA_SEAT")
+    launch_id = (birth_env or {}).get("AURA_LAUNCH_ID")
+    si = (birth_env or {}).get("AURA_SEAT_INSTANCE_ID")
+    if not (fleet and seat and (launch_id or si)):
+        return None
+    return {
+        "name": seat,
+        "seat": seat,
+        "fleet": fleet,
+        "seat_ref": registry._key(fleet, seat),
+        "aura_launch_id": launch_id,
+        "seat_instance_id": si,
+        "pane_ref": pane_rec.get("pane_ref"),
+        "runtime": "codex",
+        "registered": False,
+        "status": "born-unhealed",
+        "last_seen": registry.now_iso(),
+        "_from_birth_env": True,
+    }
+
+
 def _runtime_from_command(command: str | None) -> str | None:
     if not command:
         return None
@@ -134,16 +191,13 @@ def _match_registry_row(pane: dict[str, Any]) -> dict | None:
     if not pane_id:
         return None
     exact = f"tmux:{session}:{pane_id}"
-    fallback = None
     for record in registry.read_registry().values():
         ref = str(record.get("pane_ref") or "")
         if not ref:
             continue
         if ref == exact:
             return record
-        if ref.endswith(f":{pane_id}"):
-            fallback = fallback or record
-    return fallback
+    return None
 
 
 def _package_env_status(pane_env: dict[str, str], record: dict | None) -> dict[str, Any]:

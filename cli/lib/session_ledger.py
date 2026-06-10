@@ -19,6 +19,10 @@ def new_event_id() -> str:
     return f"aura-seat-history-{uuid.uuid4().hex[:12]}"
 
 
+def new_fleet_event_id() -> str:
+    return f"aura-fleet-history-{uuid.uuid4().hex[:12]}"
+
+
 def ledger_path() -> Path:
     return state.state_root() / "registry" / "session-ledger.jsonl"
 
@@ -201,6 +205,57 @@ def append_seat_event(
         "source_command": source_command,
         "before": before_snap,
         "after": after_snap,
+        "evidence": evidence or {},
+        **{key: value for key, value in extra.items() if value is not None},
+    }
+    clean = {key: value for key, value in record.items() if value is not None}
+    path = ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(clean, sort_keys=True))
+        f.write("\n")
+    return clean
+
+
+def append_fleet_event(
+    *,
+    event: str,
+    fleet: str | None = None,
+    fleet_id: str | None = None,
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
+    evidence: dict[str, Any] | None = None,
+    movement_kind: str | None = None,
+    subject: str | None = None,
+    reason: str | None = None,
+    actor: str = "cli",
+    source_command: str | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Append a fleet-level movement/history event.
+
+    Seat events remain the per-runtime lifecycle ledger. Fleet events record the
+    topological movement itself so operators can see one durable event for a
+    rename/rehome operation without reconstructing it from every affected seat.
+    """
+    before = dict(before or {})
+    after = dict(after or {})
+    fleet = fleet or after.get("current_name") or after.get("fleet") or before.get("current_name") or before.get("fleet")
+    fleet_id = fleet_id or after.get("fleet_id") or before.get("fleet_id")
+    record = {
+        "schema": "aura.fleet_history.v1",
+        "event_id": new_fleet_event_id(),
+        "timestamp": now_iso(),
+        "event": event,
+        "movement_kind": movement_kind,
+        "subject": subject or fleet,
+        "fleet": fleet,
+        "fleet_id": fleet_id,
+        "actor": actor,
+        "source_command": source_command,
+        "reason": reason,
+        "before": before or None,
+        "after": after or None,
         "evidence": evidence or {},
         **{key: value for key, value in extra.items() if value is not None},
     }

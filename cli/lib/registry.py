@@ -322,7 +322,12 @@ def write_aliases(data: dict[str, dict[str, Any]]) -> None:
             pass
 
 
-def resolve_alias(ref: str, *, max_hops: int = 8) -> tuple[str, list[str]]:
+def resolve_historical(ref: str, *, max_hops: int = 8) -> tuple[str, list[str]]:
+    """Follow the alias/lineage chain. Historical resolution only.
+
+    Used by seat resolve, seat-history, restore/audit, continuity fallback, and
+    alias ls/rm. NEVER consulted for live ownership/routing/binding.
+    """
     aliases = read_aliases()
     current = ref
     chain: list[str] = []
@@ -336,6 +341,101 @@ def resolve_alias(ref: str, *, max_hops: int = 8) -> tuple[str, list[str]]:
         chain.append(current)
         current = str(target)
     return current, chain
+
+
+def resolve_alias(ref: str, *, max_hops: int = 8) -> tuple[str, list[str]]:
+    """Backward-compatible alias of resolve_historical."""
+    return resolve_historical(ref, max_hops=max_hops)
+
+
+def resolve_live(ref: str, *, fleet: str | None = None) -> dict[str, Any] | None:
+    """PHYSICAL live identity. NEVER reads aliases.
+
+    Precedence:
+      1. If ref carries/has a fleet -> exact registry row at _key(fleet, name);
+         else None (no name-scan fallback).
+      2. Fleet unknown -> rows whose name == name:
+           - exactly one -> that row
+           - several -> prefer current_fleet(); if still ambiguous -> None
+           - none -> None
+    Returns the exact row dict (no resolved_from / alias_chain enrichment) or None.
+    """
+    fleet, name = split_ref(str(ref), fleet=fleet)
+    data = read_registry()
+    if fleet:
+        return data.get(_key(fleet, name))
+    matches = [v for v in data.values() if v.get("name") == name]
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    preferred_fleet = current_fleet(default="")
+    if preferred_fleet:
+        preferred = [v for v in matches if v.get("fleet") == preferred_fleet]
+        if len(preferred) == 1:
+            return preferred[0]
+    return None
+
+
+def occupant_key(row: dict[str, Any] | None) -> str | None:
+    """Physical occupant id: pane_ref > seat_instance_id > aura_launch_id > None."""
+    if not row:
+        return None
+    for key in ("pane_ref", "seat_instance_id", "aura_launch_id"):
+        value = row.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def resolve_live_by_session(session_id: str | None) -> dict[str, Any] | None:
+    """Return the one current row bound to this runtime session id, else None.
+
+    The session UUID is the continuity anchor, so an exact session match is
+    exact occupant evidence. Ambiguity (two current rows claiming one session)
+    resolves to None rather than guessing, like resolve_live.
+    """
+    if not session_id:
+        return None
+    matches = [
+        row
+        for row in read_registry().values()
+        if str(row.get("runtime_session_id") or "") == str(session_id)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def resolve_occupant(
+    *,
+    seat_instance_id: str | None = None,
+    aura_launch_id: str | None = None,
+    pane_ref: str | None = None,
+    default_ref: str | None = None,
+) -> dict[str, Any] | None:
+    """Return the live row that IS this occupant, by si > launch_id > pane_ref.
+
+    If an occupant id matches a row -> return it (it wins over default_ref).
+    If none of the occupant ids match a row AND default_ref is given -> resolve_live(default_ref).
+    Returns dict|None. No tuple, no metadata (locked: keep it simple).
+    """
+    data = read_registry()
+    if seat_instance_id:
+        for row in data.values():
+            if row.get("seat_instance_id") and str(row.get("seat_instance_id")) == str(seat_instance_id):
+                return row
+    if aura_launch_id:
+        for row in data.values():
+            if row.get("aura_launch_id") and str(row.get("aura_launch_id")) == str(aura_launch_id):
+                return row
+    if pane_ref:
+        for row in data.values():
+            if row.get("pane_ref") and str(row.get("pane_ref")) == str(pane_ref):
+                return row
+    if default_ref:
+        return resolve_live(default_ref)
+    return None
 
 
 def add_alias(source: str, target: str, *, reason: str = "alias") -> dict[str, Any]:
@@ -466,12 +566,13 @@ def remove_agent(name: str, fleet: str | None = None) -> bool:
 def _same_live_incarnation(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
     if not left or not right:
         return False
-    for key in ("seat_instance_id", "pane_ref"):
-        left_value = left.get(key)
-        right_value = right.get(key)
-        if left_value and right_value and str(left_value) == str(right_value):
-            return True
-    return False
+    ls, rs = left.get("seat_instance_id"), right.get("seat_instance_id")
+    lp, rp = left.get("pane_ref"), right.get("pane_ref")
+    if not (ls and rs and str(ls) == str(rs)):
+        return False
+    if not (lp and rp and str(lp) == str(rp)):
+        return False
+    return True
 
 
 def rename_preflight(
@@ -481,7 +582,7 @@ def rename_preflight(
 ) -> dict[str, Any]:
     source_fleet, source_name = split_ref(source)
     if not source_fleet:
-        agent = get_agent(source_name)
+        agent = resolve_live(source_name)
         if not agent:
             return {"ok": False, "error": f"agent not found: {source}"}
         source_fleet = agent.get("fleet")
@@ -524,7 +625,7 @@ def rename_agent(
 ) -> dict[str, Any]:
     """Rename a seat inside its current fleet without changing fleet ownership."""
     source_fleet, source_name = split_ref(source)
-    existing = get_agent(source_name, fleet=source_fleet)
+    existing = resolve_live(source_name, fleet=source_fleet)
     if not existing:
         resolved, chain = resolve_alias(source)
         if chain:

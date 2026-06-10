@@ -75,7 +75,7 @@ def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
 
 
 def _canonical_member(seat_ref: str, *, role: str | None = None) -> dict[str, Any]:
-    record = registry.get_agent(seat_ref)
+    record = registry.resolve_live(seat_ref)
     if not record:
         raise ValueError(f"seat not found: {seat_ref}")
     logical_ref = record.get("seat_ref") or registry.seat_ref(record.get("fleet"), record.get("name") or record.get("seat"))
@@ -139,7 +139,7 @@ def remove_member(placement: str, seat_ref: str) -> dict[str, Any]:
     if not record:
         return {"ok": False, "error": f"placement not found: {placement}"}
     pid = record["placement_id"]
-    resolved = registry.get_agent(seat_ref)
+    resolved = registry.resolve_live(seat_ref)
     canonical = (resolved or {}).get("seat_ref") or seat_ref
     before = len(record.get("members", []))
     record["members"] = [m for m in record.get("members", []) if m.get("seat_ref") != canonical]
@@ -151,7 +151,7 @@ def remove_member(placement: str, seat_ref: str) -> dict[str, Any]:
 def placements_for_seat(seat_ref: str | None) -> list[dict[str, Any]]:
     if not seat_ref:
         return []
-    resolved = registry.get_agent(seat_ref)
+    resolved = registry.resolve_live(seat_ref)
     canonical = (resolved or {}).get("seat_ref") or seat_ref
     return (placements_by_seat()).get(canonical, [])
 

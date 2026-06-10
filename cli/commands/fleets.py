@@ -10,7 +10,6 @@ import shlex
 import tempfile
 from typing import Any
 
-from commands import list as list_cmd
 from lib import seat_schema
 
 
@@ -28,6 +27,7 @@ def run(args) -> dict:
             getattr(args, "new", None),
             dry_run=bool(getattr(args, "dry_run", False) or not getattr(args, "confirm", False)),
             confirm=bool(getattr(args, "confirm", False)),
+            reason=getattr(args, "reason", None),
         )
     return {"ok": False, "error": f"unknown fleets action: {action}"}
 
@@ -396,7 +396,7 @@ def _update_fleet_registry(*, old: str, new: str, dry_run: bool) -> dict[str, An
     return updated
 
 
-def _rename(old: str | None, new: str | None, *, dry_run: bool, confirm: bool) -> dict:
+def _rename(old: str | None, new: str | None, *, dry_run: bool, confirm: bool, reason: str | None = None) -> dict:
     if not old or not new:
         return {"ok": False, "error": "usage", "detail": "rename requires OLD and NEW fleet names"}
     if ":" in old or ":" in new:
@@ -436,6 +436,7 @@ def _rename(old: str | None, new: str | None, *, dry_run: bool, confirm: bool) -
             "discord_bindings": _rewrite_discord_bindings(old=old, new=new, moved_seats=moved_seats, dry_run=True),
         },
         "package_manifests": _rewrite_package_manifests(rows=moved_records, old=old, new=new, dry_run=True),
+        "reason": reason or "Rename live fleet topology.",
         "warnings": [
             "running process env may still contain the old AURA_FLEET until restart/rollover; alias canonicalization preserves address resolution",
             "historical ledgers, reports, deliveries, and runtime-native transcripts are not rewritten",
@@ -473,9 +474,32 @@ def _rename(old: str | None, new: str | None, *, dry_run: bool, confirm: bool) -
             "discord_bindings": _rewrite_discord_bindings(old=old, new=new, moved_seats=moved_seats, dry_run=False),
         }
         manifests = _rewrite_package_manifests(rows=moved_records, old=old, new=new, dry_run=False)
+        fleet_event = None
         try:
             from lib import session_ledger
 
+            fleet_event = session_ledger.append_fleet_event(
+                event="fleet_renamed",
+                fleet=new,
+                fleet_id=applied_fleet.get("fleet_id"),
+                before={"fleet": old, "current_name": old, "tmux_session": old},
+                after=applied_fleet,
+                evidence={
+                    "source_fleet": old,
+                    "target_fleet": new,
+                    "tmux": {"rename_session": {"source": old, "target": new}},
+                    "moved": [{k: v for k, v in row.items() if k != "record"} for row in moved],
+                    "kept": kept,
+                    "active_refs": active_refs,
+                    "package_manifests": manifests,
+                },
+                movement_kind="fleet-rename",
+                subject=f"{old}->{new}",
+                reason=plan["reason"],
+                source_command="aura fleets rename",
+                source_ref=old,
+                target_ref=new,
+            )
             for row in moved:
                 session_ledger.append_seat_event(
                     event="seat_readdressed",
@@ -502,6 +526,7 @@ def _rename(old: str | None, new: str | None, *, dry_run: bool, confirm: bool) -
         "kept": kept,
         "active_refs": active_refs,
         "package_manifests": manifests,
+        "fleet_event": fleet_event,
         "warnings": plan["warnings"],
     }
 
@@ -560,7 +585,7 @@ def _restore_command(*, fleet_ref: str, seat: str, runtime: str, cwd: str, sessi
 
 
 def fleet_history(target: str | None) -> dict:
-    from lib import fleets, runtime_session, runtimes, session_ledger
+    from lib import fleets, registry, runtime_session, runtimes, seat_status, session_ledger, tmux_mirror
 
     if not target:
         return {"ok": False, "error": "fleet target required"}
@@ -572,18 +597,31 @@ def fleet_history(target: str | None) -> dict:
         return {"ok": False, "error": "fleet not found", "target": target}
 
     fleet_id = (fleet_record or {}).get("fleet_id")
-    inventory = list_cmd.run(type("Args", (), {
-        "fleet": fleet_name,
-        "status": None,
-        "mode": None,
-        "include_hidden": True,
-    })())
-    live_rows = inventory.get("rows", inventory) if isinstance(inventory, dict) else inventory
+    live_rows = seat_status.list_seat_statuses(fleet=fleet_name, include_hidden=True)
     current_by_seat = {}
     for row in live_rows:
         seat = row.get("seat") or row.get("name")
         if seat:
             current_by_seat[seat] = runtime_session.mark_binding(dict(row))
+
+    mirror = tmux_mirror.list_physical_panes()
+    physical_panes = [
+        row for row in mirror.get("panes", [])
+        if row.get("tmux_session") == fleet_name or row.get("physical_fleet") == fleet_name
+    ] if mirror.get("ok") else []
+    registry_rows = registry.list_agents(fleet_name, include_hidden=True)
+    joined = tmux_mirror.join_managed(physical_panes, registry_rows) if mirror.get("ok") else {"panes": [], "missing_managed": []}
+    unmanaged_physical = [
+        {
+            "pane_ref": row.get("pane_ref"),
+            "terminal_ref": row.get("terminal_ref"),
+            "window_name": row.get("window_name"),
+            "pane_current_command": row.get("pane_current_command"),
+            "pane_current_path": row.get("pane_current_path"),
+        }
+        for row in joined.get("panes", [])
+        if row.get("managed_state") == "unmanaged"
+    ]
 
     all_events = [row for row in session_ledger.iter_records() if _row_fleet(row) == fleet_name]
     by_seat: dict[str, dict] = {}
@@ -674,6 +712,8 @@ def fleet_history(target: str | None) -> dict:
             "current": {
                 "registered": bool(current),
                 "live": current.get("terminal") == "alive" if current else False,
+                "liveness": current.get("liveness") if current else None,
+                "managed_state": current.get("managed_state") if current else None,
                 "runtime": current.get("runtime") if current else None,
                 "cwd": (current.get("runtime_session_cwd") or current.get("cwd") or current.get("workdir")) if current else None,
                 "runtime_session_id": (current.get("runtime_session_id") or current.get("session_id")) if current else None,
@@ -682,12 +722,21 @@ def fleet_history(target: str | None) -> dict:
                 "identity_id": seat_schema.identity_id_for(current) if current else None,
                 "identity_label": current.get("identity_label") if current else None,
                 "pane_ref": current.get("pane_ref") if current else None,
+                "risk_flags": current.get("risk_flags") if current else [],
             },
             "history": {k: v for k, v in history.items() if k not in {"last_restore_candidate"}},
             "restore": restore,
         })
 
     live_count = sum(1 for row in seats if row["current"]["live"])
+    registered_unbound_count = sum(
+        1 for row in seats
+        if row["current"]["registered"] and row["current"]["runtime_session_binding"] != "bound"
+    )
+    stale_registry_count = sum(
+        1 for row in seats
+        if row["current"]["registered"] and row["current"]["liveness"] == "missing"
+    )
     ready_count = sum(1 for row in seats if row["restore"]["ready"])
     state = "live" if live_count else "historical"
     latest = None
@@ -705,11 +754,39 @@ def fleet_history(target: str | None) -> dict:
         "summary": {
             "known_seats": len(seats),
             "live_seats": live_count,
+            "registered_unbound": registered_unbound_count,
+            "stale_registry": stale_registry_count,
+            "unmanaged_physical": len(unmanaged_physical),
             "restore_ready_seats": ready_count,
             "events": len(all_events),
             "last_event": latest.get("event") if latest else None,
             "last_event_at": latest.get("timestamp") if latest else None,
             "last_event_target": f"{fleet_name}:{_row_seat(latest)}" if latest and _row_seat(latest) else fleet_name,
+        },
+        "current_source": "seat-status-live-topology",
+        "discrepancies": {
+            "mirror_available": bool(mirror.get("ok")),
+            "unmanaged_physical": unmanaged_physical,
+            "stale_registry": [
+                {
+                    "seat": row["seat"],
+                    "pane_ref": row["current"]["pane_ref"],
+                    "managed_state": row["current"]["managed_state"],
+                    "risk_flags": row["current"]["risk_flags"],
+                }
+                for row in seats
+                if row["current"]["registered"] and row["current"]["liveness"] == "missing"
+            ],
+            "registered_unbound": [
+                {
+                    "seat": row["seat"],
+                    "runtime": row["current"]["runtime"],
+                    "managed_state": row["current"]["managed_state"],
+                    "risk_flags": row["current"]["risk_flags"],
+                }
+                for row in seats
+                if row["current"]["registered"] and row["current"]["runtime_session_binding"] != "bound"
+            ],
         },
         "seats": seats,
         "restore_plan": {

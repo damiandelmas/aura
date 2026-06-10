@@ -46,6 +46,8 @@ def run(args):
         return _restore_plan(args)
     if getattr(args, "sessions_action", None) == "heal":
         return _heal(args)
+    if getattr(args, "sessions_action", None) == "reconcile-orphans":
+        return _reconcile_orphans(args)
     if getattr(args, "sessions_action", None) == "fleets":
         return _fleets(args)
     if getattr(args, "sessions_action", None) == "fleet-history":
@@ -522,6 +524,37 @@ def _heal(args) -> dict:
             skipped_count += 1
             continue
 
+        # Occupant-mismatch precheck: if the live pane carrying this seat's name
+        # was born under a different seat_instance_id than the registry row, the
+        # name was reused onto a stale row. Do not heal a fresh pane onto it.
+        registry_si = record.get("seat_instance_id")
+        pane_ref = record.get("pane_ref") or ""
+        pane_id = None
+        if "%" in pane_ref:
+            last_segment = pane_ref.rsplit(":", 1)[-1]
+            if last_segment.startswith("%"):
+                pane_id = last_segment
+        if registry_si and pane_id:
+            try:
+                from lib import pane_resolver
+                res = pane_resolver.resolve_pane(pane=pane_id)
+                if res.get("ok"):
+                    pane_birth_si = pane_resolver._read_birth_env(res.get("pane_pid")).get(
+                        "AURA_SEAT_INSTANCE_ID"
+                    )
+                    if pane_birth_si and str(pane_birth_si) != str(registry_si):
+                        results.append({
+                            "seat": seat_target,
+                            "status": "skipped",
+                            "reason": "occupant-mismatch-born-pane",
+                            "expected_seat_instance_id": registry_si,
+                            "actual_seat_instance_id": pane_birth_si,
+                        })
+                        skipped_count += 1
+                        continue
+            except Exception:
+                pass
+
         # Attempt bind — nonce first, then pane fallback
         launch_id = record.get("aura_launch_id")
         expected_cwd = record.get("runtime_session_cwd") or record.get("cwd") or record.get("workdir")
@@ -673,6 +706,88 @@ def _heal(args) -> dict:
         "refused": refused_count,
         "skipped": skipped_count,
     }
+
+
+def _reconcile_orphaned_born_panes(*, fleet_filter: str | None = None, dry_run: bool = False) -> dict:
+    """Recover registry rows for Aura-born panes that have no managed row.
+
+    Iterates live tmux panes, skips any already in the registry by pane_ref,
+    keeps only panes with complete birth env (AURA_SEAT_INSTANCE_ID required),
+    reconstructs the thin row, and (unless dry-run) upserts it. Fork children
+    are rejected by `_resolve_from_birth_env` and never reconstructed.
+    """
+    from lib import pane_resolver, registry, tmux_mirror
+
+    mirror = tmux_mirror.list_physical_panes()
+    if not mirror.get("ok"):
+        return {"ok": False, "error": "tmux-mirror-unavailable", "detail": mirror.get("error")}
+
+    known_pane_refs = {
+        str(row.get("pane_ref"))
+        for row in registry.read_registry().values()
+        if row.get("pane_ref")
+    }
+
+    reconciled = 0
+    skipped = 0
+    results: list[dict] = []
+    for pane in mirror.get("panes") or []:
+        pane_ref = pane.get("pane_ref")
+        if pane_ref and str(pane_ref) in known_pane_refs:
+            skipped += 1
+            continue
+        birth_env = pane_resolver._read_birth_env(pane_resolver._pane_pid(pane))
+        if fleet_filter and birth_env.get("AURA_FLEET") != fleet_filter:
+            skipped += 1
+            continue
+        # Reconciliation requires a real occupant id to key continuity safely.
+        if not birth_env.get("AURA_SEAT_INSTANCE_ID"):
+            skipped += 1
+            continue
+        thin = pane_resolver._resolve_from_birth_env(pane, birth_env)
+        if thin is None:
+            skipped += 1
+            continue
+        target = f"{thin['fleet']}:{thin['seat']}"
+        if dry_run:
+            results.append({
+                "target": target,
+                "status": "would-reconcile",
+                "pane_ref": pane_ref,
+                "seat_instance_id": thin.get("seat_instance_id"),
+            })
+        else:
+            registry.upsert_agent(thin)
+            results.append({
+                "target": target,
+                "status": "reconciled",
+                "pane_ref": pane_ref,
+                "seat_instance_id": thin.get("seat_instance_id"),
+            })
+        reconciled += 1
+
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "reconciled": reconciled,
+        "skipped": skipped,
+        "results": results,
+    }
+
+
+def _reconcile_orphans(args) -> dict:
+    fleet_filter = getattr(args, "fleet", None)
+    all_fleets = bool(getattr(args, "all", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    if not fleet_filter and not all_fleets:
+        return {
+            "ok": False,
+            "error": "reconcile-orphans requires --fleet NAME or --all",
+        }
+    return _reconcile_orphaned_born_panes(
+        fleet_filter=None if all_fleets else fleet_filter,
+        dry_run=dry_run,
+    )
 
 
 def _seat_history(args) -> dict:
@@ -1186,15 +1301,27 @@ def _bind_pane(args) -> dict:
     matched = res.get("matched_row") or {}
     fleet = fleet or matched.get("fleet")
     seat = seat or matched.get("seat")
+
+    # Self-heal: an Aura-born pane without a managed row still carries its birth
+    # env, so recover fleet/seat from AURA_FLEET/AURA_SEAT before refusing.
+    birth_env = pane_resolver._read_birth_env(res.get("pane_pid"))
+    if not fleet or not seat:
+        fleet = fleet or birth_env.get("AURA_FLEET")
+        seat = seat or birth_env.get("AURA_SEAT")
     if not fleet or not seat:
         return {
             "ok": False,
             "error": "no-target",
-            "detail": "pane is unmanaged; pass --target fleet:seat to bind",
+            "detail": "pane is unmanaged and not Aura-born (no AURA_FLEET/AURA_SEAT env); pass --target fleet:seat",
             "resolved": res,
         }
 
     fleet, seat, previous, alias_chain = _canonical_bind_target(registry, fleet=fleet, seat=seat)
+
+    # If no live row exists but the pane is Aura-born, synthesize a thin row so
+    # bind_gates runs its real si/package vetoes against the seat's birth identity.
+    if previous is None and birth_env:
+        previous = pane_resolver._resolve_from_birth_env(res, birth_env)
 
     gate = pane_resolver.bind_gates(
         res,
@@ -1275,10 +1402,10 @@ def _bind_hook(args) -> dict:
         return {"ok": False, "error": "bind-hook requires --session-id"}
 
     runtime = getattr(args, "runtime", None) or os.environ.get("AURA_RUNTIME") or "codex"
-    if runtime not in {"codex", "omx"}:
+    if runtime not in {"codex", "claude-code"}:
         return {
             "ok": False,
-            "error": "bind-hook currently supports codex-backed runtimes only",
+            "error": "bind-hook supports codex and claude-code runtimes only",
             "runtime": runtime,
         }
 
@@ -1288,7 +1415,18 @@ def _bind_hook(args) -> dict:
 
     from lib import registry
 
+    expected_instance = getattr(args, "seat_instance_id", None)
     fleet, seat, previous, alias_chain = _canonical_bind_target(registry, fleet=fleet, seat=seat)
+    if not previous and expected_instance:
+        # Occupant-keyed continuity: the hook carries this seat's instance id.
+        # If the launch-time name is stale (e.g. the seat was renamed), rebind by
+        # occupant rather than following a name alias — the durable thread of
+        # continuity is the seat_instance_id, not the name.
+        occupant = registry.resolve_occupant(seat_instance_id=expected_instance)
+        if occupant:
+            fleet = occupant.get("fleet") or fleet
+            seat = occupant.get("name") or occupant.get("seat") or seat
+            previous = occupant
     if not previous:
         return {
             "ok": False,
@@ -1296,7 +1434,6 @@ def _bind_hook(args) -> dict:
             "target": f"{fleet}:{seat}",
         }
 
-    expected_instance = getattr(args, "seat_instance_id", None)
     actual_instance = previous.get("seat_instance_id")
     if expected_instance and actual_instance and expected_instance != actual_instance:
         return {
@@ -1308,11 +1445,12 @@ def _bind_hook(args) -> dict:
         }
 
     hook_event = _normalize_hook_event(getattr(args, "hook_event", None))
-    source = f"codex-hook:{hook_event}"
+    hook_kind = "claude-hook" if runtime == "claude-code" else "codex-hook"
+    source = f"{hook_kind}:{hook_event}"
     transcript_path = getattr(args, "transcript_path", None)
     cwd = previous.get("runtime_session_cwd") or previous.get("cwd") or previous.get("workdir")
     evidence = {
-        "reason": "codex-native-hook",
+        "reason": f"{hook_kind.replace('-hook', '')}-native-hook",
         "hook_event": getattr(args, "hook_event", None) or hook_event,
         "transcript_path": transcript_path,
         "seat_instance_id": actual_instance,
@@ -1338,21 +1476,7 @@ def _bind_hook(args) -> dict:
 
 
 def _canonical_bind_target(registry, *, fleet: str, seat: str) -> tuple[str, str, dict | None, list[str]]:
-    requested_ref = registry.seat_ref(fleet, seat)
-    resolved, chain = registry.resolve_alias(requested_ref)
-    if chain:
-        target_fleet, target_seat = registry.split_ref(resolved)
-        if target_fleet and target_seat:
-            previous = registry.get_agent(resolved)
-            if previous:
-                return target_fleet, target_seat, previous, chain
-
-    previous = registry.get_agent(seat, fleet=fleet)
-    if previous and previous.get("resolved_from"):
-        current_ref = previous.get("seat_ref") or registry.seat_ref(previous.get("fleet"), previous.get("name") or previous.get("seat") or seat)
-        target_fleet, target_seat = registry.split_ref(current_ref)
-        if target_fleet and target_seat:
-            return target_fleet, target_seat, previous, list(previous.get("alias_chain") or [])
+    previous = registry.resolve_live(seat, fleet=fleet)
     return fleet, seat, previous, []
 
 

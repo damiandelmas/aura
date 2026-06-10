@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import json
 import os
 import subprocess
@@ -694,6 +695,12 @@ def _restart_plan(args, record: dict) -> dict:
             # Fall back to the recorded launch command if the runtime cannot
             # build a native resume command for this seat.
             pass
+
+    if runtime == "claude-code" and command and "--session-id" in str(command) and not resume_session_id:
+        # A replayed claude command with a stale --session-id would refuse to
+        # start ("already in use"); without a resumable session, restart means
+        # a fresh session — strip the allocation and let the hook bind the new id.
+        command = re.sub(r"\s--session-id\s+\S+", "", str(command))
 
     prompt = getattr(args, "prompt", None) or role_prompt
     return {
@@ -2210,6 +2217,63 @@ def _rename(args, registry) -> dict:
     return result
 
 
+def _sync_windows(args) -> dict:
+    """Re-assert each managed live seat's tmux window name from the registry.
+
+    The seat name is the authority; the window name is its label. One-way,
+    idempotent, label-only: never touches rows, panes, or processes.
+    """
+    from lib import registry, tmux_mirror
+
+    fleet_filter = getattr(args, "fleet", None)
+    mirror = tmux_mirror.list_physical_panes()
+    if not mirror.get("ok"):
+        return {"ok": False, "error": "tmux-mirror-unavailable"}
+
+    panes = [p for p in mirror.get("panes", []) if p.get("pane_id")]
+    window_pane_counts: dict = {}
+    for p in panes:
+        key = (p.get("tmux_session"), p.get("window_id") or p.get("window_index"))
+        window_pane_counts[key] = window_pane_counts.get(key, 0) + 1
+    pane_window = {}
+    for p in panes:
+        key = (p.get("tmux_session"), p.get("window_id") or p.get("window_index"))
+        # Dashboard tiling is presentation, not identity: a multi-pane window
+        # (or the dash window itself) is never relabeled to a seat name.
+        if window_pane_counts[key] > 1 or p.get("window_name") == "dashboard":
+            continue
+        pane_window[p["pane_id"]] = (p.get("window_name"), p.get("tmux_session"))
+
+    renamed: list[dict] = []
+    failed: list[dict] = []
+    for rec in registry.list_agents(fleet_filter, include_hidden=True):
+        seat = rec.get("name") or rec.get("seat")
+        fleet = rec.get("fleet")
+        pane_ref = str(rec.get("pane_ref") or "")
+        if not (seat and fleet and pane_ref.startswith("tmux:")):
+            continue
+        pane_id = pane_ref.rsplit(":", 1)[-1]
+        if pane_id not in pane_window:
+            continue
+        window_name, tmux_session = pane_window[pane_id]
+        if tmux_session != fleet or window_name == seat:
+            continue
+        result = _run_tmux(["rename-window", "-t", pane_id, seat])
+        row = {"target": f"{fleet}:{seat}", "pane": pane_id, "was": window_name}
+        if result.returncode == 0:
+            renamed.append(row)
+        else:
+            failed.append({**row, "error": result.stderr.strip()})
+
+    return {
+        "ok": not failed,
+        "schema": "aura.seat_sync_windows.v1",
+        "fleet": fleet_filter,
+        "renamed": renamed,
+        "failed": failed,
+    }
+
+
 def _gc(args) -> dict:
     """TTL-based auto-archival of CRUFT registry rows.
 
@@ -2221,7 +2285,7 @@ def _gc(args) -> dict:
     removal; --dry-run (or the absence of --confirm) only reports.
     """
     from datetime import datetime, timezone
-    from lib import registry, tmux_mirror, runtime_session
+    from lib import registry, tmux_mirror, runtime_session, runtimes
 
     ttl: int = getattr(args, "ttl", None) or 7
     fleet_filter = getattr(args, "fleet", None)
@@ -2267,20 +2331,48 @@ def _gc(args) -> dict:
             kept.append({"ref": logical_ref, "reason": "record-not-found"})
             continue
 
-        # KEEP: resumable lineage
-        if runtime_session.is_bound_session(record):
+        # Resumability requires the runtime to still exist. A row bound to a
+        # runtime removed from RUNTIMES (e.g. legacy omx) can never be resumed
+        # — resolve_runtime() errors — so its "bound"/fork lineage is false
+        # lineage: cruft, not something to protect. Gate the lineage keeps on a
+        # present runtime so removed-runtime rows self-clean on the next gc.
+        runtime_key = record.get("runtime")
+        runtime_present = bool(runtime_key) and runtime_key in runtimes.RUNTIMES
+
+        # KEEP: resumable lineage (only if its runtime still exists)
+        if runtime_present and runtime_session.is_bound_session(record):
             kept.append({"ref": logical_ref, "reason": "resumable"})
             continue
 
         # KEEP: fork-in-progress — carries a source_session_id (fork lineage) even
-        # though no child runtime_session_id is bound yet. Never auto-archive it.
-        if record.get("runtime_session_binding") == "pending-fork-child" or record.get("source_session_id"):
+        # though no child runtime_session_id is bound yet. Never auto-archive it
+        # (unless its runtime was removed — a fork child of a deleted runtime is
+        # equally unresumable).
+        if runtime_present and (
+            record.get("runtime_session_binding") == "pending-fork-child"
+            or record.get("source_session_id")
+        ):
             kept.append({"ref": logical_ref, "reason": "fork-lineage"})
             continue
 
         # KEEP: already retired / terminal
         if record.get("terminal_state") == "terminal" or record.get("restore_suppressed"):
             kept.append({"ref": logical_ref, "reason": "already-archived"})
+            continue
+
+        # ARCHIVE (TTL-exempt): runtime no longer in RUNTIMES. Such a row can
+        # never resume (resolve_runtime errors) and can never bind again, so the
+        # age grace window serves nothing — archive it on the first gc. This is
+        # what makes "runtime removed from code" actually imply "rows clear".
+        if not runtime_present:
+            archived.append({
+                "ref": logical_ref,
+                "seat": record.get("seat") or record.get("name"),
+                "fleet": record.get("fleet"),
+                "age_days": None,
+                "created_at": record.get("created_at"),
+                "reason": "removed-runtime",
+            })
             continue
 
         # AGE: parse created_at conservatively
@@ -2302,13 +2394,14 @@ def _gc(args) -> dict:
             kept.append({"ref": logical_ref, "reason": "within-ttl", "age_days": age_days})
             continue
 
-        # ARCHIVE: unbound + no resumable session + older than TTL
+        # ARCHIVE: unbound orphan with a present runtime, older than TTL.
         archived.append({
             "ref": logical_ref,
             "seat": record.get("seat") or record.get("name"),
             "fleet": record.get("fleet"),
             "age_days": age_days,
             "created_at": created_at_raw,
+            "reason": "ttl-orphan",
         })
 
     # Perform removals only when --confirm is set (never on --dry-run or default)
@@ -2326,7 +2419,7 @@ def _gc(args) -> dict:
                 "terminal_state": "terminal",
                 "restore_suppressed": True,
                 "archived_at": now_iso,
-                "archive_reason": "ttl-gc",
+                "archive_reason": f"{row.get('reason', 'ttl-orphan')}-gc",
             }
             try:
                 from lib import session_ledger
@@ -2374,12 +2467,86 @@ def _gc(args) -> dict:
     }
 
 
+def _alias_ls(args, registry):
+    """List historical alias ledger rows, schema-tolerant.
+
+    Reads only source/target/reason/created_at (plus optional retired_occupant
+    when present). Filters by source/target/fleet. Touches the alias ledger only.
+    """
+    aliases = registry.read_aliases()
+    source_filter = getattr(args, "source", None)
+    target_filter = getattr(args, "target", None)
+    fleet_filter = getattr(args, "fleet", None)
+
+    rows = []
+    for source, record in aliases.items():
+        if not isinstance(record, dict):
+            continue
+        target = record.get("target")
+        if source_filter and source != source_filter:
+            continue
+        if target_filter and target != target_filter:
+            continue
+        if fleet_filter:
+            source_fleet = source.split(":", 1)[0] if ":" in source else None
+            target_fleet = str(target).split(":", 1)[0] if target and ":" in str(target) else None
+            if fleet_filter not in (source_fleet, target_fleet):
+                continue
+        row = {
+            "source": source,
+            "target": target,
+            "reason": record.get("reason"),
+            "created_at": record.get("created_at"),
+        }
+        if "retired_occupant" in record:
+            row["retired_occupant"] = record.get("retired_occupant")
+        rows.append(row)
+
+    rows.sort(key=lambda r: (str(r.get("source") or "")))
+    return {"ok": True, "aliases": rows, "count": len(rows)}
+
+
+def _alias_rm(args, registry):
+    """Remove one historical alias by source. Touches the alias ledger only.
+
+    Requires --confirm to write; otherwise returns a dry-run preview.
+    """
+    source = getattr(args, "source", None)
+    if not source:
+        return {"ok": False, "error": "source-required", "detail": "seat alias rm requires a source"}
+
+    aliases = registry.read_aliases()
+    record = aliases.get(source)
+    if not isinstance(record, dict):
+        return {"ok": False, "error": "alias-not-found", "source": source}
+
+    preview = {
+        "source": source,
+        "target": record.get("target"),
+        "reason": record.get("reason"),
+        "created_at": record.get("created_at"),
+    }
+    if getattr(args, "dry_run", False) or not getattr(args, "confirm", False):
+        return {"ok": True, "dry_run": True, "removed": False, "alias": preview}
+
+    aliases.pop(source, None)
+    registry.write_aliases(aliases)
+    return {"ok": True, "dry_run": False, "removed": True, "alias": preview}
+
+
 def run(args):
     from lib import registry
 
     action = args.seat_action
     if action == "aliases":
         return {"ok": True, "aliases": registry.read_aliases()}
+    if action == "alias":
+        alias_action = getattr(args, "alias_action", None)
+        if alias_action == "ls":
+            return _alias_ls(args, registry)
+        if alias_action == "rm":
+            return _alias_rm(args, registry)
+        return {"ok": False, "error": f"unknown seat alias action: {alias_action}"}
     if action == "resolve":
         target = registry.get_agent(args.target)
         return {"ok": bool(target), "target": args.target, "record": target, "error": None if target else "seat not found"}
@@ -2446,7 +2613,7 @@ def run(args):
             cwd_arg=getattr(args, "cwd", None),
             discovered_by=discovery.get("discovered_by"),
             source_command="aura seat adopt",
-            rename_window=bool(getattr(args, "rename_window", False)),
+            rename_window=bool(getattr(args, "rename_window", True)) and not bool(getattr(args, "keep_window_name", False)),
             adoption_source="direct-pane",
             identity_provider=getattr(args, "identity_provider", None),
             identity_id=getattr(args, "identity_id", None),
@@ -2456,4 +2623,6 @@ def run(args):
         return _rename(args, registry)
     if action == "gc":
         return _gc(args)
+    if action == "sync-windows":
+        return _sync_windows(args)
     return {"ok": False, "error": f"unknown seat action: {action}"}
