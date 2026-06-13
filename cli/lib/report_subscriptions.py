@@ -298,7 +298,11 @@ def release_for_report(report: dict[str, Any]) -> list[dict[str, Any]]:
         args = argparse.Namespace(
             target=target,
             message=render_report_message(report),
-            sender=record.get("sender") or "aura-event",
+            # Subscription notifications are harness/service traffic, not a managed seat.
+            # Send via the service channel: a bare label as --as can never resolve to a
+            # managed seat (-> "sender-not-inferred"), which silently killed every release.
+            sender=None,
+            service_sender=record.get("sender") or "aura-event",
             mode=None,
             nudge=False,
             transport="auto",

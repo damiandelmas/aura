@@ -320,7 +320,13 @@ def _deliver_no_agent(job: dict, tick: int) -> dict:
         "job_id": job.get("job_id"),
     }
     report = reports.append_report(record)
-    released = reports.schedule_report_subscriptions(report)
+    # Match subscribers + deliver NOW, inline. schedule_for_report records the report against
+    # matching subscriptions; release_for_report sends them. Both run here because the event
+    # daemon has no deferred-release worker (a scheduled-but-unreleased report never fires).
+    # A no_agent report is final, so there is no boundary to wait for.
+    from lib import report_subscriptions
+    reports.schedule_report_subscriptions(report, delay_seconds=0)
+    released = report_subscriptions.release_for_report(report)
     return {
         "ok": True, "delivered": True,
         "message_id": report.get("report_id"),

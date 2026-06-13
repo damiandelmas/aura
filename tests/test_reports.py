@@ -812,7 +812,7 @@ def test_event_release_report_subscriptions_sends_scheduled_notification(monkeyp
     sent = []
 
     def fake_send(args):
-        sent.append((args.target, args.message, args.sender, args.dedupe_key))
+        sent.append((args.target, args.message, args.sender, args.dedupe_key, getattr(args, "service_sender", None)))
         return {"ok": True, "message_id": "aura-msg-report-sub"}
 
     monkeypatch.setattr(send, "run", fake_send)
@@ -841,7 +841,8 @@ def test_event_release_report_subscriptions_sends_scheduled_notification(monkeyp
     assert result["ok"] is True
     assert result["released"] == 1
     assert sent[0][0] == "unitfleet:lead"
-    assert sent[0][2] == "aura-event"
+    assert sent[0][2] is None  # not a managed-seat sender
+    assert sent[0][4] == "aura-event"  # delivered via service provenance (harness traffic)
     assert sent[0][3] == f"report-sub:unitfleet:lead:{report['report_id']}"
     assert "[AURA REPORT state=complete from=unitfleet:worker]" in sent[0][1]
     assert "work: done" in sent[0][1]

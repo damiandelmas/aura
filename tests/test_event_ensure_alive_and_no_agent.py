@@ -155,7 +155,7 @@ def test_no_agent_nonempty_stdout_writes_report(aura_state, monkeypatch):
     job = event._make_job(_start_args(no_agent=True, script="w.py", target="flex:reply-watch", report_state="needs_decision"))
     monkeypatch.setattr(events, "run_script", lambda s: (True, "📬 reply from acme"))
     monkeypatch.setattr(reports, "infer_context", lambda: {})
-    monkeypatch.setattr(reports, "schedule_report_subscriptions", lambda r, **k: [])
+    monkeypatch.setattr(report_subscriptions, "release_for_report", lambda r: [])
     result = event._deliver(job, 1)
     assert result["ok"] is True and result.get("delivered") is True
     latest = reports.latest_report()
@@ -187,7 +187,7 @@ def test_no_agent_report_matches_subscription(aura_state, monkeypatch):
     job = event._make_job(_start_args(no_agent=True, script="w.py", target="flex:reply-watch"))
     monkeypatch.setattr(events, "run_script", lambda s: (True, "new prospect reply"))
     monkeypatch.setattr(reports, "infer_context", lambda: {})
-    monkeypatch.setattr(reports, "schedule_report_subscriptions", lambda r, **k: [])
+    monkeypatch.setattr(report_subscriptions, "release_for_report", lambda r: [])
     event._deliver(job, 1)
     report = reports.latest_report()
     assert report_subscriptions.matches_report(sub, report) is True
@@ -232,7 +232,7 @@ def test_no_agent_redacts_secrets_in_report(aura_state, monkeypatch):
     )
     monkeypatch.setattr(events, "run_script", lambda s: (True, raw_output))
     monkeypatch.setattr(reports, "infer_context", lambda: {})
-    monkeypatch.setattr(reports, "schedule_report_subscriptions", lambda r, **k: [])
+    monkeypatch.setattr(report_subscriptions, "release_for_report", lambda r: [])
 
     result = event._deliver(job, 1)
     assert result["ok"] is True and result.get("delivered") is True
