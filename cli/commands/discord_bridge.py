@@ -552,9 +552,17 @@ async def _mark_processing_start(message: Any) -> None:
     await _add_message_reaction(message, "👀")
 
 
-async def _mark_processing_complete(message: Any, user: Any, ok: bool) -> None:
+async def _mark_delivery_outcome(message: Any, user: Any, ok: bool) -> None:
+    """Signal delivery outcome only — NOT completion.
+
+    The bridge observes delivery (``aura send`` = message typed into the target
+    seat's tmux pane = attempted), not whether the agent finishes answering.
+    📬 = delivered to agent seat; ❌ = delivery failed / blocked.
+    A true completion-✅ requires the target seat's Claude Code Stop hook to
+    emit a completion signal — deferred to a future migration.
+    """
     await _remove_message_reaction(message, "👀", user)
-    await _add_message_reaction(message, "✅" if ok else "❌")
+    await _add_message_reaction(message, "📬" if ok else "❌")
 
 
 async def _typing_indicator_loop(channel: Any) -> None:
@@ -642,7 +650,7 @@ async def _listen(args) -> dict[str, Any]:
             _remember_last_target(message.channel.id, message.author.id, display_target, sender)
         state["routes"] += 1
         await message.channel.send(_ack_for_result(target, result)[:2000])
-        await _mark_processing_complete(
+        await _mark_delivery_outcome(
             message,
             client.user,
             bool(result.get("ok")) and not bool(result.get("blocked")),
