@@ -303,7 +303,8 @@ def _deliver_no_agent(job: dict, tick: int) -> dict:
             "returncode": 0, "stdout": "", "stderr": "", "state": "silent",
         }
 
-    from lib import reports
+    from lib import redact, reports
+    output = redact.redact_sensitive_text(output)
 
     target = job.get("target") or ""
     fleet, sep, seat = target.partition(":")

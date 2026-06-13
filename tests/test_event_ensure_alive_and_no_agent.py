@@ -214,3 +214,85 @@ def test_run_script_nonzero_exit_reports_failure(aura_state):
     ok, msg = events.run_script("boom.py")
     assert ok is False
     assert "code 3" in msg and "nope" in msg
+
+
+# --------------------------------------------------------------------------
+# redaction: secrets in no_agent stdout must not reach the report ledger
+# --------------------------------------------------------------------------
+
+def test_no_agent_redacts_secrets_in_report(aura_state, monkeypatch):
+    """Secrets dumped to no_agent stdout must be redacted before writing the report."""
+    job = event._make_job(_start_args(
+        no_agent=True, script="check.py", target="flex:scout",
+    ))
+    raw_output = (
+        "OPENAI_API_KEY=sk-ABCD1234567890abcdef1234567890ab\n"
+        "imap_password=myapp-pass-word-9999\n"
+        "All done."
+    )
+    monkeypatch.setattr(events, "run_script", lambda s: (True, raw_output))
+    monkeypatch.setattr(reports, "infer_context", lambda: {})
+    monkeypatch.setattr(reports, "schedule_report_subscriptions", lambda r, **k: [])
+
+    result = event._deliver(job, 1)
+    assert result["ok"] is True and result.get("delivered") is True
+
+    latest = reports.latest_report()
+    assert latest is not None
+    work = latest["work"]
+
+    # The raw secret values must not appear verbatim
+    assert "sk-ABCD1234567890abcdef1234567890ab" not in work
+    assert "myapp-pass-word-9999" not in work
+
+    # The field names must still be present (only the value is masked)
+    assert "OPENAI_API_KEY" in work
+    assert "imap_password" in work
+
+    # A redaction marker must appear for at least one masked field
+    # (short tokens → "***", long tokens → "prefix...suffix")
+    assert "***" in work or "..." in work
+
+    # Prose that is not a secret must survive untouched
+    assert "All done." in work
+
+
+# --------------------------------------------------------------------------
+# unit tests for cli/lib/redact.py
+# --------------------------------------------------------------------------
+
+from lib import redact as _redact_mod  # noqa: E402
+
+
+def test_redact_known_openai_key():
+    text = "using key sk-proj-ABCDEFGHIJ1234567890 for inference"
+    result = _redact_mod.redact_sensitive_text(text)
+    assert "sk-proj-ABCDEFGHIJ1234567890" not in result
+    # long tokens → "prefix...suffix"; short tokens → "***"
+    assert "..." in result or "***" in result
+
+
+def test_redact_env_assignment():
+    text = "OPENAI_API_KEY=sk-ABCD1234567890abcdef result=ok"
+    result = _redact_mod.redact_sensitive_text(text)
+    assert "sk-ABCD1234567890abcdef" not in result
+    assert "OPENAI_API_KEY" in result
+
+
+def test_redact_plain_prose_untouched():
+    text = "The quick brown fox jumped over 42 lazy dogs."
+    assert _redact_mod.redact_sensitive_text(text) == text
+
+
+def test_redact_jwt_masked():
+    jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    result = _redact_mod.redact_sensitive_text(f"token={jwt}")
+    assert jwt not in result
+
+
+def test_redact_none_passthrough():
+    assert _redact_mod.redact_sensitive_text(None) is None
+
+
+def test_redact_empty_passthrough():
+    assert _redact_mod.redact_sensitive_text("") == ""
