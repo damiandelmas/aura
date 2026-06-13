@@ -785,6 +785,12 @@ def main():
     p_event_start.add_argument("--run-id", help="Run id for template rendering")
     p_event_start.add_argument("--start-delay", type=float, default=0, help="Delay before first tick in seconds")
     p_event_start.add_argument("--no-daemon", action="store_true", help="Create job state without spawning the background daemon")
+    p_event_start.add_argument("--no-agent", dest="no_agent", action="store_true", help="Run --script with no LLM; non-empty stdout becomes an aura report (Hermes no_agent shape)")
+    p_event_start.add_argument("--script", help="Script (under the event-scripts dir) to run for a --no-agent job")
+    p_event_start.add_argument("--report-state", dest="report_state", help="Report state for --no-agent delivery (default: update)")
+    p_event_start.add_argument("--respawn-runtime", dest="respawn_runtime", choices=["claude-code", "claude", "hermes", "codex", "gajae-code", "shell", "command"], help="Ensure-alive: respawn the target with this runtime if it is dead at tick time")
+    p_event_start.add_argument("--respawn-cwd", dest="respawn_cwd", help="Ensure-alive: cwd for the respawn")
+    p_event_start.add_argument("--respawn-prompt", dest="respawn_prompt", help="Ensure-alive: bootstrap prompt delivered on respawn")
 
     p_event_status = event_sub.add_parser("status", help="Show event job status")
     p_event_status.add_argument("ref", help="Job id or name")

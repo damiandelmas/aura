@@ -69,6 +69,21 @@ def _make_job(args) -> dict:
         raise ValueError("--ticks must be > 0")
     job_id = events.new_job_id()
     run_id = args.run_id or _run_id()
+
+    no_agent = bool(getattr(args, "no_agent", False))
+    script = getattr(args, "script", None)
+    respawn = None
+    if getattr(args, "respawn_runtime", None):
+        respawn = {
+            "runtime": args.respawn_runtime,
+            "cwd": getattr(args, "respawn_cwd", None),
+            "prompt": getattr(args, "respawn_prompt", None),
+        }
+    if no_agent and not script:
+        raise ValueError("--no-agent requires --script")
+    if no_agent and respawn:
+        raise ValueError("--no-agent jobs cannot use --respawn-* (no seat to keep alive)")
+
     return {
         "schema": "aura.event.job.v1",
         "job_id": job_id,
@@ -89,8 +104,12 @@ def _make_job(args) -> dict:
         "last_tick_at": None,
         "last_error": None,
         "consecutive_errors": 0,
+        "no_agent": no_agent,
+        "script": script,
+        "respawn": respawn,
+        "report_state": getattr(args, "report_state", None) or "update",
         "delivery": {
-            "mode": "terminal_write",
+            "mode": "no_agent_script" if no_agent else "terminal_write",
             "ensure_submit": False,
         },
     }
@@ -200,8 +219,125 @@ def _stop_daemon(job: dict) -> dict | None:
         return {"pid": pid, "signalled": False, "reason": str(exc)}
 
 
+def _is_alive(busy: dict) -> bool:
+    """Liveness derived from the same ``aura check`` probe ``_target_is_busy`` runs.
+
+    A dead/missing target returns no (or non-alive) terminal, so the ensure-alive
+    branch treats it as needing respawn rather than guessing a name.
+    """
+    return bool(busy.get("ok")) and busy.get("terminal") == "alive"
+
+
+def _respawn(job: dict, recipe: dict, tick: int) -> dict:
+    """Ensure-alive: respawn a dead target from its stored launch recipe.
+
+    Mirrors the recovery-pain-scout wrapper's dead-branch: spawn the seat with the
+    bootstrap prompt instead of writing into a window that does not exist. Routine
+    spawn only — physical identity is the spawn command's concern.
+    """
+    target = job["target"]
+    fleet, sep, seat = target.partition(":")
+    if not sep:
+        seat, fleet = fleet, None
+    cmd = [
+        _aura_bin(), "spawn", seat,
+        "--runtime", recipe.get("runtime") or "codex",
+        "--as-pane", "--wait", "--timeout", "45",
+    ]
+    if fleet:
+        cmd += ["--fleet", fleet]
+    if recipe.get("cwd"):
+        cmd += ["--cwd", recipe["cwd"]]
+    prompt = recipe.get("prompt")
+    if prompt:
+        cmd += ["--prompt", prompt]
+    started = events.now_iso()
+    result = subprocess.run(cmd, text=True, capture_output=True, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    try:
+        parsed = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        parsed = None
+    ok = result.returncode == 0 and isinstance(parsed, dict) and parsed.get("ok") is True
+    return {
+        "ok": ok,
+        "respawned": True,
+        "message_id": None,
+        "started_at": started,
+        "ended_at": events.now_iso(),
+        "returncode": result.returncode,
+        "stdout": parsed if parsed is not None else result.stdout[-1000:],
+        "stderr": result.stderr[-1000:],
+        "submitted_verified": None,
+        "submit_retry": None,
+        "state": "respawned" if ok else None,
+    }
+
+
+def _deliver_no_agent(job: dict, tick: int) -> dict:
+    """Run a script with no LLM; non-empty stdout becomes an aura report.
+
+    The Hermes ``no_agent`` short-circuit, ported as the one good idea from that
+    scheduler. Empty stdout is a silent success (no token spend, no delivery);
+    non-zero exit is a failure alert (backoff applies); non-empty stdout is written
+    to the report ledger so existing report subscribers fan out — the bus is the
+    report ledger, not a new event bus.
+    """
+    started = events.now_iso()
+    script = job.get("script")
+    if not script:
+        return {
+            "ok": False, "message_id": None, "started_at": started, "ended_at": events.now_iso(),
+            "returncode": 1, "stdout": "", "stderr": "no_agent job has no script", "state": None,
+        }
+    ok, output = events.run_script(script)
+    if not ok:
+        return {
+            "ok": False, "message_id": None, "started_at": started, "ended_at": events.now_iso(),
+            "returncode": 1, "stdout": output[-2000:], "stderr": output[-2000:], "state": None,
+        }
+    output = (output or "").strip()
+    if not output:
+        return {
+            "ok": True, "skipped": True, "reason": "silent", "message_id": None,
+            "started_at": started, "ended_at": events.now_iso(),
+            "returncode": 0, "stdout": "", "stderr": "", "state": "silent",
+        }
+
+    from lib import reports
+
+    target = job.get("target") or ""
+    fleet, sep, seat = target.partition(":")
+    if not sep:
+        seat, fleet = fleet, None
+    record = {
+        "state": job.get("report_state") or "update",
+        "work": output,
+        "sender": job.get("sender") or "aura-event",
+        "seat": seat or None,
+        "fleet": fleet or None,
+        "source": "aura-event:no-agent",
+        "job_id": job.get("job_id"),
+    }
+    report = reports.append_report(record)
+    released = reports.schedule_report_subscriptions(report)
+    return {
+        "ok": True, "delivered": True,
+        "message_id": report.get("report_id"),
+        "report_id": report.get("report_id"),
+        "started_at": started, "ended_at": events.now_iso(),
+        "returncode": 0,
+        "stdout": {"report_id": report.get("report_id"), "released": len(released)},
+        "stderr": "", "state": "delivered",
+    }
+
+
 def _deliver(job: dict, tick: int) -> dict:
+    if job.get("no_agent"):
+        return _deliver_no_agent(job, tick)
     busy = _target_is_busy(job["target"])
+    recipe = job.get("respawn")
+    if recipe and not _is_alive(busy):
+        return _respawn(job, recipe, tick)
     blocker = busy.get("blocker") or ("target-busy" if busy.get("busy") else None)
     if blocker:
         return {
@@ -404,7 +540,10 @@ def run(args):
             "subscriptions": released,
         }
     if action == "start":
-        job = _make_job(args)
+        try:
+            job = _make_job(args)
+        except ValueError as exc:
+            return {"ok": False, "error": "event-start-invalid", "detail": str(exc)}
         events.save_state(job)
         if job.get("name"):
             events.index_name(job["name"], job["job_id"])

@@ -6,10 +6,16 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import uuid
 
 from lib import state
+
+
+DEFAULT_SCRIPT_TIMEOUT = 120
 
 
 def now_iso() -> str:
@@ -144,3 +150,73 @@ def render_template(template: str, job: dict, tick: int, run_id: str) -> str:
         target=job.get("target"),
         sender=job.get("sender"),
     )
+
+
+def scripts_root() -> Path:
+    """Trusted root for ``no_agent`` event scripts.
+
+    Override with ``AURA_EVENT_SCRIPTS_DIR``; defaults to ``<state>/event-scripts``.
+    A script must resolve INSIDE this root — the same traversal guard the Hermes
+    cron scheduler used, ported so an event job cannot run an arbitrary path.
+    """
+    override = os.environ.get("AURA_EVENT_SCRIPTS_DIR")
+    if override:
+        return Path(override).expanduser()
+    return state.state_root() / "event-scripts"
+
+
+def run_script(script_path: str, timeout: int = DEFAULT_SCRIPT_TIMEOUT) -> tuple[bool, str]:
+    """Run a ``no_agent`` event script and capture stdout.
+
+    Returns ``(success, output)``. On failure ``output`` carries the error so the
+    caller can deliver it as an alert. ``.sh``/``.bash`` run under bash; everything
+    else under the current Python interpreter. The script MUST live within
+    ``scripts_root()`` — absolute and relative paths alike are resolved and
+    validated against it (no traversal, no symlink escape).
+    """
+    root = scripts_root()
+    root.mkdir(parents=True, exist_ok=True)
+    root_resolved = root.resolve()
+
+    raw = Path(script_path).expanduser()
+    path = raw.resolve() if raw.is_absolute() else (root / raw).resolve()
+    try:
+        path.relative_to(root_resolved)
+    except ValueError:
+        return False, f"blocked: script resolves outside event-scripts dir ({root_resolved}): {script_path!r}"
+    if not path.is_file():
+        return False, f"script not found: {path}"
+
+    suffix = path.suffix.lower()
+    if suffix in {".sh", ".bash"}:
+        bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+        if not bash:
+            return False, f"cannot run {path.name!r}: bash not found on PATH"
+        argv = [bash, str(path)]
+    else:
+        argv = [sys.executable, str(path)]
+
+    try:
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(path.parent),
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"script timed out after {timeout}s: {path}"
+    except Exception as exc:  # pragma: no cover - defensive
+        return False, f"script execution failed: {exc}"
+
+    out = (result.stdout or "").strip()
+    err = (result.stderr or "").strip()
+    if result.returncode != 0:
+        parts = [f"script exited with code {result.returncode}"]
+        if err:
+            parts.append(f"stderr:\n{err}")
+        if out:
+            parts.append(f"stdout:\n{out}")
+        return False, "\n".join(parts)
+    return True, out
