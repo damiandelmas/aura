@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import os
 import re
 import sqlite3
@@ -429,6 +430,29 @@ def _current_process_session_env_names(runtime: str | None) -> tuple[str, ...]:
     return (*names, *AURA_OWNED_SESSION_ENVS)
 
 
+def claude_pane_session_id(pane_id: str | None) -> str | None:
+    """Resolve a claude-code seat's live session id from the pane->session map.
+
+    Claude exposes its live session id only on hook/statusline stdin; the process
+    env var is injected per tool subprocess and goes stale after `/branch`, so it
+    cannot be trusted as a self-FK. The status line persists `{session_id,...}`
+    into `<state>/runtime/claude-pane-session/<pane_id>`, keyed by the exact tmux
+    pane, where it has BOTH the stdin id and the pane. Reading it back by pane id
+    is therefore exact: it disambiguates sibling seats sharing a cwd and survives
+    branch/adopt, which env and cwd-recency cannot. Returns None when absent.
+    """
+    if not pane_id:
+        return None
+    state = os.environ.get("AURA_STATE_DIR") or os.path.join(os.path.expanduser("~"), ".aura")
+    path = Path(state) / "runtime" / "claude-pane-session" / str(pane_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    sid = data.get("session_id") if isinstance(data, dict) else None
+    return str(sid) if sid else None
+
+
 def _discover_codex_runtime_argv(pid: int) -> dict:
     argv = _read_process_cmdline(pid)
     if not argv:
@@ -688,7 +712,12 @@ def resolve_current_process(runtime: str | None = None) -> dict:
     This is different from resolving another Aura seat. It should only be used
     when the caller asks for *this process/session*.
     """
-    runtime = runtime or os.environ.get("AURA_RUNTIME") or ("codex" if os.environ.get("CODEX_THREAD_ID") else None)
+    runtime = (
+        runtime
+        or os.environ.get("AURA_RUNTIME")
+        or ("codex" if os.environ.get("CODEX_THREAD_ID") else None)
+        or ("claude-code" if (os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID")) else None)
+    )
     fleet, seat = _tmux_current_fleet_seat()
     pane_pid = _tmux_current_pane_pid()
     evidence: list[dict] = []
@@ -713,6 +742,19 @@ def resolve_current_process(runtime: str | None = None) -> dict:
             "reason": (pane_discovery.get("runtime_session_evidence") or {}).get("reason"),
             "details": pane_discovery.get("runtime_session_evidence"),
         })
+
+    # Claude-code self-FK: the env var is unreliable (per-subprocess, stale after
+    # /branch), so fall back to the statusline-captured pane->session map keyed by
+    # this process' own tmux pane. Exact, branch- and adopt-safe.
+    if runtime in ("claude-code", "claude") and not any(item.get("session_id") for item in evidence):
+        mapped = claude_pane_session_id(os.environ.get("TMUX_PANE"))
+        if mapped:
+            evidence.append({
+                "source": "tmux-pane:claude-statusline-map",
+                "session_id": mapped,
+                "confidence": "exact",
+                "reason": "claude-pane-session-map",
+            })
 
     env_ids = [item for item in evidence if str(item.get("source") or "").startswith("env:")]
     if env_ids:

@@ -261,6 +261,17 @@ def _resolve_from_record(pane_rec: dict[str, Any], matched: dict | None) -> dict
             session_id, source, confidence = sid, "tmux-pane:registry", "exact"
             evidence = {"matched_pane_ref": matched.get("pane_ref")}
 
+    # 2b. Claude-code: the statusline-captured pane->session map. Claude exposes
+    # its live session only on hook/statusline stdin, never reliably in pane env,
+    # so this map (keyed by the exact pane) is the claude equivalent of the codex
+    # nonce/argv evidence below — exact, disambiguates shared-cwd siblings, and
+    # survives /branch where the env var goes stale.
+    if not session_id and runtime_hint in ("claude-code", "claude"):
+        mapped = runtime_session.claude_pane_session_id(pane_rec.get("pane_id"))
+        if mapped:
+            session_id, source, confidence = mapped, "tmux-pane:claude-statusline-map", "exact"
+            evidence = {"map": "claude-pane-session", "pane_id": pane_rec.get("pane_id")}
+
     # 3. Codex resume argv (exact) or unbound state-thread candidates.
     if not session_id and runtime_hint in runtime_session.CODEX_BACKED_RUNTIMES and pane_pid:
         disc = runtime_session.discover_from_pane_pid(
