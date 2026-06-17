@@ -19,7 +19,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, inspect as inspect_cmd, list as list_cmd, resolve, broadcast, capture, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd
+from commands import spawn, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, inspect as inspect_cmd, list as list_cmd, resolve, broadcast, capture, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd, work as work_cmd, idle_watch as idle_watch_cmd, anchor as anchor_cmd
 from lib.output import output
 
 
@@ -983,6 +983,78 @@ def main():
     p_placement_remove.add_argument("placement")
     p_placement_remove.add_argument("seat_ref", help="Logical seat ref, usually FLEET:SEAT")
 
+    # idle-watch — the sensed-completion seam: report seats going working->idle
+    p_idle = subparsers.add_parser("idle-watch", help="Watch a placement and report seats going idle (the sensed-completion seam)")
+    idle_sub = p_idle.add_subparsers(dest="idle_watch_action", required=True)
+    p_idle_tick = idle_sub.add_parser("tick", help="Run one watch pass over a placement")
+    p_idle_tick.add_argument("--placement", required=True, help="Placement of pool seats to watch")
+    p_idle_tick.add_argument("--debounce", type=int, default=2, help="Idle samples required before emitting (default: 2)")
+    p_idle_tick.add_argument("--lines", type=int, default=80, help="Captured tail lines per seat (default: 80)")
+    p_idle_tick.add_argument("--anchor", action="store_true", help="Stamp the seat's latest-message result anchor on the idle report (a citation pointer, not a success claim)")
+    p_idle_loop = idle_sub.add_parser("loop", help=argparse.SUPPRESS)
+    p_idle_loop.add_argument("--placement", required=True)
+    p_idle_loop.add_argument("--every", type=float, default=4.0)
+    p_idle_loop.add_argument("--debounce", type=int, default=2)
+    p_idle_loop.add_argument("--lines", type=int, default=80)
+    p_idle_loop.add_argument("--anchor", action="store_true")
+    p_idle_start = idle_sub.add_parser("start", help="Spawn a background watcher loop")
+    p_idle_start.add_argument("--placement", required=True)
+    p_idle_start.add_argument("--every", type=float, default=4.0, help="Seconds between passes (default: 4)")
+    p_idle_start.add_argument("--debounce", type=int, default=2)
+    p_idle_start.add_argument("--lines", type=int, default=80)
+    p_idle_start.add_argument("--anchor", action="store_true", help="Stamp result anchors on idle reports")
+    p_idle_stop = idle_sub.add_parser("stop", help="Stop the background watcher")
+    p_idle_stop.add_argument("--placement", required=True)
+    idle_sub.add_parser("status", help="Show the watcher per-seat gate state")
+
+    # work — a thin work-claim pool over a placement
+    p_work = subparsers.add_parser("work", help="Thin work-claim pool: submit tasks, drain to idle pool seats")
+    work_sub = p_work.add_subparsers(dest="work_action", required=True)
+    p_work_submit = work_sub.add_parser("submit", help="Submit a task to a queue")
+    p_work_submit.add_argument("queue")
+    p_work_submit.add_argument("body", nargs="+", help="Task body (the message delivered to a worker)")
+    p_work_list = work_sub.add_parser("list", help="List tasks in a queue")
+    p_work_list.add_argument("queue")
+    p_work_list.add_argument("--state", choices=["pending", "assigned", "done", "failed"], help="Filter by task state")
+    p_work_status = work_sub.add_parser("status", help="Queue task counts by state")
+    p_work_status.add_argument("queue")
+    p_work_dispatch = work_sub.add_parser("dispatch", help="Run one dispatch tick")
+    p_work_dispatch.add_argument("queue")
+    p_work_dispatch.add_argument("--placement", required=True, help="Pool placement to drain into")
+    p_work_dispatch.add_argument("--lease", type=float, default=300.0, help="Seconds before an assigned task requeues (default: 300)")
+    p_work_loop = work_sub.add_parser("dispatch-loop", help=argparse.SUPPRESS)
+    p_work_loop.add_argument("queue")
+    p_work_loop.add_argument("--placement", required=True)
+    p_work_loop.add_argument("--every", type=float, default=5.0)
+    p_work_loop.add_argument("--lease", type=float, default=300.0)
+    p_work_start = work_sub.add_parser("dispatch-start", help="Spawn a background dispatcher loop")
+    p_work_start.add_argument("queue")
+    p_work_start.add_argument("--placement", required=True)
+    p_work_start.add_argument("--every", type=float, default=5.0, help="Seconds between dispatch ticks (default: 5)")
+    p_work_start.add_argument("--lease", type=float, default=300.0)
+    p_work_stop = work_sub.add_parser("dispatch-stop", help="Stop the background dispatcher")
+    p_work_stop.add_argument("queue")
+
+    # anchor — canonical message anchors (Flex chunk ids): mint local, resolve via Flex
+    p_anchor = subparsers.add_parser("anchor", help="Canonical message anchors (Flex chunk ids): mint locally, resolve through Flex")
+    anchor_sub = p_anchor.add_subparsers(dest="anchor_action", required=True)
+    p_anchor_latest = anchor_sub.add_parser("latest", help="Mint a seat's latest-assistant anchor (a Flex chunk id)")
+    g_latest = p_anchor_latest.add_mutually_exclusive_group(required=True)
+    g_latest.add_argument("--target", help="Live seat FLEET:SEAT (uses its registry row for transcript discovery)")
+    g_latest.add_argument("--session", help="Runtime session id")
+    p_anchor_latest.add_argument("--seat-ref", dest="seat_ref", help="Seat ref to embed in the anchor string")
+    p_anchor_latest.add_argument("--transcript", help="Explicit transcript JSONL path (bypass discovery)")
+    p_anchor_resolve = anchor_sub.add_parser("resolve", help="Resolve an anchor / Flex chunk id to its content via Flex")
+    p_anchor_resolve.add_argument("anchor", help="Anchor string or Flex chunk id (session_<line>)")
+    p_anchor_resolve.add_argument("--cell", action="append", help="Flex cell(s) to search (default: claude_code, codex)")
+    p_anchor_enum = anchor_sub.add_parser("enum", help="The canonical numbered message list (position == Flex chunk N)")
+    g_enum = p_anchor_enum.add_mutually_exclusive_group(required=True)
+    g_enum.add_argument("--target", help="Live seat FLEET:SEAT")
+    g_enum.add_argument("--session", help="Runtime session id")
+    p_anchor_enum.add_argument("--seat-ref", dest="seat_ref")
+    p_anchor_enum.add_argument("--transcript", help="Explicit transcript JSONL path")
+    p_anchor_enum.add_argument("--limit", type=int, help="Only the last N rows")
+
     hide_suppressed_subcommands(parser)
     args = parser.parse_args()
 
@@ -1044,6 +1116,12 @@ def main():
             result = view_cmd.run(args)
         elif args.command == "placement":
             result = placement_cmd.run(args)
+        elif args.command == "idle-watch":
+            result = idle_watch_cmd.run(args)
+        elif args.command == "work":
+            result = work_cmd.run(args)
+        elif args.command == "anchor":
+            result = anchor_cmd.run(args)
         elif args.command == "clawhip":
             result = clawhip_cmd.run(args)
         elif args.command == "discord":

@@ -35,6 +35,7 @@
       "agent-map",
       "broadcast",
       "holding",
+      "idle-watch",
       "quick",
       "resolve"
     ]
@@ -50,7 +51,9 @@
     ],
     "organization": [
       "placement",
-      "event"
+      "event",
+      "work",
+      "anchor"
     ],
     "operator": [
       "agent",
@@ -61,6 +64,7 @@
       "deferred",
       "fleets",
       "holding",
+      "idle-watch",
       "keeper",
       "list",
       "posture",
