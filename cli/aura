@@ -887,6 +887,10 @@ def main():
                           help="Next intended action")
     p_report.add_argument("--blocker", action="append", default=[],
                           help="Current blocker; repeat for multiple blockers")
+    p_report.add_argument("--anchor",
+                          help="Result anchor (fleet:seat@session#N sha) — a verifiable pointer to this turn's output, for coordination consumers")
+    p_report.add_argument("--task-token", dest="task_token",
+                          help="Task token (t_<uuid12>) echoed from an [aura-task token=...] marker, so a dispatcher can correlate this completion to its assignment")
     p_report.add_argument("--limit", "-n", type=int, default=20,
                           help="Number of reports for list/latest (default: 20)")
     p_report.add_argument("--ack", action="store_true",

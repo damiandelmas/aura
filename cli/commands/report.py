@@ -127,6 +127,16 @@ def run(args):
         "next": getattr(args, "next_action", None),
         "blockers": getattr(args, "blocker", None) or [],
     }
+    # Coordination-plane seam (C×D): pass the result anchor + task token straight onto the row,
+    # so a dispatcher can correlate by task_token and VERIFY by resolving the anchor. The Stop hook
+    # emits this as a turn-ended-@-anchor fact, NOT a success claim — success is the consumer
+    # resolving the anchor, never a trusted boolean. Only set when present so ordinary reports stay clean.
+    anchor = getattr(args, "anchor", None)
+    task_token = getattr(args, "task_token", None)
+    if anchor:
+        record["anchor"] = anchor
+    if task_token:
+        record["task_token"] = task_token
     created = reports.append_report(record)
     scheduled = reports.schedule_queued_messages(created, delay_seconds=QUEUE_RELEASE_DELAY_SECONDS)
     if scheduled:

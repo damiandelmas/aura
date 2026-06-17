@@ -101,6 +101,33 @@ def test_report_appends_semantic_delta_with_inferred_context(tmp_path):
     assert json.loads(lines[0])["report_id"] == record["report_id"]
 
 
+def test_report_carries_anchor_and_task_token_passthrough(tmp_path):
+    """C×D seam: --anchor + --task-token land on the report row (verifiable pointer + correlation
+    key); omitted on an ordinary report so rows stay clean."""
+    env = {
+        **os.environ,
+        "AURA_STATE_DIR": str(tmp_path / ".aura"),
+        "AURA_FLEET": "pool",
+        "AURA_SEAT": "worker-3",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    anchor = "pool:worker-3@019ddf5f-b386-7ef0-9f43-8329ab2019c7#42 sha:abc123"
+    run_aura_raw(
+        ["report", "complete", "--work", "enriched tenant sloane-tea",
+         "--anchor", anchor, "--task-token", "t_0123456789ab"],
+        env, cwd=tmp_path,
+    )
+    record = run_aura(["report", "latest"], env)["record"]
+    assert record["anchor"] == anchor
+    assert record["task_token"] == "t_0123456789ab"
+
+    # an ordinary report (no seam flags) must NOT carry the keys
+    run_aura_raw(["report", "working", "--work", "still going"], env, cwd=tmp_path)
+    plain = run_aura(["report", "latest"], env)["record"]
+    assert "anchor" not in plain
+    assert "task_token" not in plain
+
+
 def test_report_ack_prints_compact_receipt(tmp_path):
     env = {
         **os.environ,
