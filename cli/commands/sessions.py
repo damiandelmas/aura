@@ -428,7 +428,7 @@ def _enrich_restore_row_from_launch_history(row: dict, *, runtime_session) -> di
 
 
 def _heal(args) -> dict:
-    """Re-attempt binding for alive + unbound codex/omx seats.
+    """Re-attempt binding for alive + unbound codex/omx/claude-code seats.
 
     Selector (exactly one required):
       --target fleet:seat  → single seat
@@ -489,8 +489,11 @@ def _heal(args) -> dict:
 
         runtime = str(record.get("runtime") or "").strip().lower()
 
-        # Skip non-codex/omx runtimes
-        if runtime not in {"codex", "omx"}:
+        # Heal-able runtimes: codex/omx bind via the launch nonce; claude-code binds
+        # via the pane->session FK (the statusline-captured map) through attempt b.
+        # Without claude-code here, the self-heal loop never rebinds claude seats —
+        # bind-pane/bind-hook supported them, but heal (the sweep) did not.
+        if runtime not in {"codex", "omx", "claude-code", "claude"}:
             results.append({
                 "seat": seat_target,
                 "status": "skipped",
@@ -560,8 +563,8 @@ def _heal(args) -> dict:
         expected_cwd = record.get("runtime_session_cwd") or record.get("cwd") or record.get("workdir")
         heal_result = None
 
-        # --- attempt a: nonce via launch_id ---
-        if launch_id:
+        # --- attempt a: nonce via launch_id (codex/omx only; claude has no jsonl nonce) ---
+        if launch_id and runtime in {"codex", "omx"}:
             found = _codex_session_from_nonce(
                 str(launch_id),
                 expected_cwd=expected_cwd,

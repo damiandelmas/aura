@@ -937,6 +937,50 @@ def test_heal_non_package_alive_unbound_seat_heals_via_nonce(monkeypatch, tmp_pa
     assert row["runtime_session_source"] == "codex-jsonl:nonce"
 
 
+def test_heal_binds_claude_seat_via_pane_session_fk(monkeypatch, tmp_path):
+    """An alive, unbound claude-code seat must heal through the pane->session FK.
+
+    Regression: heal previously skipped any non-codex/omx runtime as
+    'unsupported-runtime', so claude seats stayed unbound forever even though
+    bind-pane/bind-hook supported them. Now claude routes to attempt b (pane),
+    which resolves via the statusline-captured map (tmux-pane:claude-statusline-map).
+    """
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    from commands import sessions
+    from lib import registry, runtime_session, terminal as terminal_mod, pane_resolver
+
+    pane_ref = "tmux:cfleet:%47"
+    session_id = "0a9a591b-claude-fk-0000-000000000001"
+
+    registry.upsert_agent({
+        "name": "manager", "fleet": "cfleet", "runtime": "claude-code",
+        "registered": True, "pane_ref": pane_ref, "cwd": str(tmp_path / "repo"),
+    })  # no session bound -> unbound
+
+    monkeypatch.setattr(terminal_mod, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal_mod, "target_exists", lambda target: target == pane_ref)
+    # the claude pane->session FK resolves the live session exactly
+    monkeypatch.setattr(pane_resolver, "resolve_pane", lambda **kw: {
+        "ok": True,
+        "runtime_session_id": session_id,
+        "runtime_session_source": "tmux-pane:claude-statusline-map",
+        "runtime_session_confidence": "exact",
+        "pane_pid": None,
+    })
+    monkeypatch.setattr(pane_resolver, "bind_gates", lambda res, previous=None, repair=False: {"ok": True})
+
+    result = sessions._heal(_make_heal_args(target="cfleet:manager"))
+
+    assert result["healed"] == 1, result
+    assert result["results"][0]["status"] == "healed"
+    assert result["results"][0]["method"] == "pane"
+    row = registry.get_agent("manager", fleet="cfleet")
+    assert runtime_session.is_bound_session(row) is True
+    assert row["runtime_session_source"] == "tmux-pane:claude-statusline-map"
+
+
 def test_heal_contaminated_package_record_is_refused(monkeypatch, tmp_path):
     """A contaminated package record (runtime_home under a different root) is refused — no registry write."""
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
