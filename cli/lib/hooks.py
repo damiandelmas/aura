@@ -21,6 +21,11 @@ from typing import Any
 
 AURA_BIN = "/home/axp/.local/bin/aura"
 
+# Repo-owned claude statusline: writes the pane->session FK map (the producer the
+# resolvers read) and renders a compact line. Installed on spawned claude seats so
+# the FK is reproducible without a hand-placed global script.
+STATUSLINE_SCRIPT = Path(__file__).resolve().parent.parent / "hooks" / "aura-claude-statusline.sh"
+
 
 def _hook_cmd(event: str) -> str:
     """Shell command emitted by a lifecycle hook."""
@@ -104,11 +109,20 @@ def inject(workdir: str, emit_lifecycle: bool = True) -> dict:
             hooks_section[event] = existing + entries
             injected.append(event)
 
-        if injected:
+        # statusLine: install the FK-writer for claude seats. Only when the project
+        # has no statusLine of its own — never clobber an explicit one. This is what
+        # makes the pane->session FK reproducible on fresh seats.
+        statusline_installed = False
+        if "statusLine" not in current and STATUSLINE_SCRIPT.exists():
+            current["statusLine"] = {"type": "command", "command": f"bash {STATUSLINE_SCRIPT}"}
+            statusline_installed = True
+
+        if injected or statusline_installed:
             settings_path.write_text(json.dumps(current, indent=2))
 
         return {"hooks": "injected" if injected else "already-present",
-                "events": injected, "path": str(settings_path)}
+                "events": injected, "statusline": statusline_installed,
+                "path": str(settings_path)}
     except Exception as e:
         return {"hooks": "error", "reason": str(e)}
 

@@ -447,11 +447,23 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     workdir = str(workdir_path)
     if resume_session and fork_session:
         return result_fn({"ok": False, "error": "use either --resume-session or --fork-session, not both", "name": args.name})
+    resume_alloc_session = None  # claude allocate-on-resume: the chosen NEW id we born-bind
     if resume_session:
         if launch_command:
             return result_fn({"ok": False, "error": "use either --resume-session or --command, not both", "name": args.name})
         try:
-            launch_command = runtimes.build_resume_command(runtime, resume_session, cwd=workdir)
+            if runtime in ("claude-code", "claude"):
+                # Claude resume rotates the session id (forks from a leaf), so binding
+                # the typed id would bind one the process never runs. Mint a NEW id and
+                # resume INTO it (--fork-session) -> born-bound like a fresh spawn.
+                import uuid as _uuid
+
+                resume_alloc_session = str(_uuid.uuid4())
+                launch_command = runtimes.build_resume_command(
+                    runtime, resume_session, cwd=workdir, fork_into=resume_alloc_session
+                )
+            else:
+                launch_command = runtimes.build_resume_command(runtime, resume_session, cwd=workdir)
         except ValueError as exc:
             return result_fn({"ok": False, "error": str(exc), "name": args.name})
     if fork_session and launch_command:
@@ -631,7 +643,10 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     # a fresh claude seat's session is ALLOCATED by Aura rather than discovered
     # after the fact — the row is born bound and the id is readable from the
     # pane's /proc env forever (exact evidence for the pane resolver).
-    preallocated_session_id = None
+    # Carry the claude allocate-on-resume id (minted above) so the born-bound path
+    # below treats it like a fresh allocation; the --session-id already rides the
+    # resume launch_command via build_resume_command(fork_into=...).
+    preallocated_session_id = resume_alloc_session
     if runtime == "claude-code" and not resume_session and not fork_session and not launch_command:
         import uuid as _uuid
 
@@ -902,9 +917,11 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     # vet the record.  Now route the real session id through _bind_registry_session,
     # which applies the body-integrity veto before writing "bound" into the registry.
     resume_bind = None
-    if preallocated_session_id and not resume_session:
+    if preallocated_session_id:
         # Launch-time FK: the session id was allocated by Aura and passed as
         # --session-id, so the row is born bound — same gated writer, no race.
+        # Covers a fresh claude spawn AND claude allocate-on-resume (the minted
+        # fork-into id), both of which the process actually runs.
         from commands import sessions as sessions_cmd
 
         bound = sessions_cmd._bind_registry_session(
@@ -933,7 +950,10 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 "runtime_session_bind_source": "spawn:session-id-argv",
                 "runtime_session_confidence": "exact",
             }
-    if resume_session:
+    if resume_session and not preallocated_session_id:
+        # Codex resume keeps the typed id (id-preserving), so bind it directly.
+        # Claude resume rotated to a born-bound alloc id above (preallocated_session_id
+        # set), so this typed-id bind is skipped for claude — it never runs that id.
         from commands import sessions as sessions_cmd
 
         bound = sessions_cmd._bind_registry_session(

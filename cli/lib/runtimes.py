@@ -132,11 +132,24 @@ def build_command(runtime: str, spec: dict, *, name: str, profile: str | None = 
     return command
 
 
-def build_resume_command(runtime: str, session_id: str, *, cwd: str | None = None) -> str:
+def build_resume_command(runtime: str, session_id: str, *, cwd: str | None = None, fork_into: str | None = None) -> str:
     resolved, spec = resolve_runtime(runtime)
     resume_template = (spec.get("capabilities") or {}).get("resume_command")
     if not resume_template:
         raise ValueError(f"runtime does not support native resume: {resolved}")
+    if resolved == "claude-code":
+        # Repo-owned resume launcher (cli/hooks/aura-claude-r.sh). ALLOCATE-ON-RESUME:
+        # claude resume rotates the session id (it forks from a leaf), so when
+        # fork_into is given we resume <old> INTO a chosen <new> via
+        # `--session-id <new> --fork-session` -> born-bound, no post-launch heal.
+        # Without fork_into (e.g. seat restart) it is a plain resume.
+        from pathlib import Path
+
+        wrapper = Path(__file__).resolve().parent.parent / "hooks" / "aura-claude-r.sh"
+        parts = [f"bash {shlex.quote(str(wrapper))}", shlex.quote(session_id)]
+        if fork_into:
+            parts += ["--session-id", shlex.quote(fork_into), "--fork-session"]
+        return " ".join(parts)
     cwd_arg = f" --cd {shlex.quote(cwd)}" if cwd else ""
     command = resume_template.format(
         session_id=shlex.quote(session_id),
