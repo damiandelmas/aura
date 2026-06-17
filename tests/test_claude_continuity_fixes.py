@@ -65,6 +65,31 @@ def test_inject_installs_statusline_fk_writer():
         shutil.rmtree(wd, ignore_errors=True)
 
 
+def test_born_pane_self_heal_uses_birth_env_runtime():
+    # Regression: reconstruction must take runtime from AURA_RUNTIME, not hardcode
+    # codex (which mislabels claude seats and blocks the claude pane->session FK).
+    from lib import pane_resolver
+
+    pane = {"pane_ref": "tmux:flt:%9", "pane_current_command": "node"}
+    claude = pane_resolver._resolve_from_birth_env(pane, {
+        "AURA_FLEET": "flt", "AURA_SEAT": "mgr", "AURA_SEAT_INSTANCE_ID": "si_x",
+        "AURA_RUNTIME": "claude-code",
+    })
+    assert claude["runtime"] == "claude-code"
+
+    codex = pane_resolver._resolve_from_birth_env(pane, {
+        "AURA_FLEET": "flt", "AURA_SEAT": "wk", "AURA_SEAT_INSTANCE_ID": "si_y",
+        "AURA_RUNTIME": "codex",
+    })
+    assert codex["runtime"] == "codex"
+
+    # no AURA_RUNTIME -> falls back to a default, never crashes
+    fallback = pane_resolver._resolve_from_birth_env(pane, {
+        "AURA_FLEET": "flt", "AURA_SEAT": "wk", "AURA_SEAT_INSTANCE_ID": "si_z",
+    })
+    assert fallback["runtime"]
+
+
 def test_inject_statusline_is_idempotent_and_non_clobbering():
     wd = tempfile.mkdtemp()
     try:

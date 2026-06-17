@@ -63,6 +63,7 @@ _BIRTH_ENV_KEYS = (
     "AURA_SEAT",
     "AURA_LAUNCH_ID",
     "AURA_SEAT_INSTANCE_ID",
+    "AURA_RUNTIME",
 )
 # Markers that indicate a pane is a forked child whose AURA_SEAT_INSTANCE_ID is
 # inherited from its parent and therefore unsafe to self-heal onto the parent row.
@@ -98,6 +99,14 @@ def _resolve_from_birth_env(pane_rec: dict[str, Any], birth_env: dict[str, str])
     si = (birth_env or {}).get("AURA_SEAT_INSTANCE_ID")
     if not (fleet and seat and (launch_id or si)):
         return None
+    # Runtime comes from birth env (exact, set at spawn); fall back to the pane's
+    # command, then codex. Hardcoding codex mislabels claude-code seats and blocks
+    # the claude pane->session FK from binding them.
+    runtime = (
+        (birth_env or {}).get("AURA_RUNTIME")
+        or _runtime_from_command(pane_rec.get("pane_current_command"))
+        or "codex"
+    )
     return {
         "name": seat,
         "seat": seat,
@@ -106,7 +115,7 @@ def _resolve_from_birth_env(pane_rec: dict[str, Any], birth_env: dict[str, str])
         "aura_launch_id": launch_id,
         "seat_instance_id": si,
         "pane_ref": pane_rec.get("pane_ref"),
-        "runtime": "codex",
+        "runtime": runtime,
         "registered": False,
         "status": "born-unhealed",
         "last_seen": registry.now_iso(),
