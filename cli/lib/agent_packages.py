@@ -26,7 +26,7 @@ from lib import runtime_boxes, runtime_profiles, state
 AGENT_SCHEMA = "aura.agent_manifest.v1"
 INDEX_SCHEMA = "aura.agent_package.index.v1"
 
-SUPPORTED_RUNTIMES = {"codex", "gajae-code"}
+SUPPORTED_RUNTIMES = {"codex", "claude-code", "gajae-code"}
 
 
 def _empty_index() -> dict[str, Any]:
@@ -227,6 +227,8 @@ def package_dirs(root: Path, runtime: str | None = None) -> dict[str, str]:
     dirs = {"root": str(root)}
     if runtime in {None, "codex"}:
         dirs["codex_home"] = str(root / ".codex")
+    if runtime == "claude-code":
+        dirs["claude_home"] = str(root / ".claude")
     if runtime == "gajae-code":
         dirs.update({
             "gjc_config": str(root / ".gjc"),
@@ -236,6 +238,10 @@ def package_dirs(root: Path, runtime: str | None = None) -> dict[str, str]:
 
 
 def _spawn_env(runtime: str) -> dict[str, str]:
+    if runtime == "claude-code":
+        # CLAUDE_CONFIG_DIR is claude-code's CODEX_HOME: it relocates ~/.claude
+        # (config + projects/ session transcripts) under the package body.
+        return {"CLAUDE_CONFIG_DIR": ".claude"}
     if runtime == "gajae-code":
         return {
             "GJC_CONFIG_DIR": ".gjc",
@@ -288,7 +294,7 @@ def create(
     agent_id = new_agent_id()
     root = package_root(agent_id)
     dirs = package_dirs(root, runtime)
-    for key in ("codex_home", "gjc_agent"):
+    for key in ("codex_home", "claude_home", "gjc_agent"):
         if key in dirs:
             Path(dirs[key]).mkdir(parents=True, exist_ok=True)
 
@@ -302,7 +308,7 @@ def create(
         "seat": seat,
         **({"profile": profile_ref} if profile_ref else {}),
     }
-    if runtime == "codex":
+    if runtime in {"codex", "claude-code"}:
         record["resume"] = {"default": "latest"}
     _atomic_write_json(manifest_path(root), record)
 
@@ -781,6 +787,8 @@ def _runtime_root_findings(root: Path, manifest: dict[str, Any] | None) -> list[
     findings: list[str] = []
     if runtime == "codex" and not (root / ".codex").is_dir():
         findings.append("missing-runtime-root:.codex")
+    if runtime == "claude-code" and not (root / ".claude").is_dir():
+        findings.append("missing-runtime-root:.claude")
     if runtime == "gajae-code" and not (root / ".gjc" / "agent").is_dir():
         findings.append("missing-runtime-root:.gjc/agent")
     return findings

@@ -953,6 +953,7 @@ def test_command_override_uses_command_runtime_and_no_claude_trace(monkeypatch, 
                 "CODEX_CI",
                 "CLAUDE_SESSION_ID",
                 "CODEX_HOME",
+                "CLAUDE_CONFIG_DIR",
                 "AURA_AGENT_PACKAGE_ID",
                 "AURA_AGENT_PACKAGE_ROOT",
                 "AURA_AGENT_PACKAGE_ADDRESS",
@@ -1088,6 +1089,7 @@ def test_spawn_work_file_context_and_workspace_session_record(monkeypatch, tmp_p
         "CODEX_CI",
         "CLAUDE_SESSION_ID",
         "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
         "AURA_AGENT_PACKAGE_ID",
         "AURA_AGENT_PACKAGE_ROOT",
         "AURA_AGENT_PACKAGE_ADDRESS",
@@ -2000,7 +2002,7 @@ def test_claude_code_terminal_runtime_default_uses_noninteractive_approval_flags
     runtime, spec = runtimes.resolve_runtime("claude-code")
     command = runtimes.build_command(runtime, spec, name="worker", profile=None)
 
-    assert command == "claude --dangerously-skip-permissions"
+    assert command == "claude --permission-mode bypassPermissions"
 
 
 def test_runtime_session_discovers_codex_thread_from_pane_process(monkeypatch):

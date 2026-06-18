@@ -15,7 +15,21 @@ from pathlib import Path
 
 from lib import runtime_boxes, runtime_profiles, state
 
-SUPPORTED_BASE_RUNTIMES = {"codex"}
+SUPPORTED_BASE_RUNTIMES = {"codex", "claude-code"}
+
+# Per-runtime reusable-template layout. Codex boxes three dirs (HOME / CODEX_HOME
+# / runtime root); a claude box is a single CLAUDE_CONFIG_DIR, so its profile is
+# one template dir copied into the seat's .claude.
+_TEMPLATE_NAMES = {
+    "codex": ("home-template", "codex-home-template", "runtime-template"),
+    "claude-code": ("claude-home-template",),
+}
+# Where a profile's skill preset lands inside the template, and which skill home
+# it is sourced from, per runtime.
+_SKILL_TEMPLATE_DIR = {
+    "codex": "codex-home-template",
+    "claude-code": "claude-home-template",
+}
 
 AURA_OPERATOR_SKILL_ALLOWLIST = (
     "aura",
@@ -48,6 +62,18 @@ CODEX_DEFAULT_CONFIG = """# Aura-owned boxed Codex runtime base.
 status_line = ["model-with-reasoning", "git-branch", "current-dir", "session-id"]
 """
 
+# Aura-owned boxed Claude Code runtime base. A minimal settings.json seed; the
+# spawn-time box-prep merges the statusline FK-writer + lifecycle hooks and the
+# onboarding flags on top, so this only carries reusable behavior, never auth or
+# session state.
+CLAUDE_DEFAULT_SETTINGS = (
+    '{\n'
+    '  "permissions": {\n'
+    '    "defaultMode": "bypassPermissions"\n'
+    '  }\n'
+    '}\n'
+)
+
 
 def _validate_supported_runtime(runtime: str) -> str:
     runtime = runtime_boxes.validate_logical_segment(runtime, label="runtime base runtime")
@@ -64,7 +90,7 @@ def runtime_base_root(runtime: str, base: str = "default") -> Path:
 
 def template_names(runtime: str) -> tuple[str, ...]:
     runtime = _validate_supported_runtime(runtime)
-    return ("home-template", "codex-home-template", "runtime-template")
+    return _TEMPLATE_NAMES[runtime]
 
 
 def template_mappings(runtime: str, *, home: Path, codex_home: Path, runtime_root: Path | None = None) -> dict[str, Path]:
@@ -81,9 +107,14 @@ def template_mappings(runtime: str, *, home: Path, codex_home: Path, runtime_roo
 def _write_default_files(root: Path, runtime: str) -> None:
     for dirname in template_names(runtime):
         (root / dirname).mkdir(parents=True, exist_ok=True)
-    config_path = root / "codex-home-template" / "config.toml"
-    if not config_path.exists():
-        config_path.write_text(CODEX_DEFAULT_CONFIG, encoding="utf-8")
+    if runtime == "codex":
+        config_path = root / "codex-home-template" / "config.toml"
+        if not config_path.exists():
+            config_path.write_text(CODEX_DEFAULT_CONFIG, encoding="utf-8")
+    elif runtime == "claude-code":
+        settings_path = root / "claude-home-template" / "settings.json"
+        if not settings_path.exists():
+            settings_path.write_text(CLAUDE_DEFAULT_SETTINGS, encoding="utf-8")
 
 
 def validate_runtime_base(root: Path, runtime: str) -> list[runtime_profiles.TemplateSafetyFinding]:
@@ -149,10 +180,14 @@ def _copy_tree_no_replace_or_raise(source: Path, destination: Path) -> bool:
     return copied_any
 
 
-def _skill_source_root() -> Path:
+def _skill_source_root(runtime: str = "codex") -> Path:
     import os
 
-    return Path(os.environ.get("AURA_PROFILE_SKILLS_SOURCE") or Path.home() / ".codex" / "skills").expanduser()
+    override = os.environ.get("AURA_PROFILE_SKILLS_SOURCE")
+    if override:
+        return Path(override).expanduser()
+    home_dir = ".claude" if runtime == "claude-code" else ".codex"
+    return (Path.home() / home_dir / "skills").expanduser()
 
 
 def seed_profile_preset(runtime: str, profile_root: Path, preset: str | None) -> dict[str, object]:
@@ -163,8 +198,8 @@ def seed_profile_preset(runtime: str, profile_root: Path, preset: str | None) ->
     if preset not in SUPPORTED_PROFILE_PRESETS:
         raise ValueError(f"unknown runtime profile preset: {preset}")
     runtime = _validate_supported_runtime(runtime)
-    source_root = _skill_source_root()
-    destination_root = profile_root / "codex-home-template" / "skills"
+    source_root = _skill_source_root(runtime)
+    destination_root = profile_root / _SKILL_TEMPLATE_DIR[runtime] / "skills"
     destination_root.mkdir(parents=True, exist_ok=True)
 
     applied: list[str] = []

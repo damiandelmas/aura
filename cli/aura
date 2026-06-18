@@ -119,7 +119,7 @@ def main():
 
     # quick
     p_quick = subparsers.add_parser("quick", help="Launch a quick Aura-managed runtime seat from the current directory")
-    p_quick.add_argument("runtime", choices=["codex", "gajae-code", "hermes"], help="Runtime to launch")
+    p_quick.add_argument("runtime", choices=["codex", "claude-code", "gajae-code", "hermes"], help="Runtime to launch")
     profile_group = p_quick.add_mutually_exclusive_group()
     profile_group.add_argument("--default", action="store_true", help="Use or create the runtime default Aura profile")
     profile_group.add_argument("--new", nargs="?", const="", metavar="NAME", help="Create and use a new runtime profile")
@@ -149,7 +149,7 @@ def main():
     p_profile_inspect.add_argument("--runtime", choices=["codex", "hermes", "claude-code", "goose", "aider"], help="Runtime for a bare profile name")
     p_profile_create = profile_sub.add_parser("create", help="Create an Aura-owned boxed profile template")
     p_profile_create.add_argument("profile_ref", help="Profile ref such as codex/dev, or bare name with --runtime")
-    p_profile_create.add_argument("--runtime", choices=["codex"], help="Runtime for a bare profile name")
+    p_profile_create.add_argument("--runtime", choices=["codex", "claude-code"], help="Runtime for a bare profile name")
     p_profile_create.add_argument("--from", dest="source_profile", help="Clone from an existing Aura-owned profile ref of the same runtime")
     p_profile_create.add_argument("--preset", choices=["aura-operator"], help="Seed a deterministic skill preset into the profile")
     p_profile_create.add_argument("--description", help="Optional README description for the template")
@@ -159,7 +159,7 @@ def main():
     agent_sub = p_agent.add_subparsers(dest="agent_action", required=True)
     p_agent_create = agent_sub.add_parser("create", help="Create a durable package-native agent")
     p_agent_create.add_argument("address", help="Logical address, e.g. flexgraph:chatbot:pipeline:conductor")
-    p_agent_create.add_argument("--runtime", required=True, choices=["codex", "gajae-code"], help="Runtime for the package")
+    p_agent_create.add_argument("--runtime", required=True, choices=["codex", "claude-code", "gajae-code"], help="Runtime for the package")
     p_agent_create.add_argument("--profile", metavar="REF", help="Runtime profile ref, e.g. codex/operator or operator")
     p_agent_create.add_argument("--cwd", metavar="PATH", help="Default working directory")
     p_agent_create.add_argument("--fleet", metavar="NAME", help="Default Aura fleet/tmux session")

@@ -475,6 +475,7 @@ def test_spawn_exports_aura_runtime_env_and_records_pane_ref(monkeypatch, tmp_pa
         "CODEX_CI",
         "CLAUDE_SESSION_ID",
         "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
         "AURA_AGENT_PACKAGE_ID",
         "AURA_AGENT_PACKAGE_ROOT",
         "AURA_AGENT_PACKAGE_ADDRESS",

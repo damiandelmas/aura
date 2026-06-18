@@ -559,6 +559,25 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 "runtime_profile_ref": runtime_profile_ref,
                 "expected_root": hermes_root,
             })
+    elif runtime in ("claude-code", "claude"):
+        # A claude profile is an Aura-owned boxed template; claude_box applies its
+        # claude-home-template into the seat's .claude box at launch. runtime_profile
+        # already holds the profile name (set above when a ref was given) — just
+        # validate the template exists so a typo fails loud before the pane opens.
+        if runtime_profile:
+            from lib import runtime_boxes as _rb
+
+            prof_root = _rb.runtime_profile_root("claude-code", runtime_profile)
+            if not prof_root.is_dir():
+                return result_fn({
+                    "ok": False,
+                    "error": "runtime-profile-not-found",
+                    "detail": f"claude-code runtime profile not found: {prof_root}",
+                    "name": args.name,
+                    "runtime": runtime,
+                    "runtime_profile_ref": runtime_profile_ref,
+                    "expected_root": str(prof_root),
+                })
     elif runtime_profile_ref_arg:
         return result_fn({
             "ok": False,
@@ -707,6 +726,27 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
         runtime_home = str(Path(str(agent_package["root"])).expanduser().resolve())
         if runtime == "gajae-code":
             native_state_ref = package_env.get("GJC_CONFIG_DIR") or native_state_ref
+        elif runtime in ("claude-code", "claude"):
+            # Boxed claude package: native state lives at <package>/.claude via
+            # CLAUDE_CONFIG_DIR. Seed it (auth symlink + statusline/lifecycle hooks)
+            # so the package-rooted seat is authenticated and FK-resolvable.
+            native_state_ref = package_env.get("CLAUDE_CONFIG_DIR") or native_state_ref
+            try:
+                from lib import claude_box
+
+                claude_box.prepare_package_box(
+                    agent_package["root"], workdir=workdir, profile=runtime_profile
+                )
+            except Exception as exc:
+                return result_fn({
+                    "ok": False,
+                    "error": "claude-box-setup-failed",
+                    "detail": str(exc),
+                    "name": args.name,
+                    "runtime": runtime,
+                    "cwd": workdir,
+                    "fleet": fleet,
+                })
     if runtime == "codex" and (boxed_requested or codex_profile):
         try:
             from lib import codex as codex_lib
@@ -772,6 +812,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 # spawn did not set its own — preventing a parent package's body from
                 # bleeding into a child seat.
                 "CODEX_HOME",
+                "CLAUDE_CONFIG_DIR",
                 "AURA_AGENT_PACKAGE_ID",
                 "AURA_AGENT_PACKAGE_ROOT",
                 "AURA_AGENT_PACKAGE_ADDRESS",

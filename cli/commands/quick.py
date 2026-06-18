@@ -12,7 +12,12 @@ from pathlib import Path
 from commands import spawn
 from lib import agent_packages, runtime_bases, runtime_boxes
 
-SUPPORTED_RUNTIMES = {"codex", "gajae-code", "hermes"}
+SUPPORTED_RUNTIMES = {"codex", "claude-code", "gajae-code", "hermes"}
+
+# Runtimes whose quick launch uses an Aura-owned boxed profile template.
+_PROFILE_TEMPLATE_RUNTIMES = {"codex", "claude-code"}
+# The skills subdir inside each runtime's profile template.
+_SKILL_TEMPLATE_DIR = {"codex": "codex-home-template", "claude-code": "claude-home-template"}
 
 PRESET_SKILLS = {
     "minimal": (),
@@ -70,8 +75,8 @@ def _preset_warning(runtime: str, preset: str | None) -> str | None:
 
 
 def _profile_root(runtime: str, profile: str) -> Path:
-    if runtime == "codex":
-        return runtime_boxes.runtime_profile_root("codex", profile)
+    if runtime in _PROFILE_TEMPLATE_RUNTIMES:
+        return runtime_boxes.runtime_profile_root(runtime, profile)
     if runtime == "hermes":
         if profile == "default":
             return (Path.home() / ".hermes").resolve()
@@ -82,8 +87,8 @@ def _profile_root(runtime: str, profile: str) -> Path:
 
 
 def _skill_destination(runtime: str, profile_root: Path) -> Path:
-    if runtime == "codex":
-        return profile_root / "codex-home-template" / "skills"
+    if runtime in _PROFILE_TEMPLATE_RUNTIMES:
+        return profile_root / _SKILL_TEMPLATE_DIR[runtime] / "skills"
     if runtime == "hermes":
         return profile_root / "skills"
     if runtime == "gajae-code":
@@ -93,7 +98,7 @@ def _skill_destination(runtime: str, profile_root: Path) -> Path:
 
 def _ensure_profile_skeleton(runtime: str, profile: str, *, existed: bool) -> Path:
     root = _profile_root(runtime, profile)
-    if runtime == "codex":
+    if runtime in _PROFILE_TEMPLATE_RUNTIMES:
         if not existed:
             runtime_bases.create_profile_from_base(runtime, root)
         else:
@@ -171,7 +176,7 @@ def _resolve_profile(args) -> tuple[str | None, dict[str, object] | None]:
 def _profile_ref(runtime: str, profile: str | None) -> str | None:
     if not profile:
         return None
-    if runtime in {"codex", "hermes"}:
+    if runtime in {"codex", "claude-code", "hermes"}:
         return f"{runtime}/{profile}"
     return None
 
@@ -194,7 +199,7 @@ def _ensure_quick_agent(
 ) -> dict[str, object] | None:
     """Create or reuse the canonical package-native quick body for a runtime."""
 
-    if runtime not in {"codex", "gajae-code"}:
+    if runtime not in {"codex", "claude-code", "gajae-code"}:
         return None
     alias = _quick_agent_alias(runtime)
     try:

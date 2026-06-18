@@ -198,8 +198,23 @@ def test_profile_create_rejects_future_runtime_as_unsupported(monkeypatch, tmp_p
 
     from commands import profile
 
-    result = profile.run(_args("create", profile_ref="claude-code/dev"))
+    # goose is still a declared-but-unimplemented runtime; create must refuse it.
+    result = profile.run(_args("create", profile_ref="goose/dev"))
 
     assert result["ok"] is False
     assert result["error"] == "profile-create-unsupported"
-    assert result["classification"]["kind"] == "boxed-home"
+    assert result["classification"]["kind"] == "boxed-xdg-home"
+
+
+def test_profile_create_claude_code_from_aura_base(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+
+    from commands import profile
+
+    result = profile.run(_args("create", profile_ref="claude-code/dev"))
+
+    assert result["ok"] is True
+    assert result["created"] is True
+    assert "claude-home-template" in result["templates_applied"]
+    settings = tmp_path / "state" / "runtime-profiles" / "claude-code" / "dev" / "claude-home-template" / "settings.json"
+    assert settings.is_file()

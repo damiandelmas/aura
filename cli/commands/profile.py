@@ -6,15 +6,17 @@ from pathlib import Path
 
 from lib import runtime_bases, runtime_boxes, runtime_profiles
 
-SUPPORTED_CREATE_RUNTIMES = {"codex"}
+SUPPORTED_CREATE_RUNTIMES = {"codex", "claude-code"}
 PROFILE_SCHEMAS = {
     "list": "aura.profile.list.v1",
     "inspect": "aura.profile.inspect.v1",
     "create": "aura.profile.create.v1",
     "error": "aura.profile.error.v1",
 }
-FUTURE_RUNTIMES = ("claude-code", "goose", "aider")
-KNOWN_RUNTIMES = ("codex", "hermes", *FUTURE_RUNTIMES)
+FUTURE_RUNTIMES = ("goose", "aider")
+KNOWN_RUNTIMES = ("codex", "claude-code", "hermes", *FUTURE_RUNTIMES)
+# Runtimes whose profiles are Aura-owned boxed templates (vs hermes native refs).
+BOXED_TEMPLATE_RUNTIMES = ("codex", "claude-code")
 
 
 def _error(code: str, detail: str, **extra) -> dict[str, object]:
@@ -22,8 +24,8 @@ def _error(code: str, detail: str, **extra) -> dict[str, object]:
 
 
 def _runtime_profile_root(runtime: str, profile: str) -> Path:
-    if runtime == "codex":
-        return runtime_boxes.runtime_profile_root("codex", profile)
+    if runtime in BOXED_TEMPLATE_RUNTIMES:
+        return runtime_boxes.runtime_profile_root(runtime, profile)
     if runtime == "hermes":
         if profile == "default":
             return (Path.home() / ".hermes").resolve()
@@ -32,8 +34,8 @@ def _runtime_profile_root(runtime: str, profile: str) -> Path:
 
 
 def _profile_parent(runtime: str) -> Path:
-    if runtime == "codex":
-        return runtime_boxes.runtime_profile_root("codex", "__placeholder__").parent
+    if runtime in BOXED_TEMPLATE_RUNTIMES:
+        return runtime_boxes.runtime_profile_root(runtime, "__placeholder__").parent
     if runtime == "hermes":
         return (Path.home() / ".hermes" / "profiles").resolve()
     raise ValueError(f"runtime profile unsupported for {runtime}")
@@ -109,7 +111,7 @@ def _profile_row(runtime: str, profile: str, root: Path) -> dict[str, object]:
 
 
 def _list_profiles(args) -> dict[str, object]:
-    runtimes = [args.runtime] if args.runtime else ["codex", "hermes"]
+    runtimes = [args.runtime] if args.runtime else ["codex", "claude-code", "hermes"]
     profiles: list[dict[str, object]] = []
     for runtime in runtimes:
         runtime = runtime_boxes.validate_logical_segment(runtime, label="runtime")
@@ -138,7 +140,7 @@ def _inspect_profile(args) -> dict[str, object]:
         return _error("invalid-profile-ref", str(exc))
     if ref.runtime in FUTURE_RUNTIMES:
         return _error("runtime-profile-not-supported", f"{ref.runtime} profile inspect is not implemented yet", classification=_adapter_row(ref.runtime))
-    if ref.runtime not in {"codex", "hermes"}:
+    if ref.runtime not in (*BOXED_TEMPLATE_RUNTIMES, "hermes"):
         return _error("invalid-runtime", f"unknown runtime: {ref.runtime}")
     root = _runtime_profile_root(ref.runtime, ref.profile)
     if not root.is_dir():

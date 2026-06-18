@@ -24,9 +24,19 @@ RUNTIMES: dict[str, dict] = {
         },
     },
     "claude-code": {
-        "command": "claude --dangerously-skip-permissions",
+        # --permission-mode bypassPermissions is the non-prompting equivalent of
+        # --dangerously-skip-permissions: same unattended runtime behavior, but it
+        # does NOT raise the one-time "accept bypass permissions" TUI gate that a
+        # fresh boxed CLAUDE_CONFIG_DIR otherwise stalls on (a detached seat can't
+        # answer it). Verified: boxed seat launches straight to the prompt.
+        "command": "claude --permission-mode bypassPermissions",
         "graceful_exit": "/exit",
         "submit_key": "Enter",
+        # Boxed-home isolation lever (the claude analog of CODEX_HOME):
+        # CLAUDE_CONFIG_DIR relocates ~/.claude (config + projects/<encoded-cwd>/
+        # session transcripts + statusline state) under a path Aura owns, so a
+        # package body can carry the runtime's native state at <package>/.claude.
+        "native_state": ".claude",
         "context_candidates": ["CLAUDE.md", "AGENTS.md"],
         "capabilities": {
             "supports_resume": True,

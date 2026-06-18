@@ -20,7 +20,10 @@ SESSION_ID="${1:-}"
 [ -z "$SESSION_ID" ] && { echo "usage: aura-claude-r.sh <session-id> [args...]" >&2; exit 1; }
 shift
 
-PROJECTS="$HOME/.claude/projects"
+# Honor a boxed claude home: a package-native claude seat runs with
+# CLAUDE_CONFIG_DIR=<package>/.claude, so its session transcripts live there, not
+# under $HOME/.claude. Fall back to the global home for plain (unboxed) seats.
+PROJECTS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
 SRC=$(find "$PROJECTS" -name "${SESSION_ID}*.jsonl" -type f 2>/dev/null | head -n1)
 [ -z "$SRC" ] && { echo "claude session not found: $SESSION_ID" >&2; exit 1; }
 [ -s "$SRC" ] || { echo "claude session is empty (interrupted before any message): $SESSION_ID" >&2; exit 1; }
