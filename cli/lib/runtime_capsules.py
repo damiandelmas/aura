@@ -207,6 +207,24 @@ def boxed_launch_env_from_record(record: dict[str, Any], source_cwd: str) -> dic
         env["AURA_CODEX_SOURCE_CWD"] = source_cwd
         if record.get("codex_profile"):
             env["AURA_CODEX_PROFILE"] = str(record["codex_profile"])
+    # Package agents box their native state under the package root via a runtime
+    # env root the manifest sets; the legacy-capsule branch above does not cover
+    # them. A restart/rollover that did not re-set this relaunched with no home,
+    # so the process died — reconstruct it from the package root, as spawn does.
+    # native_state_ref (set at spawn) is the exact value when present.
+    pkg_root = record.get("agent_package_root")
+    if pkg_root:
+        from pathlib import Path
+
+        root = Path(str(pkg_root))
+        native = record.get("native_state_ref")
+        if runtime in ("claude-code", "claude"):
+            env["CLAUDE_CONFIG_DIR"] = str(native) if native else str(root / ".claude")
+        elif runtime == "codex" and "CODEX_HOME" not in env:
+            env["CODEX_HOME"] = str(native) if native else str(root / ".codex")
+        elif runtime == "gajae-code":
+            env["GJC_CONFIG_DIR"] = str(root / ".gjc")
+            env["GJC_CODING_AGENT_DIR"] = str(root / ".gjc" / "agent")
     return {key: value for key, value in env.items() if value is not None and str(value).strip()}
 
 
