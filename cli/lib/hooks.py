@@ -26,6 +26,12 @@ AURA_BIN = "/home/axp/.local/bin/aura"
 # the FK is reproducible without a hand-placed global script.
 STATUSLINE_SCRIPT = Path(__file__).resolve().parent.parent / "hooks" / "aura-claude-statusline.sh"
 
+# Directory holding the claude lifecycle hook scripts referenced from a boxed
+# seat's settings.json. Scripts are referenced from the repo (not copied into the
+# box) so adapter fixes ship without rebuilding boxes — same discipline as the
+# Codex keeper installer.
+CLAUDE_HOOK_DIR = Path(__file__).resolve().parent.parent / "hooks"
+
 
 def _hook_cmd(event: str) -> str:
     """Shell command emitted by a lifecycle hook."""
@@ -60,6 +66,99 @@ def default_hooks() -> dict:
         "SessionStart": [{"hooks": [{"type": "command", "command": _hook_cmd("AGENT_STARTED")}]}],
         "Stop":         [{"hooks": [{"type": "command", "command": _hook_cmd("AGENT_STOPPED")}]}],
     }
+
+
+def _claude_hook_command(script_name: str) -> str:
+    """Shell command for a boxed claude lifecycle hook script."""
+    return f"python3 {CLAUDE_HOOK_DIR / script_name}"
+
+
+def default_hooks_claude_block() -> dict:
+    """The Aura hooks block written into a boxed claude seat's settings.json.
+
+    Event → script mapping (claude-code hook contract; timeouts in SECONDS):
+      SessionStart     → bind (confirm allocated session) + ambient (born orientation,
+                         source=compact recovery)
+      UserPromptSubmit → ambient (pending-flag gate; no-op unless membership flagged)
+      Stop             → keeper (message-count cadence)
+      PreCompact       → keeper (boundary=precompact)
+      PostCompact      → ambient (set pending-flag to re-orient next prompt)
+    """
+    bind = _claude_hook_command("claude_bind_hook.py")
+    ambient = _claude_hook_command("claude_ambient_hook.py")
+    keeper = _claude_hook_command("claude_keeper_hook.py")
+
+    def entry(command: str, timeout: int) -> dict:
+        return {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
+
+    return {
+        "SessionStart":     [entry(bind, 10), entry(ambient, 10)],
+        "UserPromptSubmit": [entry(ambient, 5)],
+        "Stop":             [entry(keeper, 10)],
+        "PreCompact":       [entry(keeper, 10)],
+        "PostCompact":      [entry(ambient, 10)],
+    }
+
+
+def _entry_commands(entry: Any) -> set[str]:
+    """Commands referenced by one settings.json hook entry."""
+    commands: set[str] = set()
+    if isinstance(entry, dict):
+        for hook in entry.get("hooks") or []:
+            if isinstance(hook, dict) and hook.get("command"):
+                commands.add(hook["command"])
+    return commands
+
+
+def default_hooks_claude(config_dir: str, *, seat_target: str | None = None) -> None:
+    """Write/merge the Aura hooks block into ``<config_dir>/settings.json``.
+
+    THE SEAM (frozen, owned by hooks lane). ``config_dir`` is the box's real
+    ``CLAUDE_CONFIG_DIR`` (claude's ``CODEX_HOME`` analog); ``settings.json`` lives
+    directly under it. Merges the ``hooks`` key only — never clobbers a profile's
+    other keys (statusLine, permissions, model, profile-owned hooks), per seam-v2 §1
+    (statusLine ownership belongs to claude_box, not here). Idempotent: a second call
+    yields a byte-identical file.
+
+    ``seat_target`` is accepted per the frozen signature; routing is left to the
+    hook scripts' own self-resolution (pane→env→session) so a rename never strands a
+    hardcoded address (two-laws). It is reserved as a future fallback hint.
+    """
+    cfg = Path(config_dir)
+    cfg.mkdir(parents=True, exist_ok=True)
+    settings_path = cfg / "settings.json"
+
+    current: dict = {}
+    if settings_path.exists():
+        try:
+            parsed = json.loads(settings_path.read_text(encoding="utf-8"))
+            current = parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            current = {}
+
+    hooks_section = current.get("hooks")
+    if not isinstance(hooks_section, dict):
+        hooks_section = {}
+
+    for event, entries in default_hooks_claude_block().items():
+        existing = hooks_section.get(event)
+        if not isinstance(existing, list):
+            existing = []
+        present: set[str] = set()
+        for item in existing:
+            present |= _entry_commands(item)
+        for entry in entries:
+            cmd = next(iter(_entry_commands(entry)), None)
+            if cmd is None or cmd in present:
+                continue
+            existing.append(entry)
+            present.add(cmd)
+        hooks_section[event] = existing
+
+    current["hooks"] = hooks_section
+    # Only the `hooks` key is touched; every other key (statusLine, permissions,
+    # profile hooks, model) is preserved exactly as the profile left it.
+    settings_path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
 
 
 def inject(workdir: str, emit_lifecycle: bool = True) -> dict:
