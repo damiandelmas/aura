@@ -47,12 +47,13 @@ def verify(raw: bytes, headers: Mapping[str, str], secret: str) -> bool:
 
 def _labels(data: Mapping[str, Any]) -> set[str]:
     out: set[str] = set()
-    for lbl in data.get("labels") or []:
+    raw = data.get("labels")
+    items = raw.get("nodes", []) if isinstance(raw, dict) else (raw or [])
+    for lbl in items:
         if isinstance(lbl, dict) and lbl.get("name"):
             out.add(str(lbl["name"]))
         elif isinstance(lbl, str):
             out.add(lbl)
-    # Some payloads carry labelIds + a labels array; the names path above covers v2.
     return out
 
 
@@ -67,15 +68,21 @@ def normalize(payload: Mapping[str, Any], headers: Mapping[str, str]) -> dict | 
     if not isinstance(data, dict):
         return None
 
-    labels = _labels(data)
-    if DISPATCH_LABEL not in labels:
+    # Linear webhooks carry labels as labelIds (UUIDs), NOT names — so match by ID
+    # (from env) primarily, and by name when a payload happens to include them.
+    names = _labels(data)
+    ids = set(data.get("labelIds") or [])
+    dispatch_id = os.environ.get("AURA_LINEAR_DISPATCH_LABEL_ID", "").strip()
+    dispatched_id = os.environ.get("AURA_LINEAR_DISPATCHED_LABEL_ID", "").strip()
+    has_dispatch = (DISPATCH_LABEL in names) or (bool(dispatch_id) and dispatch_id in ids)
+    has_dispatched = (DISPATCHED_LABEL in names) or (bool(dispatched_id) and dispatched_id in ids)
+    if not has_dispatch:
         return None
-    # Conservative re-dispatch guard: if already marked dispatched, skip unless
-    # the dispatch label was newly (re)added in this update.
-    if DISPATCHED_LABEL in labels:
+    # Conservative re-dispatch guard: if already dispatched, skip unless this update
+    # actually changed the labels (i.e. dispatch was (re)added now).
+    if has_dispatched:
         updated_from = payload.get("updatedFrom") or {}
-        readded = isinstance(updated_from, dict) and "labels" in updated_from and DISPATCH_LABEL in labels
-        if not readded:
+        if not (isinstance(updated_from, dict) and "labelIds" in updated_from):
             return None
 
     identifier = str(data.get("identifier") or "?")

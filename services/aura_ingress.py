@@ -266,6 +266,12 @@ def process(method: str, path: str, headers: Mapping[str, str], raw: bytes,
                 payload = json.loads(raw.decode("utf-8"))
             except Exception as exc:
                 raise IngressError(HTTPStatus.BAD_REQUEST, "invalid JSON", detail=str(exc))
+            # Best-effort raw capture: the real foreign payload shape, never a guess.
+            try:
+                (deps.dedup.path.parent / f"last-{source}-payload.json").write_text(
+                    json.dumps(payload, indent=2)[:30000], encoding="utf-8")
+            except Exception:
+                pass
             envelope = adapter.normalize(payload, headers)
             if envelope is None:
                 deps.dedup.record(_audit_row(source=source, envelope={}, state="ignored"))
