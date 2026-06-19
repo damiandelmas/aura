@@ -504,6 +504,16 @@ def add_alias(source: str, target: str, *, reason: str = "alias") -> dict[str, A
     return record
 
 
+def _emit_membership(group: str, kind: str, member: str) -> None:
+    """Post-commit membership emit (lazy import avoids a cycle; never fatal)."""
+    try:
+        from lib import membership
+
+        membership.emit_membership_change(group, kind, member)
+    except Exception:
+        return
+
+
 def upsert_agent(record: dict[str, Any]) -> dict[str, Any]:
     name = record["name"]
     fleet = record.get("fleet") or current_fleet()
@@ -519,6 +529,7 @@ def upsert_agent(record: dict[str, Any]) -> dict[str, Any]:
         data = read_registry()
         key = _key(fleet, name)
         previous = data.get(key, {})
+        is_new = not previous  # a brand-new key = a join (not a field update)
         created_at = previous.get("created_at") or record.get("created_at") or now_iso()
         record = _with_logical_physical_fields(record, fleet=fleet, name=name)
         merged = {
@@ -541,6 +552,8 @@ def upsert_agent(record: dict[str, Any]) -> dict[str, Any]:
             merged["trace_cell"] = trace_cell_for_runtime(runtime or previous.get("runtime"))
         data[key] = merged
         _write_registry_unlocked(data)
+    if is_new:
+        _emit_membership(f"fleet:{fleet}", "join", key)
     return merged
 
 
@@ -606,12 +619,16 @@ def remove_agent(name: str, fleet: str | None = None) -> bool:
         data = read_registry()
         keys = [_key(fleet, name)] if fleet else [k for k, v in data.items() if v.get("name") == name]
         removed = False
+        gone: list[str] = []
         for key in keys:
             if key in data:
                 del data[key]
                 removed = True
+                gone.append(key)
         if removed:
             _write_registry_unlocked(data)
+    for key in gone:
+        _emit_membership(f"fleet:{key.split(':', 1)[0]}", "leave", key)
     return removed
 
 
@@ -718,6 +735,8 @@ def rename_agent(
         _write_registry_unlocked(data)
 
     alias = add_alias(source_ref, target_ref, reason="rename") if alias_old and target_ref != source_ref else None
+    if target_ref != source_ref:
+        _emit_membership(f"fleet:{target_fleet}", "rename", target_ref)
     return {
         "ok": True,
         "source": source_ref,

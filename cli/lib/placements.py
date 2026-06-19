@@ -16,6 +16,16 @@ from typing import Any
 from lib import registry, state
 
 
+def _emit_membership(group: str, kind: str, member: str) -> None:
+    """Post-commit membership emit (lazy import avoids a cycle; never fatal)."""
+    try:
+        from lib import membership
+
+        membership.emit_membership_change(group, kind, member)
+    except Exception:
+        return
+
+
 def placements_path() -> Path:
     return state.state_root() / "registry" / "placements.json"
 
@@ -130,6 +140,7 @@ def add_member(
     record.setdefault("source", source)
     data[pid] = record
     write_placements(data)
+    _emit_membership(f"placement:{placement}", "join", member["seat_ref"])
     return record
 
 
@@ -145,7 +156,10 @@ def remove_member(placement: str, seat_ref: str) -> dict[str, Any]:
     record["members"] = [m for m in record.get("members", []) if m.get("seat_ref") != canonical]
     data[pid] = record
     write_placements(data)
-    return {"ok": True, "placement": record, "removed": before - len(record.get("members", []))}
+    removed = before - len(record.get("members", []))
+    if removed:
+        _emit_membership(f"placement:{record.get('name') or placement}", "leave", canonical)
+    return {"ok": True, "placement": record, "removed": removed}
 
 
 def placements_for_seat(seat_ref: str | None) -> list[dict[str, Any]]:
