@@ -48,6 +48,10 @@ def run(args):
         return _heal(args)
     if getattr(args, "sessions_action", None) == "reconcile-orphans":
         return _reconcile_orphans(args)
+    if getattr(args, "sessions_action", None) == "compact-ledger":
+        from lib import session_ledger
+
+        return session_ledger.compact_ledger(force=bool(getattr(args, "force", False)))
     if getattr(args, "sessions_action", None) == "fleets":
         return _fleets(args)
     if getattr(args, "sessions_action", None) == "fleet-history":

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -16,6 +18,60 @@ from lib import state
 
 
 DEFAULT_SCRIPT_TIMEOUT = 120
+
+
+def pid_is_daemon(pid: int | None, job_id: str | None) -> bool:
+    """Compute whether ``pid`` is a LIVE daemon process for ``job_id``.
+
+    Two-laws read discipline: liveness is computed from the process, never
+    trusted from the stored ``daemon`` record. A dead/reused pid that still
+    sits in the record reads HISTORICAL, not running — closing the gap that let
+    ``event status`` report ``daemon=yes`` over corpse pids. The /proc cmdline
+    check guards against pid reuse (a recycled pid running something else).
+    """
+    if not isinstance(pid, int):
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        # ESRCH (gone) or EPERM (alive but not ours) — either way not our daemon.
+        return False
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            cmdline = fh.read().decode("utf-8", "replace").replace("\x00", " ")
+    except OSError:
+        # Signalable but cmdline unreadable: assume alive rather than kill it.
+        return True
+    if "event daemon" not in cmdline:
+        return False
+    if job_id and str(job_id) not in cmdline:
+        return False
+    return True
+
+
+def daemon_alive(job: dict) -> bool:
+    """Computed liveness for a job's daemon (see pid_is_daemon)."""
+    daemon = job.get("daemon")
+    if not isinstance(daemon, dict):
+        return False
+    return pid_is_daemon(daemon.get("pid"), job.get("job_id"))
+
+
+def supervisor_lock_path() -> Path:
+    return events_root() / "supervisor.lock"
+
+
+@contextmanager
+def supervisor_lock():
+    """Serialize ensure-daemons runs so two supervisors can't double-spawn."""
+    path = supervisor_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def now_iso() -> str:

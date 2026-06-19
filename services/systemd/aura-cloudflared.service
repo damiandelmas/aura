@@ -1,0 +1,15 @@
+[Unit]
+Description=Aura Cloudflare named tunnel (publishes the ingress door)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Tunnel id + credentials + ingress routes come from ~/.cloudflared/config.yml
+# (route aura-ingress.* -> http://localhost:7137).
+ExecStart=/usr/local/bin/cloudflared tunnel run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -52,6 +52,8 @@ def _job_summary(job: dict) -> dict:
             "consecutive_errors": int(job.get("consecutive_errors") or 0),
         },
         "daemon": job.get("daemon"),
+        # Computed liveness from the pid, not the stored record (two-laws read law):
+        "daemon_alive": events.daemon_alive(job),
     }
 
 
@@ -454,6 +456,50 @@ def _tick(job: dict, *, force: bool = False) -> dict:
     return {"ok": result["ok"], "ran": True, "tick": tick, "delivery": result, "job": job}
 
 
+def _ensure_daemons() -> dict:
+    """Supervisor tick: respawn any running-status job whose daemon pid is dead.
+
+    The event daemons are dynamically spawned, so they cannot each be a systemd
+    unit. A systemd --user timer runs this every cadence; it is the meta-watchdog
+    systemd keeps alive. Liveness is computed from the pid (events.daemon_alive),
+    so a corpse pid in the record never reads alive. The supervisor lock makes it
+    safe to run concurrently — no double-spawn. Only ``status==running`` jobs are
+    touched, so a paused/stopped/retired/complete job is never resurrected.
+    """
+    results: list[dict] = []
+    alive = 0
+    respawned = 0
+    with events.supervisor_lock():
+        for job in events.iter_jobs():
+            if job.get("status") != "running":
+                continue
+            job_id = job["job_id"]
+            if events.daemon_alive(job):
+                alive += 1
+                results.append({"job_id": job_id, "name": job.get("name"), "daemon": "alive"})
+                continue
+            daemon = _spawn_daemon(job_id)
+            fresh = events.load_state(job_id)
+            fresh["daemon"] = daemon
+            events.save_state(fresh)
+            events.append_event(job_id, {"action": "daemon-respawned", "by": "supervisor", **daemon})
+            respawned += 1
+            results.append({
+                "job_id": job_id,
+                "name": job.get("name"),
+                "daemon": "respawned",
+                "pid": daemon.get("pid"),
+            })
+    return {
+        "ok": True,
+        "schema": "aura.event.supervise.v1",
+        "checked": alive + respawned,
+        "alive": alive,
+        "respawned": respawned,
+        "jobs": results,
+    }
+
+
 def _daemon(job_id: str) -> dict:
     events.append_event(job_id, {"action": "daemon-started", "pid": os.getpid()})
     while True:
@@ -564,6 +610,8 @@ def run(args):
         return {"ok": True, "job": job, "daemon": daemon}
     if action == "daemon":
         return _daemon(args.ref)
+    if action == "ensure-daemons":
+        return _ensure_daemons()
     if action == "status":
         job_id = events.resolve_job_id(args.ref)
         job = events.load_state(job_id)

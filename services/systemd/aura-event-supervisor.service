@@ -1,0 +1,15 @@
+[Unit]
+Description=Aura event-daemon supervisor (respawn dead heal-sweep / reply-watch / scouts)
+Documentation=aura event ensure-daemons
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/axp/projects/aura/main
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=AURA_STATE_DIR=/home/axp/.aura
+Environment=PATH=/home/axp/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/axp/.local/bin/aura event ensure-daemons
+# ensure-daemons spawns detached event daemons (setsid). KillMode=process leaves
+# those children running when this oneshot exits — without it systemd's cgroup
+# cleanup would kill the daemons we just (re)started.
+KillMode=process

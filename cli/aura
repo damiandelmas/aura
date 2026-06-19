@@ -707,7 +707,7 @@ def main():
     p_sessions.add_argument(
         "sessions_action",
         nargs="?",
-        choices=["latest", "all", "restore-plan", "self", "bind-current", "bind-hook", "bind-nonce", "resolve-pane", "bind-pane", "footer", "bind-footer", "seat-history", "fleets", "fleet-history", "heal", "reconcile-orphans"],
+        choices=["latest", "all", "restore-plan", "self", "bind-current", "bind-hook", "bind-nonce", "resolve-pane", "bind-pane", "footer", "bind-footer", "seat-history", "fleets", "fleet-history", "heal", "reconcile-orphans", "compact-ledger"],
                             help="Optional sessions action")
     p_sessions.add_argument("nonce", nargs="?",
                             help="For bind-nonce, unique marker written into the target Codex session; for seat-history, target seat ref")
@@ -751,6 +751,8 @@ def main():
                             help="For bind-pane, allow rebinding a registry target that points at a different pane")
     p_sessions.add_argument("--all", action="store_true",
                             help="For heal, attempt heal on all registered seats")
+    p_sessions.add_argument("--force", action="store_true",
+                            help="For compact-ledger, compact regardless of the size cap")
 
     # fleets
     p_fleets = subparsers.add_parser("fleets", help="Resolve and inspect stable fleet identities")
@@ -824,6 +826,11 @@ def main():
 
     p_event_run = event_sub.add_parser("run", help="Run one event tick now")
     p_event_run.add_argument("ref", help="Job id or name")
+
+    event_sub.add_parser(
+        "ensure-daemons",
+        help="Supervisor: respawn any running-status event job whose daemon pid is dead (idempotent)",
+    )
 
     p_event_subscribe = event_sub.add_parser("subscribe", help="Create an event subscription")
     subscribe_sub = p_event_subscribe.add_subparsers(dest="subscribe_source", required=True)

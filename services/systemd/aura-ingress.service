@@ -1,0 +1,20 @@
+[Unit]
+Description=Aura HTTP in-jack (ingress door) — 127.0.0.1:7137
+Documentation=https://github.com/ (aura context/current gateways/http-ingress.md)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/axp/projects/aura/main
+# Token + per-source targets live here (AURA_INGRESS_TOKEN, AURA_LINEAR_TARGET).
+# Optional ('-') so a missing file degrades rather than fails the unit.
+EnvironmentFile=-/home/axp/.aura/ingress/ingress.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=AURA_STATE_DIR=/home/axp/.aura
+Environment=PATH=/home/axp/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /home/axp/projects/aura/main/services/aura_ingress.py --host 127.0.0.1 --port 7137
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import fcntl
+import gzip
 import json
+import os
 from pathlib import Path
+import shutil
+import tempfile
 from typing import Any
 import uuid
 
@@ -27,18 +33,102 @@ def ledger_path() -> Path:
     return state.state_root() / "registry" / "session-ledger.jsonl"
 
 
+def ledger_lock_path() -> Path:
+    path = ledger_path()
+    return path.with_name(f"{path.name}.lock")
+
+
+# Write-path cap so the ledger can never regrow into the 459 MB OOM source that
+# took down every event daemon. Appends are flock-serialized; once the file
+# crosses AURA_LEDGER_MAX_BYTES a streaming, projection-equivalent compaction
+# runs (see compact_ledger). The cap lives on the write path exactly like the
+# registry-writes.log cap, so it is self-maintaining and needs no cron.
+_DEFAULT_LEDGER_MAX_BYTES = 64 * 1024 * 1024   # 64 MiB
+_DEFAULT_LEDGER_KEEP_TAIL = 2000               # recent lines always retained
+_DEFAULT_LEDGER_ARCHIVE_KEEP = 5               # compressed archives retained
+
+# Events whose ORDER and presence drive project_latest_from_ledger's alias map
+# and terminal-state flags. They are rare and always retained verbatim so a
+# compacted ledger projects identically to the full one.
+_LINEAGE_EVENTS = {"seat_rehomed", "seat_renamed", "seat_alias_created"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw:
+        try:
+            value = int(raw)
+            if value >= 0:
+                return value
+        except ValueError:
+            pass
+    return default
+
+
+def _ledger_max_bytes() -> int:
+    return _env_int("AURA_LEDGER_MAX_BYTES", _DEFAULT_LEDGER_MAX_BYTES)
+
+
+def _ledger_keep_tail() -> int:
+    return _env_int("AURA_LEDGER_KEEP_TAIL", _DEFAULT_LEDGER_KEEP_TAIL)
+
+
+def _ledger_archive_keep() -> int:
+    return _env_int("AURA_LEDGER_ARCHIVE_KEEP", _DEFAULT_LEDGER_ARCHIVE_KEEP)
+
+
+@contextmanager
+def _ledger_lock():
+    path = ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = ledger_lock_path()
+    with open(lock_path, "a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _append_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Single flock-serialized append chokepoint for every ledger writer.
+
+    All three append helpers funnel through here so the write-path cap and the
+    lock live in exactly one place. The cap check runs after the lock is
+    released; compaction is memory-bounded so it can never re-trigger the OOM.
+    """
+    line = json.dumps(payload, sort_keys=True)
+    path = ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _ledger_lock():
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line)
+            f.write("\n")
+    _maybe_compact()
+    return payload
+
+
+def _maybe_compact() -> None:
+    try:
+        if ledger_path().stat().st_size <= _ledger_max_bytes():
+            return
+    except OSError:
+        return
+    try:
+        compact_ledger()
+    except Exception:
+        # Maintenance is best-effort: a compaction failure must never break the
+        # append that just succeeded (the row is already durably on disk).
+        pass
+
+
 def append_record(record: dict[str, Any]) -> dict[str, Any]:
     enriched = {
         "schema": "aura.session_ledger.v1",
         "timestamp": now_iso(),
         **record,
     }
-    path = ledger_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(enriched, sort_keys=True))
-        f.write("\n")
-    return enriched
+    return _append_payload(enriched)
 
 
 def seat_ref(fleet: str | None, seat: str | None) -> str | None:
@@ -209,12 +299,7 @@ def append_seat_event(
         **{key: value for key, value in extra.items() if value is not None},
     }
     clean = {key: value for key, value in record.items() if value is not None}
-    path = ledger_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(clean, sort_keys=True))
-        f.write("\n")
-    return clean
+    return _append_payload(clean)
 
 
 def append_fleet_event(
@@ -260,12 +345,7 @@ def append_fleet_event(
         **{key: value for key, value in extra.items() if value is not None},
     }
     clean = {key: value for key, value in record.items() if value is not None}
-    path = ledger_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(clean, sort_keys=True))
-        f.write("\n")
-    return clean
+    return _append_payload(clean)
 
 
 def iter_records(limit: int | None = None) -> list[dict[str, Any]]:
@@ -645,4 +725,162 @@ def restore_plan_from_rows(rows: list[dict[str, Any]], capabilities: dict[str, d
         "restore_ready": len(ready),
         "needs_review": len(review),
         "rows": plan_rows,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Compaction — bound the append-only ledger without breaking resume.          #
+# --------------------------------------------------------------------------- #
+#
+# project_latest_from_ledger (the resume/continuity consumer) folds the ledger
+# to the latest state per seat_ref, applying the alias map built from lineage
+# events and the terminal/repair flags. Its output therefore depends ONLY on:
+#   * every lineage event (rename/rehome/alias) — in order,
+#   * every terminal event (cut/swept/archived),
+#   * the latest row per (schema, ref) — for both seat-history and the
+#     session_ledger.v1 compatibility rows,
+#   * the latest row per fleet (for fleet_history rows).
+# Compaction keeps exactly those, plus a recent tail, IN ORIGINAL ORDER, so the
+# projection — and thus every restore plan and binding lookup — is identical to
+# the full ledger. History-display commands (sessions all / seat-history) see
+# fewer intermediate rows; the full file is preserved in a compressed archive.
+
+
+def _compaction_key(row: dict[str, Any]) -> tuple[str, str] | None:
+    """The (schema, ref) key project_latest_from_ledger folds a row onto."""
+    schema = row.get("schema")
+    before = row.get("before") if isinstance(row.get("before"), dict) else None
+    after = row.get("after") if isinstance(row.get("after"), dict) else None
+    if schema == "aura.fleet_history.v1":
+        fleet = (
+            row.get("fleet")
+            or (after or {}).get("fleet")
+            or (before or {}).get("fleet")
+        )
+        return ("fleet", str(fleet)) if fleet else None
+    ref = row.get("seat_ref") or (after or {}).get("seat_ref") or (before or {}).get("seat_ref")
+    if not ref:
+        seat = row.get("seat") or row.get("name")
+        ref = seat_ref(row.get("fleet"), seat)
+    if not ref:
+        return None
+    return (str(schema or "seat"), str(ref))
+
+
+def _archive_ledger(path: Path) -> Path:
+    """Stream-gzip the current ledger to a timestamped archive (memory-safe)."""
+    archive_dir = path.parent / "_ledger-archives"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive_path = archive_dir / f"{path.name}.{stamp}.gz"
+    fd, tmp = tempfile.mkstemp(prefix=".arch-", suffix=".gz", dir=str(archive_dir))
+    os.close(fd)
+    try:
+        with path.open("rb") as src, gzip.open(tmp, "wb") as dst:
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
+        os.replace(tmp, archive_path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+    return archive_path
+
+
+def _prune_archives() -> None:
+    keep = _ledger_archive_keep()
+    archive_dir = ledger_path().parent / "_ledger-archives"
+    if not archive_dir.is_dir():
+        return
+    files = sorted(archive_dir.glob(f"{ledger_path().name}.*.gz"))
+    drop = files[:-keep] if keep > 0 else files
+    for old in drop:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
+def compact_ledger(*, force: bool = False, archive: bool = True) -> dict[str, Any]:
+    """Fold the ledger to its projection-relevant subset, atomically.
+
+    Memory-bounded: two streaming passes, never the whole file in memory. The
+    original is preserved as a compressed archive before the atomic swap, so an
+    interrupted compaction leaves the live ledger untouched.
+    """
+    path = ledger_path()
+    if not path.exists():
+        return {"ok": True, "compacted": False, "reason": "no-ledger"}
+    with _ledger_lock():
+        try:
+            size_before = path.stat().st_size
+        except OSError:
+            return {"ok": True, "compacted": False, "reason": "stat-failed"}
+        if not force and size_before <= _ledger_max_bytes():
+            return {"ok": True, "compacted": False, "reason": "under-cap", "size": size_before}
+
+        # Pass 1: decide which line indices to keep.
+        keep: set[int] = set()
+        last_for_key: dict[tuple[str, str], int] = {}
+        total = 0
+        with path.open(encoding="utf-8") as f:
+            for idx, line in enumerate(f):
+                total = idx + 1
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    row = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                event = row.get("event")
+                if event in _LINEAGE_EVENTS or event in TERMINAL_EVENTS:
+                    keep.add(idx)
+                key = _compaction_key(row)
+                if key is not None:
+                    last_for_key[key] = idx
+        keep.update(last_for_key.values())
+        tail = _ledger_keep_tail()
+        if tail > 0 and total > 0:
+            keep.update(range(max(0, total - tail), total))
+
+        # Pass 2: write the kept lines, in order, to a temp file.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".session-ledger-", suffix=".jsonl", dir=str(path.parent))
+        kept = 0
+        archive_path: Path | None = None
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as out, path.open(encoding="utf-8") as f:
+                for idx, line in enumerate(f):
+                    if idx in keep:
+                        if not line.endswith("\n"):
+                            line = line + "\n"
+                        out.write(line)
+                        kept += 1
+                out.flush()
+                os.fsync(out.fileno())
+            if archive:
+                archive_path = _archive_ledger(path)
+            os.replace(tmp, path)
+        finally:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+        try:
+            size_after = path.stat().st_size
+        except OSError:
+            size_after = None
+        if archive:
+            _prune_archives()
+    return {
+        "ok": True,
+        "compacted": True,
+        "lines_before": total,
+        "lines_after": kept,
+        "size_before": size_before,
+        "size_after": size_after,
+        "archive": str(archive_path) if archive_path else None,
     }
