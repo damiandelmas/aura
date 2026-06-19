@@ -36,10 +36,13 @@ def _spawn_loop(args) -> int:
     log_path = log_dir / f"{str(args.queue).replace('/', '_')}.log"
     cmd = [
         _aura_bin(), "work", "dispatch-loop", args.queue,
-        "--placement", args.placement,
         "--every", str(args.every),
         "--lease", str(args.lease),
     ]
+    if getattr(args, "placement", None):
+        cmd += ["--placement", args.placement]
+    if getattr(args, "fleet", None):
+        cmd += ["--fleet", args.fleet]
     with log_path.open("ab") as log:
         proc = subprocess.Popen(
             cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
@@ -66,20 +69,24 @@ def run(args):
             counts[row.get("state")] = counts.get(row.get("state"), 0) + 1
         return {"ok": True, "queue": args.queue, "total": len(rows), "counts": counts}
 
+    if action in ("dispatch", "dispatch-loop", "dispatch-start"):
+        if not getattr(args, "placement", None) and not getattr(args, "fleet", None):
+            return {"ok": False, "error": "dispatch needs a pool: --placement NAME or --fleet NAME"}
+
     if action == "dispatch":
-        return work.dispatch_tick(args.queue, args.placement, lease_seconds=args.lease)
+        return work.dispatch_tick(args.queue, args.placement, fleet=getattr(args, "fleet", None), lease_seconds=args.lease)
 
     if action == "dispatch-loop":
         while True:
             try:
-                work.dispatch_tick(args.queue, args.placement, lease_seconds=args.lease)
+                work.dispatch_tick(args.queue, args.placement, fleet=getattr(args, "fleet", None), lease_seconds=args.lease)
             except Exception as exc:  # pragma: no cover - daemon resilience
                 print(f"work dispatch error: {exc}", file=sys.stderr, flush=True)
             time.sleep(max(1.0, float(args.every)))
 
     if action == "dispatch-start":
         pid = _spawn_loop(args)
-        job = {"queue": args.queue, "placement": args.placement, "every": args.every, "lease": args.lease, "pid": pid}
+        job = {"queue": args.queue, "placement": args.placement, "fleet": getattr(args, "fleet", None), "every": args.every, "lease": args.lease, "pid": pid}
         path = _job_path(args.queue)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(job, indent=2) + "\n", encoding="utf-8")

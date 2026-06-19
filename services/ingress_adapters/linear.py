@@ -21,6 +21,15 @@ DISPATCHED_LABEL = "aura:dispatched"
 DEFAULT_TARGET = "placement:linear-getflex-eng"
 DESCRIPTION_MAX = 4000
 
+# Generic standing instruction appended to every dispatched task (not person- or
+# channel-specific): the worker already knows how to reach the human via the
+# Discord bridge; this just sets the close-the-loop expectation.
+DISPATCH_CLOSEOUT = (
+    "\n\n## Closeout\n"
+    "When you complete this issue — or hit anything that requires human consent — "
+    "respond on Discord so the operator is notified."
+)
+
 
 def verify(raw: bytes, headers: Mapping[str, str], secret: str) -> bool:
     """Timing-safe HMAC-SHA256 over the raw body against ``Linear-Signature``."""
@@ -88,6 +97,7 @@ def normalize(payload: Mapping[str, Any], headers: Mapping[str, str]) -> dict | 
         f"on it.\n\n"
         f"## Issue title\n{title}\n\n"
         f"## Issue description\n{description}"
+        + DISPATCH_CLOSEOUT
     )
 
     issue_id = str(data.get("id") or identifier)

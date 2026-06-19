@@ -209,10 +209,32 @@ def _send_task(seat_ref: str, body: str) -> dict[str, Any]:
     return {"ok": bool(ok), "stdout": (proc.stdout or "")[-500:], "error": (proc.stderr or "")[-500:] if not ok else None}
 
 
+def resolve_pool(*, placement: str | None = None, fleet: str | None = None) -> set[str]:
+    """A 'pool' is just a set of live seat_refs; name it however you like.
+
+    placement -> its members (a membership group).
+    fleet     -> the fleet's live seats.
+    Generic on purpose: the dispatcher drains into whatever set of seats this
+    resolves to, so work flows to a placement, a fleet, or any future selector
+    without the dispatcher caring which.
+    """
+    if fleet:
+        from lib import seat_status
+        return {
+            r.get("seat_ref")
+            for r in seat_status.list_seat_statuses(fleet=fleet)
+            if r.get("terminal") == "alive" and r.get("seat_ref")
+        }
+    if placement:
+        return pool_member_refs(placement)
+    return set()
+
+
 def dispatch_tick(
     queue: str,
-    placement: str,
+    placement: str | None = None,
     *,
+    fleet: str | None = None,
     lease_seconds: float = 300.0,
     send_fn: Callable[[str, str], dict[str, Any]] | None = None,
     idle_map: dict[str, str] | None = None,
@@ -222,7 +244,7 @@ def dispatch_tick(
     now_e = now_epoch() if now_epoch_value is None else now_epoch_value
 
     tasks = fold_tasks(queue)
-    members = pool_member_refs(placement)
+    members = resolve_pool(placement=placement, fleet=fleet)
     raw_idle = idle_reports_map() if idle_map is None else idle_map
     scoped_idle = {ref: ts for ref, ts in raw_idle.items() if not members or ref in members}
 
@@ -249,4 +271,4 @@ def dispatch_tick(
         else:
             results["assign_failed"].append({"task": tid, "seat": seat, "error": sent.get("error")})
 
-    return {"ok": True, "queue": queue, "placement": placement, **results}
+    return {"ok": True, "queue": queue, "placement": placement, "fleet": fleet, **results}
