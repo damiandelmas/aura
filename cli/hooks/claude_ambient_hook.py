@@ -29,10 +29,9 @@ from typing import Any
 
 AURA_BIN = "/home/axp/.local/bin/aura"
 HOOK_EVENTS = {"SessionStart", "UserPromptSubmit", "PostCompact"}
-COMPACT_RECOVERY = (
-    "You resumed after compaction. Re-read your task/handoff and any COMPACTION.md "
-    "before continuing.\n\n"
-)
+# NOTE: doc-recovery on source=compact is owned by the other lane's
+# aura_compact_recovery_hook.py. This hook only provides ambient orientation
+# (no recovery-note prefix) to de-conflict the double-inject.
 
 
 def load_event() -> dict[str, Any]:
@@ -163,13 +162,13 @@ def take_pending() -> bool:
     return True
 
 
-def inject_packet(hook_event_name: str, *, prefix: str = "") -> None:
+def inject_packet(hook_event_name: str) -> None:
     packet = ambient_self()
     fp = semantic_fingerprint(packet)
     if packet.get("ok") and isinstance(packet.get("text"), str):
-        emit_additional_context(prefix + str(packet["text"]), hook_event_name)
+        emit_additional_context(str(packet["text"]), hook_event_name)
     else:
-        emit_additional_context(prefix + repair_context(packet), hook_event_name)
+        emit_additional_context(repair_context(packet), hook_event_name)
     remember(fp)
 
 
@@ -180,8 +179,9 @@ def main() -> int:
         return 0
 
     if name == "SessionStart":
-        prefix = COMPACT_RECOVERY if event.get("source") == "compact" else ""
-        inject_packet(name, prefix=prefix)
+        # ambient orientation on every start, including source=compact; doc-recovery
+        # is the other lane's aura_compact_recovery_hook (no double-inject).
+        inject_packet(name)
         return 0
 
     if name == "PostCompact":

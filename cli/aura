@@ -848,6 +848,15 @@ def main():
                                            help="Only match this report state; repeatable")
     p_event_subscribe_reports.add_argument("--as", dest="sender", default="aura-event", help="Sender label for notifications")
 
+    p_event_subscribe_membership = subscribe_sub.add_parser("membership", help="Subscribe a watcher seat to a fleet/placement membership change")
+    p_event_subscribe_membership.add_argument("--name", help="Subscription name (optional)")
+    p_event_subscribe_membership.add_argument("--to", required=True, help="Subscriber (watcher) target seat")
+    _mem_scope = p_event_subscribe_membership.add_mutually_exclusive_group(required=True)
+    _mem_scope.add_argument("--fleet", help="Watch this fleet's membership")
+    _mem_scope.add_argument("--placement", help="Watch this placement's membership")
+    p_event_subscribe_membership.add_argument("--kind", action="append", choices=["join", "leave", "rename"], help="Only these change kinds; repeatable (default all)")
+    p_event_subscribe_membership.add_argument("--as", dest="sender", default="service:aura-membership", help="Sender label")
+
     p_event_subscriptions = event_sub.add_parser("subscriptions", help="List event subscriptions")
     p_event_subscriptions.add_argument("--status", choices=["active", "paused", "removed"], help="Filter subscriptions by status")
     p_event_subscriptions.add_argument("--include-removed", action="store_true", help="Include removed subscriptions")

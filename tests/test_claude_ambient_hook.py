@@ -44,11 +44,14 @@ def test_sessionstart_injects_packet(hook, monkeypatch, capsys):
     assert "[AURA AMBIENT]" in out["hookSpecificOutput"]["additionalContext"]
 
 
-def test_sessionstart_compact_prepends_recovery(hook, monkeypatch, capsys):
+def test_sessionstart_compact_injects_ambient_without_recovery_prefix(hook, monkeypatch, capsys):
+    # source=compact still orients via ambient, but does NOT prepend a recovery note —
+    # doc-recovery is owned by the other lane's aura_compact_recovery_hook.
     _drive(hook, monkeypatch, {"hook_event_name": "SessionStart", "source": "compact"},
            packet=OK_PACKET)
     ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    assert ctx.startswith("You resumed after compaction")
+    assert ctx.startswith("[AURA AMBIENT]")
+    assert "resumed after compaction" not in ctx
 
 
 def test_userpromptsubmit_no_flag_is_silent_and_no_subprocess(hook, monkeypatch, capsys):

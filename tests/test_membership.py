@@ -80,3 +80,18 @@ def test_emit_non_fatal_on_error(mem, monkeypatch):
     monkeypatch.setattr(mem, "schedule_membership_subscriptions", boom)
     # must NOT raise — a membership emit can never break the originating write
     mem.emit_membership_change("fleet:F", "join", "F:x")
+
+
+def test_subscribe_membership_verb_creates_record(mem, monkeypatch):
+    """The CLI verb wires to the tested create_subscription API."""
+    import argparse
+    from commands import event as event_cmd
+    monkeypatch.setattr("lib.membership._state_root", mem._state_root)
+
+    args = argparse.Namespace(event_action="subscribe", subscribe_source="membership",
+                              fleet="F", placement=None, to="G:watch",
+                              kind=["leave"], sender="service:aura-membership")
+    res = event_cmd.run(args)
+    assert res["ok"] and res["subscription"]["scope"] == {"fleet": "F"}
+    assert res["subscription"]["kinds"] == ["leave"]
+    assert mem.list_subscriptions(status="active")[0]["to"] == "G:watch"

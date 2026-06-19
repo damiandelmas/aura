@@ -627,6 +627,9 @@ def remove_agent(name: str, fleet: str | None = None) -> bool:
                 gone.append(key)
         if removed:
             _write_registry_unlocked(data)
+    # TODO(hooks/membership): seat sweep removes N rows in one fleet → N leave emits.
+    # Idempotent + hook-fingerprint-deduped (harmless), but batch-once per group is the
+    # optimum — add a suppress_membership_emit context around seat._sweep's batch.
     for key in gone:
         _emit_membership(f"fleet:{key.split(':', 1)[0]}", "leave", key)
     return removed
