@@ -229,7 +229,8 @@ def test_unsupported_runtime_rejected(monkeypatch, tmp_path):
 
     root = tmp_path / "state" / "agents" / "i_bad"
     (root / ".codex").mkdir(parents=True)
-    (root / "manifest.json").write_text(json.dumps({"runtime": "claude-code"}), encoding="utf-8")
+    # gajae-code is not in skill_libraries.SUPPORTED_RUNTIMES (claude-code now is).
+    (root / "manifest.json").write_text(json.dumps({"runtime": "gajae-code"}), encoding="utf-8")
     index = {"schema": agent_packages.INDEX_SCHEMA, "agents": {"i_bad": {"root": str(root), "alias": "bad"}}, "addresses": {}, "aliases": {"bad": "i_bad"}}
     agent_packages.write_index(index)
     with pytest.raises(skill_libraries.SkillLibraryError) as exc:
@@ -404,3 +405,22 @@ def test_cli_inventory_diff_and_adopt(monkeypatch, tmp_path):
         check=True,
     )
     assert json.loads(adopt_write.stdout)["adopted"][0]["name"] == "aura-operator"
+
+
+def test_skills_dir_is_runtime_aware(tmp_path):
+    from lib import skill_libraries
+
+    codex_pkg = tmp_path / "i_codex"
+    codex_pkg.mkdir()
+    (codex_pkg / "manifest.json").write_text(json.dumps({"runtime": "codex"}), encoding="utf-8")
+    assert skill_libraries.skills_dir(codex_pkg) == codex_pkg / ".codex" / "skills"
+
+    claude_pkg = tmp_path / "i_claude"
+    claude_pkg.mkdir()
+    (claude_pkg / "manifest.json").write_text(json.dumps({"runtime": "claude-code"}), encoding="utf-8")
+    assert skill_libraries.skills_dir(claude_pkg) == claude_pkg / ".claude" / "skills"
+
+    # no/unreadable manifest defaults to codex (back-compat)
+    bare = tmp_path / "i_bare"
+    bare.mkdir()
+    assert skill_libraries.skills_dir(bare) == bare / ".codex" / "skills"

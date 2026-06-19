@@ -24,7 +24,22 @@ from lib import agent_packages
 
 LOCK_SCHEMA = "aura.agent_skills_lock.v1"
 PLAN_SCHEMA = "aura.skill_apply_plan.v1"
-SUPPORTED_RUNTIMES = {"codex", "omx"}
+SUPPORTED_RUNTIMES = {"codex", "omx", "claude-code"}
+
+# Where a runtime reads materialized skills inside its package box.
+_RUNTIME_SKILLS_HOME = {"claude-code": ".claude", "claude": ".claude"}  # default: .codex
+
+
+def _runtime_home_name(runtime: str) -> str:
+    return _RUNTIME_SKILLS_HOME.get(runtime, ".codex")
+
+
+def _package_runtime(root: "str | Path") -> str:
+    try:
+        manifest = json.loads((Path(root) / "manifest.json").read_text(encoding="utf-8"))
+        return str(manifest.get("runtime") or "codex")
+    except Exception:
+        return "codex"
 VALID_MODES = {"symlink", "copy"}
 UNSAFE_COMPONENTS = {
     ".git",
@@ -222,9 +237,10 @@ def resolve_agent(ref: str) -> dict[str, Any]:
     root = Path(str(record.get("root") or "")).expanduser().resolve()
     if not (root / "manifest.json").is_file():
         raise SkillLibraryError("package-manifest-missing", f"agent package missing manifest: {root}", agent=ref, agent_root=str(root))
-    codex_home = root / ".codex"
-    if not codex_home.is_dir():
-        raise SkillLibraryError("codex-home-missing", f"agent package missing .codex directory: {root}", agent=ref, agent_root=str(root))
+    home_name = _runtime_home_name(runtime)
+    runtime_home = root / home_name
+    if not runtime_home.is_dir():
+        raise SkillLibraryError("runtime-home-missing", f"agent package missing {home_name} directory: {root}", agent=ref, agent_root=str(root))
     return {**record, "root": str(root)}
 
 
@@ -233,7 +249,9 @@ def lock_path(root: str | Path) -> Path:
 
 
 def skills_dir(root: str | Path) -> Path:
-    return Path(root) / ".codex" / "skills"
+    # Runtime-aware: claude packages box skills under .claude/skills, codex/omx
+    # under .codex/skills. Derived from the manifest so every caller stays simple.
+    return Path(root) / _runtime_home_name(_package_runtime(root)) / "skills"
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -646,7 +664,7 @@ def _iter_package_skill_dirs(packages_root: Path) -> list[tuple[str, Path]]:
     if not packages_root.exists():
         return rows
     for package in sorted(packages_root.glob("i_*"), key=lambda p: p.name):
-        skill_root = package / ".codex" / "skills"
+        skill_root = skills_dir(package)  # runtime-aware: .codex or .claude
         if not skill_root.is_dir():
             continue
         for child in sorted(skill_root.iterdir(), key=lambda p: p.name):
