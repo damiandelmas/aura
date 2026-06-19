@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -223,15 +224,66 @@ def _registry_lock():
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def _write_registry_unlocked(data: dict[str, dict[str, Any]]) -> None:
+# Shrink-guard: the live registry was once clobbered 42 rows -> 4 by a single
+# full-dict overwrite. Writes are atomic+flock-serialized, so that was never a
+# torn write — a caller wrote a tiny dict over a substantial registry. This guard
+# refuses a catastrophic single-write drop. It activates ONLY for a substantial
+# registry (>= FLOOR) dropping below RATIO of its size — so it never trips on:
+# growth, single add/remove, gc (incremental remove_agent, +/-1 per write), fleet
+# rename (same count), or small/empty test+startup registries (below FLOOR).
+# Legitimate bulk clears pass allow_shrink=True or set AURA_REGISTRY_ALLOW_SHRINK=1.
+SHRINK_FLOOR = 8
+SHRINK_MIN_RATIO = 0.5
+
+
+class RegistryShrinkGuard(RuntimeError):
+    """A write would catastrophically shrink a substantial registry — refused."""
+
+
+def _allow_shrink_env() -> bool:
+    return str(os.environ.get("AURA_REGISTRY_ALLOW_SHRINK", "")).strip().lower() in ("1", "true", "yes")
+
+
+def _audit_registry_write(old_n: int, new_n: int, *, blocked: bool, reason: str = "") -> None:
+    # Best-effort: an audit failure must NEVER block or break a registry write.
+    try:
+        log = registry_path().parent / "registry-writes.log"
+        line = json.dumps(
+            {"ts": now_iso(), "pid": os.getpid(), "old": old_n, "new": new_n,
+             "blocked": blocked, "reason": reason, "argv": " ".join(sys.argv)[:200]},
+            sort_keys=True,
+        )
+        existing = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        existing.append(line)
+        if len(existing) > 1000:      # cap: drop oldest, never block the write
+            existing = existing[-1000:]
+        log.write_text("\n".join(existing) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _write_registry_unlocked(data: dict[str, dict[str, Any]], *, allow_shrink: bool = False) -> None:
     path = registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        old_n = len(read_registry())     # missing file -> read_registry() returns {} -> 0
+    except Exception:
+        old_n = 0
+    new_n = len(data) if isinstance(data, dict) else 0
+    if (not allow_shrink and not _allow_shrink_env()
+            and old_n >= SHRINK_FLOOR and new_n < old_n * SHRINK_MIN_RATIO):
+        _audit_registry_write(old_n, new_n, blocked=True, reason="shrink-guard")
+        raise RegistryShrinkGuard(
+            f"refusing to shrink registry {old_n}->{new_n} "
+            f"(< {SHRINK_MIN_RATIO:.0%} of {old_n}); set AURA_REGISTRY_ALLOW_SHRINK=1 to force"
+        )
     fd, tmp = tempfile.mkstemp(prefix="agents-", suffix=".json", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, sort_keys=True)
             f.write("\n")
         os.replace(tmp, path)
+        _audit_registry_write(old_n, new_n, blocked=False)
     finally:
         try:
             os.unlink(tmp)
@@ -239,9 +291,9 @@ def _write_registry_unlocked(data: dict[str, dict[str, Any]]) -> None:
             pass
 
 
-def write_registry(data: dict[str, dict[str, Any]]) -> None:
+def write_registry(data: dict[str, dict[str, Any]], *, allow_shrink: bool = False) -> None:
     with _registry_lock():
-        _write_registry_unlocked(data)
+        _write_registry_unlocked(data, allow_shrink=allow_shrink)
 
 
 def replace_agent_record(record: dict[str, Any]) -> dict[str, Any]:
