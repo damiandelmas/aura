@@ -735,7 +735,10 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
                 from lib import claude_box
 
                 claude_box.prepare_package_box(
-                    agent_package["root"], workdir=workdir, profile=runtime_profile
+                    agent_package["root"],
+                    workdir=workdir,
+                    profile=runtime_profile,
+                    seat_target=f"{fleet}:{args.name}",
                 )
             except Exception as exc:
                 return result_fn({

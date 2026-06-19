@@ -111,12 +111,54 @@ def _apply_profile(claude_home: Path, profile: str | None) -> dict[str, object]:
     return {"profile": profile, "applied": bool(copied), "template": str(template)}
 
 
+# Repo-owned statusline FK-writer (the producer the pane->session resolvers read).
+# Read-only to this lane per seam v2; profiles only references it from the box settings.
+_STATUSLINE_SCRIPT = Path(__file__).resolve().parent.parent / "hooks" / "aura-claude-statusline.sh"
+
+
+def _install_statusline(claude_home: Path) -> bool:
+    """Merge the statusLine FK-writer into the box settings.json, if absent.
+
+    Profiles owns the ``statusLine`` key (seam v2 c1): ``default_hooks_claude`` is
+    hooks-key-only, and the FK-writer used to ride inside ``hooks.inject``. Never
+    clobber a profile-supplied statusLine; idempotent (if-absent only).
+    """
+    import json
+
+    if not _STATUSLINE_SCRIPT.exists():
+        return False
+    path = claude_home / "settings.json"
+    data: dict = {}
+    if path.exists():
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+            data = parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            data = {}
+    if data.get("statusLine"):
+        return False  # a profile (or a prior prep) already set one — leave it
+    data["statusLine"] = {"type": "command", "command": f"bash {_STATUSLINE_SCRIPT}"}
+    # Trailing newline matches default_hooks_claude's serialization so the box is
+    # byte-idempotent regardless of which writer (hooks vs statusLine) lands last.
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
 def prepare_package_box(
     package_root: str | Path,
     workdir: str | Path | None = None,
     profile: str | None = None,
+    seat_target: str | None = None,
 ) -> dict[str, object]:
     """Seed a package's ``.claude`` box. Idempotent; safe to re-run on respawn.
+
+    Order is fixed by the braid seam contract (v2):
+      1. profile template merge FIRST (a profile's settings.json/skills must survive),
+      2. auth symlink + onboarding seed,
+      3. ``default_hooks_claude`` (hooks lane owns the body — we only CALL it; it
+         merges ONLY the ``hooks`` key of the box settings.json),
+      4. statusLine FK-writer (this lane owns the ``statusLine`` key — seam v2 c1,
+         because default_hooks_claude is hooks-key-only and the script is read-only).
 
     Returns a diagnostic dict (never raises for a missing-source auth — a seat
     may legitimately authenticate by other means).
@@ -128,7 +170,7 @@ def prepare_package_box(
     claude_home = root / ".claude"
     claude_home.mkdir(parents=True, exist_ok=True)
 
-    # Profile template first, so auth/onboarding/hook seeding layers on top of it.
+    # 1. profile template first, so the seam call + statusLine layer on top of it.
     profile_result = _apply_profile(claude_home, profile)
 
     source = _source_claude_home()
@@ -139,10 +181,20 @@ def prepare_package_box(
 
     onboarding = _seed_onboarding(claude_home, source, workdir)
 
-    # Install the statusline FK-writer + lifecycle hooks into the BOX's own
-    # settings.json (CLAUDE_CONFIG_DIR == user-settings location). hooks.inject
-    # writes <dir>/.claude/settings.json, so pass the package root as its dir.
-    hook_result = hooks_lib.inject(str(root), emit_lifecycle=True)
+    # 3. THE SEAM CALL. config_dir is the box's CLAUDE_CONFIG_DIR. Built to the FROZEN
+    #    signature; tolerant of the parallel build window before hooks lands H1
+    #    (getattr guard) — the box stays functional (auth/onboarding/statusLine) and
+    #    the rich hooks block appears once hooks' body exists. We never edit hooks.py.
+    config_dir = str(claude_home)
+    _default_hooks_claude = getattr(hooks_lib, "default_hooks_claude", None)
+    if _default_hooks_claude is not None:
+        _default_hooks_claude(config_dir, seat_target=seat_target)
+        hooks_state = "default_hooks_claude"
+    else:
+        hooks_state = "pending-h1"
+
+    # 4. statusLine FK-writer — this lane's key (seam v2 c1); never clobber a profile's.
+    statusline_installed = _install_statusline(claude_home)
 
     return {
         "ok": True,
@@ -151,5 +203,7 @@ def prepare_package_box(
         "auth_linked": auth_linked,
         "profile": profile_result,
         "onboarding": onboarding,
-        "hooks": hook_result,
+        "seat_target": seat_target,
+        "hooks": hooks_state,
+        "statusline": statusline_installed,
     }
