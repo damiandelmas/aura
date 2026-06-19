@@ -53,7 +53,8 @@
       "placement",
       "event",
       "work",
-      "anchor"
+      "anchor",
+      "notes"
     ],
     "operator": [
       "agent",
