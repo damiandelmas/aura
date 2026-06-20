@@ -70,12 +70,12 @@ def test_live_topology_agrees_on_actual_pane_refs(value):
     assert pane_handle.pane_ref_parts(value) == live_topology._pane_ref_parts(value)
 
 
-def test_live_topology_window_ref_divergence_is_pinned():
-    # ...but DISAGREES on window refs (no %N): the canonical/tuple family returns
-    # (fleet, None); live_topology returns (None, None). This pre-existing bug is
-    # pinned so the consolidation pass switches live_topology knowingly.
+def test_live_topology_converged_on_window_refs():
+    # Consolidation: live_topology now delegates to the canonical parser, so its
+    # old window-ref divergence (it returned (None, None)) is gone — both now
+    # return (fleet, None). Its callers only pass real pane refs, so this is safe.
     assert pane_handle.pane_ref_parts("tmux:aura:worker") == ("aura", None)
-    assert live_topology._pane_ref_parts("tmux:aura:worker") == (None, None)
+    assert live_topology._pane_ref_parts("tmux:aura:worker") == ("aura", None)
 
 
 @pytest.mark.parametrize("value", INPUTS)

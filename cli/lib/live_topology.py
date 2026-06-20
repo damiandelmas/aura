@@ -29,15 +29,11 @@ def _row_target(row: dict[str, Any]) -> str | None:
 
 
 def _pane_ref_parts(value: str | None) -> tuple[str | None, str | None]:
-    if not value:
-        return None, None
-    parts = str(value).split(":")
-    pane_id = next((part for part in parts if part.startswith("%")), None)
-    if not pane_id:
-        return None, None
-    pane_index = parts.index(pane_id)
-    session = parts[pane_index - 1] if pane_index > 0 and parts[pane_index - 1] != "tmux" else None
-    return session, pane_id
+    # Consolidated onto the single owner. NOTE: this converges live_topology's
+    # window-ref handling to the canonical (fleet, None); the old local parser
+    # returned (None, None) for a no-%N ref. Its callers only pass real pane refs.
+    from lib import pane_handle
+    return pane_handle.pane_ref_parts(value)
 
 
 def _physical_refs(panes: list[dict[str, Any]]) -> set[str]:

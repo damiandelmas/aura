@@ -57,15 +57,8 @@ def _target_exists(terminal, target: str | None) -> bool:
 
 def _extract_pane_key(pane_ref: str | None) -> tuple[str | None, str] | None:
     """Extract the tmux session + %N key from a pane_ref."""
-    if not pane_ref:
-        return None
-    subject = str(pane_ref)
-    if subject.startswith("tmux:"):
-        subject = subject[len("tmux:"):]
-    if ":" in subject:
-        session, pane_id = subject.rsplit(":", 1)
-        return (session or None, pane_id) if pane_id.startswith("%") else None
-    return (None, subject) if subject.startswith("%") else None
+    from lib import pane_handle
+    return pane_handle.pane_key(pane_ref)
 
 
 def _mirror_pane_key(pane: dict[str, Any]) -> tuple[str, str] | None:

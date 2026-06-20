@@ -81,15 +81,8 @@ def _without_transient_fields(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _physical_fleet_from_ref(value: str | None) -> str | None:
-    if not value:
-        return None
-    subject = str(value)
-    if subject.startswith("tmux:"):
-        subject = subject[len("tmux:"):]
-    if ":" in subject:
-        fleet, _ = subject.split(":", 1)
-        return fleet or None
-    return None
+    from lib import pane_handle
+    return pane_handle.physical_fleet_from_ref(value)
 
 
 def _canonical_status(value: Any, default: str | None = None) -> str | None:

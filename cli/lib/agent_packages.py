@@ -901,15 +901,8 @@ def _unique_archive_dest(target_dir: Path, basename: str) -> Path:
 
 
 def _pane_ref_key(pane_ref: str | None) -> tuple[str | None, str] | None:
-    if not pane_ref:
-        return None
-    subject = str(pane_ref)
-    if subject.startswith("tmux:"):
-        subject = subject[len("tmux:"):]
-    if ":" in subject:
-        fleet, pane_id = subject.rsplit(":", 1)
-        return (fleet or None, pane_id) if pane_id.startswith("%") else None
-    return (None, subject) if subject.startswith("%") else None
+    from lib import pane_handle
+    return pane_handle.pane_key(pane_ref)
 
 
 def _mirror_pane_key(pane: dict[str, Any]) -> tuple[str, str] | None:

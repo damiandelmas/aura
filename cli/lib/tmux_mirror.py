@@ -35,27 +35,13 @@ def _logical_ref(record: dict[str, Any]) -> str | None:
 
 
 def _pane_ref_parts(value: str | None) -> tuple[str | None, str | None]:
-    if not value:
-        return None, None
-    subject = str(value)
-    if subject.startswith("tmux:"):
-        subject = subject[len("tmux:"):]
-    if ":" in subject:
-        session, pane_id = subject.rsplit(":", 1)
-        return session or None, pane_id if pane_id.startswith("%") else None
-    return None, subject if subject.startswith("%") else None
+    from lib import pane_handle
+    return pane_handle.pane_ref_parts(value)
 
 
 def _physical_fleet_from_ref(value: str | None) -> str | None:
-    if not value:
-        return None
-    subject = str(value)
-    if subject.startswith("tmux:"):
-        subject = subject[len("tmux:"):]
-    if ":" in subject:
-        fleet, _ = subject.split(":", 1)
-        return fleet or None
-    return None
+    from lib import pane_handle
+    return pane_handle.physical_fleet_from_ref(value)
 
 
 def _compact_record(record: dict[str, Any]) -> dict[str, Any]:

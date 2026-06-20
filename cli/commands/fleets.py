@@ -109,13 +109,8 @@ def _tmux_live_keys() -> set[tuple[str, str]]:
 
 
 def _pane_ref_key(value: Any) -> tuple[str | None, str | None]:
-    subject = str(value or "")
-    if subject.startswith("tmux:"):
-        subject = subject[len("tmux:"):]
-    if ":" in subject:
-        session, pane_id = subject.rsplit(":", 1)
-        return session or None, pane_id if pane_id.startswith("%") else None
-    return None, subject if subject.startswith("%") else None
+    from lib import pane_handle
+    return pane_handle.pane_ref_parts(value)
 
 
 def _replace_ref(value: Any, *, old: str, new: str, seats: set[str] | None = None) -> Any:
