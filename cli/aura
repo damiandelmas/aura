@@ -1078,8 +1078,8 @@ def main():
     p_anchor_enum.add_argument("--transcript", help="Explicit transcript JSONL path")
     p_anchor_enum.add_argument("--limit", type=int, help="Only the last N rows")
 
-    # notes — query the annotation ledger (margin notes pinned to message anchors)
-    p_notes = subparsers.add_parser("notes", help="Query the annotation ledger (margin notes pinned to message anchors)")
+    # notes — query annotation notes (margin notes pinned to message anchors)
+    p_notes = subparsers.add_parser("notes", help="Query annotation notes (margin notes pinned to message anchors)")
     notes_sub = p_notes.add_subparsers(dest="notes_action", required=True)
     p_notes_list = notes_sub.add_parser("list", help="List annotations, newest first")
     p_notes_list.add_argument("--target", help="Filter by seat FLEET:SEAT")

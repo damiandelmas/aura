@@ -33,11 +33,13 @@
     ],
     "operator_tools_omitted_from_footer": [
       "agent-map",
+      "ambient",
       "broadcast",
       "holding",
       "idle-watch",
       "quick",
-      "resolve"
+      "resolve",
+      "tmux-mirror"
     ]
   },
   "cli_categories": {
@@ -59,6 +61,7 @@
     "operator": [
       "agent",
       "agent-map",
+      "ambient",
       "broadcast",
       "capture",
       "dash",
@@ -76,6 +79,7 @@
       "sense",
       "sessions",
       "skills",
+      "tmux-mirror",
       "watch",
       "write"
     ],
