@@ -106,3 +106,38 @@ def test_subscribe_membership_verb_creates_record(mem, monkeypatch):
     assert res["ok"] and res["subscription"]["scope"] == {"fleet": "F"}
     assert res["subscription"]["kinds"] == ["leave"]
     assert mem.list_subscriptions(status="active")[0]["to"] == "G:watch"
+
+
+def test_write_path_never_calls_list_seat_statuses(mem, monkeypatch):
+    """AMPLIFICATION REGRESSION (doc-05 class): the emit/schedule fanout must do a
+    cheap registry-only read — never the heavy seat_status enrichment — on the
+    control-plane write hot path. Lock it so it can't silently come back."""
+    from lib import seat_status, registry
+
+    def boom(*a, **k):
+        raise AssertionError("list_seat_statuses called on the membership write path")
+
+    monkeypatch.setattr(seat_status, "list_seat_statuses", boom)
+    monkeypatch.setattr(registry, "read_registry", lambda: {
+        "F:a":    {"fleet": "F", "seat_ref": "F:a",    "pane_ref": "tmux:F:%1", "status": "running"},
+        "F:dead": {"fleet": "F", "seat_ref": "F:dead", "pane_ref": "tmux:F:%2", "status": "dead"},
+        "F:nopane": {"fleet": "F", "seat_ref": "F:nopane", "status": "running"},   # no pane_ref
+        "G:x":    {"fleet": "G", "seat_ref": "G:x",    "pane_ref": "tmux:G:%3", "status": "idle"},
+    })
+
+    res = mem.schedule_membership_subscriptions("fleet:F", kind="join", member="F:new")
+
+    # only the live, pane-bound, in-group seat is flagged (dead/no-pane/other-fleet excluded)
+    assert set(res["flagged"]) == {"F:a"}
+    assert mem.pending_path("F:a").exists()
+    assert not mem.pending_path("F:dead").exists()
+    assert not mem.pending_path("G:x").exists()
+
+
+def test_emit_reads_registry_not_seat_status(mem, monkeypatch):
+    from lib import seat_status, registry
+    monkeypatch.setattr(seat_status, "list_seat_statuses",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("heavy path")))
+    monkeypatch.setattr(registry, "read_registry", lambda: {})
+    # emit must not raise (no heavy call) even with an empty registry
+    mem.emit_membership_change("fleet:F", "join", "F:x")

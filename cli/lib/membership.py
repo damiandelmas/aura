@@ -176,31 +176,56 @@ def _scope_matches(scope: dict[str, str], group: str) -> bool:
 
 # -------------------------------------------------------------- live-in-group fanout
 
+# Statuses that mean a row is NOT a live flag candidate (cheap registry-only check).
+_DEAD_STATUSES = {"dead", "swept_removed", "stopped", "archived", "quarantined", "historical"}
+
+
+def _row_looks_live(row: dict[str, Any]) -> bool:
+    """Cheap liveness from a seats-registry row alone: has a pane and isn't terminal.
+
+    Deliberately NOT the computed two-laws liveness (mirror join) — this runs on the
+    control-plane write hot path. A stale-but-flagged dead seat is harmless: a dead
+    seat never reads its pending-flag, and the reaper GCs it. A real refresh for a
+    live seat still resolves heavily at the seat's OWN boundary, not here.
+    """
+    if not row.get("pane_ref"):
+        return False
+    status = str(row.get("status") or "").lower()
+    return status not in _DEAD_STATUSES
+
 
 def _live_targets_in_group(group: str) -> list[str]:
-    """LIVE seats inside the changed group (implicit-self convention, no rows)."""
+    """Seats in the changed group to flag — a CHEAP, registry-only read.
+
+    AMPLIFICATION FIX: this used to call seat_status.list_seat_statuses() (mirror +
+    reports + placements + holding + ledger, per seat) synchronously on EVERY
+    registry write — the doc-05 cost-bug class. The fanout only needs which seats in
+    the group exist+have a pane (to set their flag), so it reads the seats registry
+    directly: one file read, no subprocess, no per-seat enrichment.
+    """
     kind, _, name = group.partition(":")
     try:
-        from lib import seat_status
+        from lib import registry
+        rows = registry.read_registry()  # pure file read — no mirror/reports/ledger
         if kind == "fleet":
-            rows = seat_status.list_seat_statuses(fleet=name, include_hidden=False)
+            candidates = [r for r in rows.values() if r.get("fleet") == name]
         elif kind == "placement":
             from lib import placements
-            refs = {m.get("target") or m.get("seat_ref")
-                    for m in placements.get_placement(name).get("members", [])}
-            rows = [r for r in seat_status.list_seat_statuses(include_hidden=False)
-                    if (r.get("target") or r.get("seat_ref")) in refs]
+            refs = {m.get("seat_ref") or m.get("target")
+                    for m in (placements.get_placement(name) or {}).get("members", [])}
+            candidates = [r for r in rows.values()
+                          if (r.get("seat_ref") or r.get("target")) in refs]
         else:
             return []
-    except Exception:  # noqa: BLE001 - fanout is best-effort
+    except Exception:  # noqa: BLE001 - fanout is best-effort, never breaks the write
         return []
-    live = []
-    for r in rows:
-        if r.get("liveness") == "alive" and r.get("managed_state") not in {"stopped", "missing_pane"}:
-            t = r.get("target") or r.get("seat_ref")
+    out = []
+    for r in candidates:
+        if _row_looks_live(r):
+            t = r.get("seat_ref") or r.get("target")
             if t:
-                live.append(t)
-    return live
+                out.append(t)
+    return out
 
 
 # --------------------------------------------------------------------- the boundary
