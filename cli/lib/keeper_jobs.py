@@ -19,6 +19,10 @@ from lib import agent_packages, registry, state
 REQUEST_SCHEMA = "aura.keeper_job_request.v1"
 STATUS_SCHEMA = "aura.keeper_job_status.v1"
 KEEPER_ADDRESS = "aura:keepers:context"
+# The alias is what agent_packages.create() actually indexes; the address is not
+# written to the index, so ensure_keeper_profile must resolve the keeper agent by
+# THIS to be idempotent (see ensure_keeper_profile).
+KEEPER_ALIAS = "aura-keeper-context"
 SDK_RUNNER = Path("/home/axp/.codex/skills/_codex-sdk-runner/runner.mjs")
 FLEX_BIN = Path("/home/axp/projects/flexsearch/main/venv/bin/flex")
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts"
@@ -412,19 +416,26 @@ def _seed_keeper_codex_home(codex_home: Path) -> dict[str, Any]:
 
 
 def ensure_keeper_profile(cwd: str | None = None) -> dict[str, Any]:
+    # Idempotent: resolve the keeper agent by its ALIAS (the address is not indexed
+    # by create(), so resolving by KEEPER_ADDRESS always missed and re-created — the
+    # second call then collided on the existing alias). Create only when truly
+    # absent, and treat a concurrent/leftover create as a resolve (race + re-run safe).
     try:
-        record = agent_packages.resolve(KEEPER_ADDRESS)
+        record = agent_packages.resolve(KEEPER_ALIAS)
     except FileNotFoundError:
-        created = agent_packages.create(
-            address=KEEPER_ADDRESS,
-            runtime="codex",
-            profile=None,
-            cwd=cwd or str(Path.cwd()),
-            fleet="aura-keepers",
-            seat="context",
-            alias="aura-keeper-context",
-        )
-        record = created["agent"]
+        try:
+            created = agent_packages.create(
+                address=KEEPER_ADDRESS,
+                runtime="codex",
+                profile=None,
+                cwd=cwd or str(Path.cwd()),
+                fleet="aura-keepers",
+                seat="context",
+                alias=KEEPER_ALIAS,
+            )
+            record = created["agent"]
+        except FileExistsError:
+            record = agent_packages.resolve(KEEPER_ALIAS)
     codex_home = Path(record["root"]) / ".codex"
     auth_seed = _seed_keeper_codex_home(codex_home)
     return {
