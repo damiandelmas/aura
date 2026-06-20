@@ -17,7 +17,7 @@ from typing import Any
 import uuid
 import fcntl
 
-from lib import state
+from lib import pane_handle, state
 
 
 def now_iso() -> str:
@@ -109,11 +109,11 @@ def _canonical_tmux_pane_ref(value: Any, *, fleet: str) -> Any:
     if subject.startswith("tmux:"):
         return subject
     if subject.startswith("%"):
-        return f"tmux:{fleet}:{subject}"
+        return pane_handle.PaneHandle.make(fleet, subject).to_ref()
     if ":" in subject:
         maybe_fleet, maybe_pane = subject.split(":", 1)
         if maybe_fleet and maybe_pane.startswith("%"):
-            return f"tmux:{maybe_fleet}:{maybe_pane}"
+            return pane_handle.PaneHandle.make(maybe_fleet, maybe_pane).to_ref()
     return subject
 
 

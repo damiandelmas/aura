@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from lib import pane_handle
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -18,7 +20,7 @@ def _parse_target(target: str, registry, terminal) -> tuple[str, str, str | None
         fleet, subject = parts[1], parts[2]
         if hasattr(terminal, "configure_session"):
             terminal.configure_session(fleet)
-        return subject, target, fleet, f"tmux:{fleet}:{subject}", None
+        return subject, target, fleet, pane_handle.WindowHandle.make(fleet, subject).to_ref(), None
 
     reg_agent = registry.resolve_live(target)
     fleet = (reg_agent or {}).get("fleet")
@@ -27,7 +29,7 @@ def _parse_target(target: str, registry, terminal) -> tuple[str, str, str | None
     terminal_target = (reg_agent or {}).get("pane_ref") or (reg_agent or {}).get("terminal_ref") or target
     backend_ref = (reg_agent or {}).get("pane_ref") or None
     if not backend_ref and fleet:
-        backend_ref = f"tmux:{fleet}:{target}"
+        backend_ref = pane_handle.WindowHandle.make(fleet, target).to_ref()
     return target, terminal_target, fleet, backend_ref, reg_agent
 
 
@@ -89,7 +91,7 @@ def run(args):
         target=target,
         payload_hash=delivery.body_hash(body_for_hash),
         backend="tmux",
-        backend_ref=backend_ref or f"tmux:{getattr(terminal, 'SESSION_NAME', fleet or 'aura')}:{name}",
+        backend_ref=backend_ref or pane_handle.WindowHandle.make(getattr(terminal, 'SESSION_NAME', fleet or 'aura'), name).to_ref(),
         message_id=message_id,
         state="pending",
         seat=name,

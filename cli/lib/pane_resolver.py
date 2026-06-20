@@ -199,7 +199,8 @@ def _match_registry_row(pane: dict[str, Any]) -> dict | None:
     session = str(pane.get("tmux_session") or pane.get("physical_fleet") or "")
     if not pane_id:
         return None
-    exact = f"tmux:{session}:{pane_id}"
+    from lib import pane_handle
+    exact = pane_handle.PaneHandle.make(session, pane_id).to_ref()
     for record in registry.read_registry().values():
         ref = str(record.get("pane_ref") or "")
         if not ref:

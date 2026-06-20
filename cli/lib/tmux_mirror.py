@@ -9,7 +9,7 @@ from __future__ import annotations
 import subprocess
 from typing import Any, Callable
 
-from lib import registry
+from lib import pane_handle, registry
 
 _FIELD_SEP = "\t"
 _FORMAT_FIELDS = [
@@ -121,7 +121,7 @@ def parse_panes(output: str) -> list[dict[str, Any]]:
         if len(parts) < 10:
             continue
         session, window_id, window_index, window_name, pane_id, pane_index, pane_pid, cwd, command, active = parts[:10]
-        pane_ref = f"tmux:{session}:{pane_id}" if session and pane_id else None
+        pane_ref = pane_handle.PaneHandle.make(session, pane_id).to_ref() if session and pane_id else None
         panes.append({
             "physical_fleet": session,
             "tmux_session": session,
@@ -135,7 +135,7 @@ def parse_panes(output: str) -> list[dict[str, Any]]:
             "pane_current_command": command,
             "pane_active": active == "1",
             "pane_ref": pane_ref,
-            "terminal_ref": f"tmux:{session}:{window_name}" if session and window_name else None,
+            "terminal_ref": pane_handle.WindowHandle.make(session, window_name).to_ref() if session and window_name else None,
         })
     return panes
 

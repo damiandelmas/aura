@@ -11,6 +11,8 @@ import time
 import uuid
 from pathlib import Path
 
+from lib import pane_handle
+
 FLEX_PACKET_MARKER = "[FLEX PROJECT RETRIEVAL]"
 
 
@@ -294,7 +296,7 @@ def _rename_terminal_exact(record: dict, *, fleet: str, name: str) -> dict:
         "index": final_index,
         "name": final_name,
         "pane_id": final_pane,
-        "pane_ref": f"tmux:{final_fleet}:{final_pane}",
+        "pane_ref": pane_handle.PaneHandle.make(final_fleet, final_pane).to_ref(),
         "terminal_ref": f"{final_fleet}:{final_name}",
         "backend_ref": f"{final_fleet}:{final_name}",
         "physical_fleet": final_fleet,
@@ -967,7 +969,7 @@ def _restart(args, registry, terminal) -> dict:
             "hint": "the old process was stopped but relaunch failed; inspect the tmux fleet and restart or repair manually",
         }
 
-    new_pane_ref = f"tmux:{fleet}:{launch.get('pane_id')}" if launch.get("pane_id") else None
+    new_pane_ref = pane_handle.PaneHandle.make(fleet, launch.get('pane_id')).to_ref() if launch.get("pane_id") else None
     if launch.get("respawned_viewport"):
         terminal_ref = old.get("terminal_ref") or f"{fleet}:{name}"
     else:
@@ -1660,7 +1662,7 @@ def _adopt_pane_as_seat(
     else:
         cwd = cwd_arg or pane.get("pane_current_path") or pane.get("cwd") or ""
 
-    pane_ref = f"tmux:{fleet}:{pane_id}"
+    pane_ref = pane_handle.PaneHandle.make(fleet, pane_id).to_ref()
     terminal_ref = pane_ref
     backend_ref = pane_ref
     rename_result = None
@@ -2551,7 +2553,7 @@ def _whoami(args, registry) -> dict:
             session = (probe.stdout or "").strip()
             if probe.returncode != 0 or not session:
                 return {"ok": False, "error": "pane-not-found", "pane": value}
-            pane_ref = f"tmux:{session}:{value}"
+            pane_ref = pane_handle.PaneHandle.make(session, value).to_ref()
         else:
             return {
                 "ok": False,
@@ -2567,7 +2569,7 @@ def _whoami(args, registry) -> dict:
             probe = _run_tmux(["display-message", "-p", "-t", pane_id, "#{session_name}"])
             session = (probe.stdout or "").strip()
             if probe.returncode == 0 and session:
-                pane_ref = f"tmux:{session}:{pane_id}"
+                pane_ref = pane_handle.PaneHandle.make(session, pane_id).to_ref()
         row = registry.resolve_occupant(
             seat_instance_id=env.get("AURA_SEAT_INSTANCE_ID"),
             aura_launch_id=env.get("AURA_LAUNCH_ID"),

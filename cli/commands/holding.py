@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from lib import pane_handle
+
 
 def _pane_ref(pane: dict) -> str:
-    return f"tmux:{pane.get('session')}:{pane.get('pane_id')}"
+    return pane_handle.PaneHandle.make(pane.get('session'), pane.get('pane_id')).to_ref()
 
 
 def _managed_refs(registry) -> set[str]:
@@ -26,7 +28,7 @@ def _managed_refs(registry) -> set[str]:
         parts = result.stdout.strip().split("\t")
         if len(parts) != 2 or not parts[0] or not parts[1]:
             return None
-        return f"tmux:{parts[0]}:{parts[1]}"
+        return pane_handle.PaneHandle.make(parts[0], parts[1]).to_ref()
 
     refs: set[str] = set()
     for record in registry.list_agents(include_hidden=True):

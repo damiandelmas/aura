@@ -7,7 +7,7 @@ This command is historical/registry inventory, not a live roster. Use
 
 def run(args):
     """List all agents."""
-    from lib import mesh, registry, seat_schema, terminal
+    from lib import mesh, pane_handle, registry, seat_schema, terminal
 
     def _target_exists(target: str) -> bool:
         return terminal.target_exists(target) if hasattr(terminal, "target_exists") else terminal.window_exists(target)
@@ -136,7 +136,7 @@ def run(args):
             "registered": bool(a.get("socket_path")) or bool(a.get("registered")),
             "terminal": "alive" if terminal_alive else "missing",
             "backend": "tmux" if terminal_alive or a.get("terminal_ref") else None,
-            "terminal_ref": a.get("terminal_ref") or (f"tmux:{terminal.SESSION_NAME}:{name}" if terminal_alive else ""),
+            "terminal_ref": a.get("terminal_ref") or (pane_handle.WindowHandle.make(terminal.SESSION_NAME, name).to_ref() if terminal_alive else ""),
             "backend_ref": a.get("backend_ref") or (a.get("terminal_ref") or "").removeprefix("tmux:"),
             "pane_ref": a.get("pane_ref"),
             "identity_provider": seat_schema.identity_provider_for(a),

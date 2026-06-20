@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import subprocess
 
+from lib import pane_handle
+
 
 def _tmux(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(["tmux", *args], capture_output=True, text=True)
@@ -60,7 +62,7 @@ def _update_agent_pane(registry, terminal, agent: dict, pane_id: str, window: st
     fleet = agent.get("fleet")
     name = agent.get("name")
     record = dict(agent)
-    record["pane_ref"] = f"tmux:{fleet}:{pane_id}"
+    record["pane_ref"] = pane_handle.PaneHandle.make(fleet, pane_id).to_ref()
     record["backend_ref"] = f"{fleet}:{pane_id}"
     record["current_window"] = window
     if terminal_ref is not None:
@@ -131,7 +133,7 @@ def tile(args):
     join_agents = window_agents[1:] if renamed_first else window_agents
     for agent in join_agents:
         name = agent["name"]
-        pane = (terminal.pane_id(f"tmux:{fleet}:{name}") if hasattr(terminal, "pane_id") else None) or _pane_id(f"{fleet}:{name}")
+        pane = (terminal.pane_id(pane_handle.WindowHandle.make(fleet, name).to_ref()) if hasattr(terminal, "pane_id") else None) or _pane_id(f"{fleet}:{name}")
         result = _tmux(["join-pane", "-s", f"{fleet}:{name}", "-t", target_ref])
         if result.returncode != 0:
             return {"ok": False, "error": result.stderr.strip() or f"failed to join {name}", "fleet": fleet, "source": f"{fleet}:{name}", "target": target_ref, "moved": moved}
@@ -192,7 +194,7 @@ def untile(args):
         if result.returncode != 0:
             return {"ok": False, "error": result.stderr.strip() or f"failed to break pane for {name}", "fleet": fleet, "broken": broken}
         record = dict(agent)
-        record["terminal_ref"] = f"tmux:{fleet}:{name}"
+        record["terminal_ref"] = pane_handle.WindowHandle.make(fleet, name).to_ref()
         record["backend_ref"] = f"{fleet}:{record.get('pane_ref', '').split(':')[-1]}"
         record["current_window"] = name
         registry.upsert_agent(record)
@@ -203,7 +205,7 @@ def untile(args):
         if result.returncode != 0:
             return {"ok": False, "error": result.stderr.strip() or "failed to rename remaining dashboard pane", "fleet": fleet}
         record = dict(remaining)
-        record["terminal_ref"] = f"tmux:{fleet}:{remaining['name']}"
+        record["terminal_ref"] = pane_handle.WindowHandle.make(fleet, remaining['name']).to_ref()
         record["backend_ref"] = f"{fleet}:{record.get('pane_ref', '').split(':')[-1]}"
         record["current_window"] = remaining["name"]
         registry.upsert_agent(record)

@@ -12,6 +12,8 @@ from pathlib import Path
 # Add lib to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'lib'))
 
+from lib import pane_handle  # noqa: E402  (after path setup above)
+
 
 def _candidate_identities():
     """Best-effort identities for the current spawning seat."""
@@ -832,7 +834,7 @@ def _spawn_terminal_runtime(args, terminal, result_fn):
     if not launch.get("ok"):
         return result_fn({"ok": False, "error": launch.get("error", "launch failed"), "name": args.name})
 
-    pane_ref = f"tmux:{fleet}:{launch.get('pane_id')}" if launch.get("pane_id") else None
+    pane_ref = pane_handle.PaneHandle.make(fleet, launch.get('pane_id')).to_ref() if launch.get("pane_id") else None
     process_meta = {}
     if pane_ref and hasattr(terminal, "pane_pid"):
         try:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from lib import placements, registry, reports, runtime_session, tmux_mirror
+from lib import pane_handle, placements, registry, reports, runtime_session, tmux_mirror
 
 
 def _seat_name(record: dict[str, Any]) -> str | None:
@@ -52,10 +52,10 @@ def _physical_refs(panes: list[dict[str, Any]]) -> set[str]:
             refs.add(str(pane_id))
             if session:
                 refs.add(f"{session}:{pane_id}")
-                refs.add(f"tmux:{session}:{pane_id}")
+                refs.add(pane_handle.PaneHandle.make(session, pane_id).to_ref())
         if window and session:
             refs.add(f"{session}:{window}")
-            refs.add(f"tmux:{session}:{window}")
+            refs.add(pane_handle.WindowHandle.make(session, window).to_ref())
     return refs
 
 
