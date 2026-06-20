@@ -845,3 +845,19 @@ def test_markdown_slice_truncates_large_rows():
     assert "## 1 - assistant" in rendered
     assert "[truncated 10 chars from this row]" in rendered
     assert len(rendered) < keeper_jobs.MAX_SLICE_BODY_CHARS + 500
+
+
+def test_ensure_keeper_profile_is_idempotent(monkeypatch, tmp_path):
+    # Regression: ensure_keeper_profile resolved by an un-indexed address, so a second
+    # call re-created and collided on the existing 'aura-keeper-context' alias. It must
+    # now resolve the existing keeper agent by alias and be safe to call repeatedly.
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / "state"))
+    from lib import keeper_jobs
+
+    monkeypatch.setattr(keeper_jobs, "_seed_keeper_codex_home", lambda codex_home: {"seeded": False})
+
+    first = keeper_jobs.ensure_keeper_profile(cwd=str(tmp_path / "unit"))
+    second = keeper_jobs.ensure_keeper_profile(cwd=str(tmp_path / "unit"))  # must NOT raise
+
+    assert first["agent_id"] == second["agent_id"]
+    assert first["address"] == keeper_jobs.KEEPER_ADDRESS
