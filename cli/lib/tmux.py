@@ -12,6 +12,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from lib import pane_handle  # dependency-light: pane_handle imports only stdlib typing
+
 # Fleet name: the tmux session that groups agents working one initiative.
 # Set via --fleet flag, AURA_FLEET env, or falls back to AURA_PROJECT/knowledge.
 TMUX_SESSION = (os.environ.get("AURA_FLEET")
@@ -222,7 +224,7 @@ def create_window(
             "name": name,
             "target": _backend_ref(name),
             "pane_id": pane,
-            "pane_ref": f"{TMUX_SESSION}:{pane}" if pane else None,
+            "pane_ref": pane_handle.PaneHandle.make(TMUX_SESSION, pane).to_ref() if pane else None,
         }
 
     _apply_index_defaults()
@@ -272,7 +274,7 @@ def respawn_pane(
         "ok": True,
         "target": _backend_ref(target),
         "pane_id": pane,
-        "pane_ref": f"{_split_ref(target)[0]}:{pane}" if pane else None,
+        "pane_ref": pane_handle.PaneHandle.make(_split_ref(target)[0], pane).to_ref() if pane else None,
         "respawned_viewport": True,
     }
 
