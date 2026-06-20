@@ -1,21 +1,23 @@
-"""Membership event source — the third trigger beside interval + report-boundary.
+"""Society event source — the world-substrate layer above fleet/placement.
 
-A *membership* event fires when the member SET of a group (a fleet or a placement)
-changes: join / leave / rename. It is NOT a member's self-state change (that is
-`reports`), nor a pane move or binding repair. It drives ambient topology refresh.
+A *society* event fires when the member SET of a group (a fleet or a placement)
+changes: join / leave / rename — "society changed, a new member entered". It is NOT
+a member's self-state change (that is `reports`), nor a pane move or binding repair.
+It drives ambient topology refresh.
 
 Shape mirrors the report-boundary machinery (`reports.schedule_report_subscriptions`
 + `report_subscriptions`):
 
-    member-set write  ──►  emit_membership_change(group, kind, member)
-                      ──►  schedule_membership_subscriptions(group)
-                              · explicit watchers (membership_subscription rows)
+    member-set write  ──►  emit_society_change(group, kind, member)
+                      ──►  schedule_society_subscriptions(group)
+                              · explicit watchers (society_subscription rows)
                               · implicit: every LIVE seat IN the changed group
-                      ──►  set_ambient_pending(targets, reason)   [per-seat flag file]
+                      ──►  set_ambient_pending(targets, reason)   [the ambient layer's flag]
 
-The pending-flag lives under AURA_STATE_DIR keyed by seat identity — the same path
+The ambient-pending flag belongs to the ambient layer (the hook reads it); society
+only SETS it. It lives under AURA_STATE_DIR keyed by seat identity — the same path
 `cli/hooks/claude_ambient_hook.py:pending_path()` reads — so neither side needs the
-box layout. No registry write per membership change (seam v2 §3 intent).
+box layout. No registry write per society change (seam v2 §3 intent).
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from typing import Any, Iterable
 
 from lib import state
 
-SCHEMA_SUB = "aura.membership_subscription.v1"
+SCHEMA_SUB = "aura.society_subscription.v1"
 KINDS = {"join", "leave", "rename"}
 
 
@@ -48,13 +50,16 @@ def _pending_key(fleet: str, seat: str) -> str:
 
 
 def pending_path(target: str) -> Path:
-    """Per-seat pending-refresh flag path; mirrors the hook's resolution."""
+    """Per-seat ambient pending-refresh flag path; mirrors the hook's resolution.
+
+    This flag is the ambient layer's mechanism — society only sets it; the hook owns
+    reading/clearing it. Path is intentionally identical on both sides."""
     fleet, _, seat = target.partition(":")
     return _state_root() / "ambient-pending" / f"{_pending_key(fleet, seat or 'unknown')}.json"
 
 
 def subscriptions_root() -> Path:
-    return _state_root() / "membership-subscriptions"
+    return _state_root() / "society-subscriptions"
 
 
 def _atomic_write(path: Path, data: Any) -> None:
@@ -77,8 +82,8 @@ def _now() -> str:
 
 
 def set_ambient_pending(targets: Iterable[str], reason: str) -> list[str]:
-    """Write the pending-refresh flag for each target seat. Best-effort; returns the
-    targets actually flagged. Caller resolves live-only targets."""
+    """Write the ambient pending-refresh flag for each target seat. Best-effort;
+    returns the targets actually flagged. Caller resolves live-only targets."""
     written: list[str] = []
     for target in targets:
         if not target or ":" not in target:
@@ -95,9 +100,9 @@ def set_ambient_pending(targets: Iterable[str], reason: str) -> list[str]:
 # ------------------------------------------------------------------- subscriptions
 
 
-def create_subscription(scope: dict[str, str], to: str, *, as_sender: str = "service:aura-membership",
+def create_subscription(scope: dict[str, str], to: str, *, as_sender: str = "service:aura-society",
                         kinds: list[str] | None = None) -> dict[str, Any]:
-    sub_id = f"msub_{os.urandom(6).hex()}"
+    sub_id = f"ssub_{os.urandom(6).hex()}"
     record = {
         "schema": SCHEMA_SUB, "id": sub_id, "scope": scope, "to": to,
         "as": as_sender, "kinds": kinds or sorted(KINDS), "status": "active",
@@ -112,7 +117,7 @@ def list_subscriptions(*, status: str | None = None) -> list[dict[str, Any]]:
     if not root.is_dir():
         return []
     out: list[dict[str, Any]] = []
-    for path in sorted(root.glob("msub_*.json")):
+    for path in sorted(root.glob("ssub_*.json")):
         try:
             rec = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -176,9 +181,9 @@ def _live_targets_in_group(group: str) -> list[str]:
 # --------------------------------------------------------------------- the boundary
 
 
-def schedule_membership_subscriptions(group: str, *, kind: str = "join",
-                                      member: str | None = None) -> dict[str, Any]:
-    """Route a membership change: flag implicit live-in-group seats + deliver to any
+def schedule_society_subscriptions(group: str, *, kind: str = "join",
+                                   member: str | None = None) -> dict[str, Any]:
+    """Route a society change: flag implicit live-in-group seats + deliver to any
     explicit watcher subscriptions. Mirror of report-boundary subscription firing.
     Best-effort and non-fatal — a control-plane write must never break on this."""
     reason = f"{kind}:{group}" + (f":{member}" if member else "")
@@ -197,12 +202,12 @@ def schedule_membership_subscriptions(group: str, *, kind: str = "join",
     return {"group": group, "kind": kind, "flagged": flagged, "delivered": delivered}
 
 
-def emit_membership_change(group: str, kind: str, member: str | None = None) -> None:
+def emit_society_change(group: str, kind: str, member: str | None = None) -> None:
     """Emit point — call POST-COMMIT from the member-set writes. Swallows errors so a
-    registry/placement/fleet write is never broken by membership routing."""
+    registry/placement/fleet write is never broken by society routing."""
     if kind not in KINDS:
         return
     try:
-        schedule_membership_subscriptions(group, kind=kind, member=member)
+        schedule_society_subscriptions(group, kind=kind, member=member)
     except Exception:  # noqa: BLE001 - never fatal to the originating write
         return

@@ -16,12 +16,12 @@ from typing import Any
 from lib import registry, state
 
 
-def _emit_membership(group: str, kind: str, member: str) -> None:
-    """Post-commit membership emit (lazy import avoids a cycle; never fatal)."""
+def _emit_society(group: str, kind: str, member: str) -> None:
+    """Post-commit society emit (lazy import avoids a cycle; never fatal)."""
     try:
-        from lib import membership
+        from lib import society
 
-        membership.emit_membership_change(group, kind, member)
+        society.emit_society_change(group, kind, member)
     except Exception:
         return
 
@@ -140,7 +140,7 @@ def add_member(
     record.setdefault("source", source)
     data[pid] = record
     write_placements(data)
-    _emit_membership(f"placement:{placement}", "join", member["seat_ref"])
+    _emit_society(f"placement:{placement}", "join", member["seat_ref"])
     return record
 
 
@@ -158,7 +158,7 @@ def remove_member(placement: str, seat_ref: str) -> dict[str, Any]:
     write_placements(data)
     removed = before - len(record.get("members", []))
     if removed:
-        _emit_membership(f"placement:{record.get('name') or placement}", "leave", canonical)
+        _emit_society(f"placement:{record.get('name') or placement}", "leave", canonical)
     return {"ok": True, "placement": record, "removed": removed}
 
 
