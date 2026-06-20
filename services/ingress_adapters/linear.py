@@ -82,7 +82,12 @@ def normalize(payload: Mapping[str, Any], headers: Mapping[str, str]) -> dict | 
     # actually changed the labels (i.e. dispatch was (re)added now).
     if has_dispatched:
         updated_from = payload.get("updatedFrom") or {}
-        if not (isinstance(updated_from, dict) and "labelIds" in updated_from):
+        # A label change is signalled as labelIds (real Linear) or labels (name-shaped
+        # payloads); accept either so the guard isn't blind to one representation.
+        label_changed = isinstance(updated_from, dict) and (
+            "labelIds" in updated_from or "labels" in updated_from
+        )
+        if not label_changed:
             return None
 
     identifier = str(data.get("identifier") or "?")
