@@ -375,6 +375,11 @@ def test_list_seat_statuses_single_mirror_join(aura_state, monkeypatch):
         "pane_ref": "tmux:runway-engineering:%999",
     })
 
+    # Each setup upsert_agent emits a `society` membership change, which resolves
+    # live group targets via list_seat_statuses -> one mirror call per upsert.
+    # That write-path side effect is unrelated to the join under test; reset the
+    # counter so the assertion measures only the call under test.
+    call_count["n"] = 0
     rows = seat_status.list_seat_statuses(fleet="runway-engineering", terminal=FakeTerminal)
 
     assert call_count["n"] == 1  # single mirror call regardless of seat count
