@@ -133,3 +133,22 @@ def resolve_name_or_id(ref: str | None) -> tuple[str | None, dict[str, Any] | No
 
 def list_fleets() -> list[dict[str, Any]]:
     return sorted(read_fleets().values(), key=lambda row: row.get("current_name") or row.get("fleet_id") or "")
+
+
+# --- resolver-seam registration -------------------------------------------------
+# The `fleet-id` resolver: durable fleet_id -> CURRENT name (rename-safe). Lives here
+# (the fleet/registry module) and self-registers; resolve.py stays pure dispatch.
+def _resolve_fleet_id(fid: str, ctx: dict | None = None) -> dict[str, Any]:
+    record = resolve(fid)
+    if record:
+        return {"fleet_id": record.get("fleet_id") or fid,
+                "name": record.get("current_name"), "status": "live"}
+    return {"fleet_id": fid, "name": None, "status": "stale"}  # dead id, never dropped
+
+
+try:
+    from lib import resolve as _resolve_seam
+
+    _resolve_seam.register("fleet-id", _resolve_fleet_id)
+except Exception:  # noqa: BLE001 - registration is best-effort; seam stays usable
+    pass

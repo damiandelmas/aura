@@ -79,7 +79,7 @@ def default_hooks_claude_block() -> dict:
     Event → script mapping (claude-code hook contract; timeouts in SECONDS):
       SessionStart     → bind (confirm allocated session) + ambient (born orientation,
                          source=compact recovery)
-      UserPromptSubmit → ambient (pending-flag gate; no-op unless society flagged)
+      UserPromptSubmit → ambient (pending-flag gate; no-op unless membership flagged)
       Stop             → keeper (message-count cadence)
       PreCompact       → keeper (boundary=precompact)
       PostCompact      → ambient (set pending-flag to re-orient next prompt)

@@ -296,6 +296,26 @@ def main():
     p_ambient = subparsers.add_parser("ambient", help="Render ambient fleet-roster packet for a seat (hook data source)")
     p_ambient.add_argument("ambient_args", nargs="*", help="[refresh] [TARGET]; default target is self")
 
+    # society (container config: named package of durable fleet members + config + resolves_to)
+    p_society = subparsers.add_parser("society", help="Society container config (members + config + resolves_to)")
+    society_sub = p_society.add_subparsers(dest="society_action", required=True)
+    society_sub.add_parser("list", help="List societies + member counts")
+    p_soc_get = society_sub.add_parser("get", help="Members expanded to live fleets + config + resolves_to")
+    p_soc_get.add_argument("name", help="Society name")
+    p_soc_of = society_sub.add_parser("of", help="Reverse lookup: which society owns this fleet")
+    p_soc_of.add_argument("fleet", help="Fleet name|id")
+    p_soc_resolve = society_sub.add_parser("resolve", help="Config values through the resolver seam (raw today)")
+    p_soc_resolve.add_argument("name", help="Society name")
+    p_soc_resolve.add_argument("-k", "--key", help="Resolve one config key")
+    p_soc_set = society_sub.add_parser("set", help="Pin members (name|glob -> fleet_id) and/or set config/resolves-to")
+    p_soc_set.add_argument("name", help="Society name")
+    p_soc_set.add_argument("--member", action="append", help="Fleet name or glob to pin (repeatable)")
+    p_soc_set.add_argument("--config", action="append", metavar="K=V", help="Config entry (repeatable)")
+    p_soc_set.add_argument("--resolves-to", dest="resolves_to", help="Opaque resolves_to pointer")
+    p_soc_rm = society_sub.add_parser("remove-member", help="Remove a pinned member by fleet_id")
+    p_soc_rm.add_argument("name", help="Society name")
+    p_soc_rm.add_argument("fleet_id", help="Durable fleet_id (or fleet-id://<id>)")
+
     # send
     p_send = subparsers.add_parser("send", help="Send message to agent")
     p_send.add_argument("target", help="Target agent name")
@@ -848,14 +868,14 @@ def main():
                                            help="Only match this report state; repeatable")
     p_event_subscribe_reports.add_argument("--as", dest="sender", default="aura-event", help="Sender label for notifications")
 
-    p_event_subscribe_society = subscribe_sub.add_parser("society", help="Subscribe a watcher seat to a fleet/placement society change")
-    p_event_subscribe_society.add_argument("--name", help="Subscription name (optional)")
-    p_event_subscribe_society.add_argument("--to", required=True, help="Subscriber (watcher) target seat")
-    _mem_scope = p_event_subscribe_society.add_mutually_exclusive_group(required=True)
-    _mem_scope.add_argument("--fleet", help="Watch this fleet's society")
-    _mem_scope.add_argument("--placement", help="Watch this placement's society")
-    p_event_subscribe_society.add_argument("--kind", action="append", choices=["join", "leave", "rename"], help="Only these change kinds; repeatable (default all)")
-    p_event_subscribe_society.add_argument("--as", dest="sender", default="service:aura-society", help="Sender label")
+    p_event_subscribe_membership = subscribe_sub.add_parser("membership", help="Subscribe a watcher seat to a fleet/placement membership change")
+    p_event_subscribe_membership.add_argument("--name", help="Subscription name (optional)")
+    p_event_subscribe_membership.add_argument("--to", required=True, help="Subscriber (watcher) target seat")
+    _mem_scope = p_event_subscribe_membership.add_mutually_exclusive_group(required=True)
+    _mem_scope.add_argument("--fleet", help="Watch this fleet's membership")
+    _mem_scope.add_argument("--placement", help="Watch this placement's membership")
+    p_event_subscribe_membership.add_argument("--kind", action="append", choices=["join", "leave", "rename"], help="Only these change kinds; repeatable (default all)")
+    p_event_subscribe_membership.add_argument("--as", dest="sender", default="service:aura-membership", help="Sender label")
 
     p_event_subscriptions = event_sub.add_parser("subscriptions", help="List event subscriptions")
     p_event_subscriptions.add_argument("--status", choices=["active", "paused", "removed"], help="Filter subscriptions by status")
@@ -1128,6 +1148,9 @@ def main():
             result = agent_map_cmd.run(args)
         elif args.command == "ambient":
             result = ambient_cmd.run(args)
+        elif args.command == "society":
+            from lib import society as society_lib
+            result = society_lib.run(args)
         elif args.command == "broadcast":
             result = broadcast.run(args)
         elif args.command == "write":

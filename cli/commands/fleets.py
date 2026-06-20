@@ -509,10 +509,10 @@ def _rename(old: str | None, new: str | None, *, dry_run: bool, confirm: bool, r
             pass
     except Exception as exc:
         return {"ok": False, "error": f"fleet registry rewrite failed after tmux rename: {exc}", "tmux_renamed": True}
-    try:  # society: the group readdressed → seats re-orient to the new fleet name
-        from lib import society
+    try:  # membership: the group readdressed → seats re-orient to the new fleet name
+        from lib import membership
 
-        society.emit_society_change(f"fleet:{new}", "rename", f"fleet:{new}")
+        membership.emit_membership_change(f"fleet:{new}", "rename", f"fleet:{new}")
     except Exception:
         pass
     return {

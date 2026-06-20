@@ -497,12 +497,12 @@ def add_alias(source: str, target: str, *, reason: str = "alias") -> dict[str, A
     return record
 
 
-def _emit_society(group: str, kind: str, member: str) -> None:
-    """Post-commit society emit (lazy import avoids a cycle; never fatal)."""
+def _emit_membership(group: str, kind: str, member: str) -> None:
+    """Post-commit membership emit (lazy import avoids a cycle; never fatal)."""
     try:
-        from lib import society
+        from lib import membership
 
-        society.emit_society_change(group, kind, member)
+        membership.emit_membership_change(group, kind, member)
     except Exception:
         return
 
@@ -546,7 +546,7 @@ def upsert_agent(record: dict[str, Any]) -> dict[str, Any]:
         data[key] = merged
         _write_registry_unlocked(data)
     if is_new:
-        _emit_society(f"fleet:{fleet}", "join", key)
+        _emit_membership(f"fleet:{fleet}", "join", key)
     return merged
 
 
@@ -620,11 +620,11 @@ def remove_agent(name: str, fleet: str | None = None) -> bool:
                 gone.append(key)
         if removed:
             _write_registry_unlocked(data)
-    # TODO(hooks/society): seat sweep removes N rows in one fleet → N leave emits.
+    # TODO(hooks/membership): seat sweep removes N rows in one fleet → N leave emits.
     # Idempotent + hook-fingerprint-deduped (harmless), but batch-once per group is the
-    # optimum — add a suppress_society_emit context around seat._sweep's batch.
+    # optimum — add a suppress_membership_emit context around seat._sweep's batch.
     for key in gone:
-        _emit_society(f"fleet:{key.split(':', 1)[0]}", "leave", key)
+        _emit_membership(f"fleet:{key.split(':', 1)[0]}", "leave", key)
     return removed
 
 
@@ -732,7 +732,7 @@ def rename_agent(
 
     alias = add_alias(source_ref, target_ref, reason="rename") if alias_old and target_ref != source_ref else None
     if target_ref != source_ref:
-        _emit_society(f"fleet:{target_fleet}", "rename", target_ref)
+        _emit_membership(f"fleet:{target_fleet}", "rename", target_ref)
     return {
         "ok": True,
         "source": source_ref,

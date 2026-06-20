@@ -528,17 +528,17 @@ def _daemon(job_id: str) -> dict:
 def run(args):
     action = args.event_action
     if action == "subscribe":
-        if getattr(args, "subscribe_source", None) == "society":
-            from lib import society
+        if getattr(args, "subscribe_source", None) == "membership":
+            from lib import membership
 
             scope = ({"fleet": args.fleet} if getattr(args, "fleet", None)
                      else {"placement": args.placement})
-            record = society.create_subscription(
+            record = membership.create_subscription(
                 scope, args.to,
-                as_sender=getattr(args, "sender", None) or "service:aura-society",
+                as_sender=getattr(args, "sender", None) or "service:aura-membership",
                 kinds=getattr(args, "kind", None),
             )
-            return {"ok": True, "schema": "aura.event.society_subscription_ack.v1",
+            return {"ok": True, "schema": "aura.event.membership_subscription_ack.v1",
                     "subscription": record}
         if getattr(args, "subscribe_source", None) != "reports":
             return {"ok": False, "error": f"unknown subscription source: {getattr(args, 'subscribe_source', None)}"}

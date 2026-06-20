@@ -1,213 +1,197 @@
-"""Society event source — the world-substrate layer above fleet/placement.
+"""Society container config — a named JSON package: members + config + resolves_to.
 
-A *society* event fires when the member SET of a group (a fleet or a placement)
-changes: join / leave / rename — "society changed, a new member entered". It is NOT
-a member's self-state change (that is `reports`), nor a pane move or binding repair.
-It drives ambient topology refresh.
+A *society* is the top container above fleet/placement. It holds:
+  - members      durable `fleet-id://<id>` pointers (rename-safe; authored by name/glob,
+                 pinned to ids at `set` time — a fleet rename never silently adds/drops one)
+  - config       a K -> pointer map (values resolve via the seam; literals/op://… pass raw)
+  - resolves_to  one opaque pointer, stored + returned RAW
 
-Shape mirrors the report-boundary machinery (`reports.schedule_report_subscriptions`
-+ `report_subscriptions`):
+Discipline (v1): stores + resolves ONLY. Does NOT apply config to seats, deref secrets,
+or know Runway. ALL pointer resolution routes through `lib.resolve` (the seam); the
+`fleet-id` resolver self-registers from `lib.fleets` (imported here).
 
-    member-set write  ──►  emit_society_change(group, kind, member)
-                      ──►  schedule_society_subscriptions(group)
-                              · explicit watchers (society_subscription rows)
-                              · implicit: every LIVE seat IN the changed group
-                      ──►  set_ambient_pending(targets, reason)   [the ambient layer's flag]
-
-The ambient-pending flag belongs to the ambient layer (the hook reads it); society
-only SETS it. It lives under AURA_STATE_DIR keyed by seat identity — the same path
-`cli/hooks/claude_ambient_hook.py:pending_path()` reads — so neither side needs the
-box layout. No registry write per society change (seam v2 §3 intent).
+This is the CONTAINER. The member-set-changed *event* is `lib.membership` — a level
+below, sharing no code.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-from lib import state
+from lib import resolve, fleets, state  # importing fleets self-registers the fleet-id resolver
 
-SCHEMA_SUB = "aura.society_subscription.v1"
-KINDS = {"join", "leave", "rename"}
-
-
-# --------------------------------------------------------------------------- paths
+SCHEMA = "aura.society.v1"
 
 
-def _state_root() -> Path:
+def registry_path() -> Path:
+    return state.state_root() / "societies" / "registry.json"
+
+
+def _read() -> dict[str, Any]:
+    path = registry_path()
+    if not path.exists():
+        return {"schema": SCHEMA, "societies": {}}
     try:
-        return Path(state.state_root())
-    except Exception:  # noqa: BLE001
-        return Path(os.environ.get("AURA_STATE_DIR") or (Path.home() / ".aura"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"schema": SCHEMA, "societies": {}}
+    if not isinstance(data, dict):
+        return {"schema": SCHEMA, "societies": {}}
+    data.setdefault("schema", SCHEMA)
+    if not isinstance(data.get("societies"), dict):
+        data["societies"] = {}
+    return data
 
 
-def _pending_key(fleet: str, seat: str) -> str:
-    return f"{fleet}__{seat}".replace("/", "_")
-
-
-def pending_path(target: str) -> Path:
-    """Per-seat ambient pending-refresh flag path; mirrors the hook's resolution.
-
-    This flag is the ambient layer's mechanism — society only sets it; the hook owns
-    reading/clearing it. Path is intentionally identical on both sides."""
-    fleet, _, seat = target.partition(":")
-    return _state_root() / "ambient-pending" / f"{_pending_key(fleet, seat or 'unknown')}.json"
-
-
-def subscriptions_root() -> Path:
-    return _state_root() / "society-subscriptions"
-
-
-def _atomic_write(path: Path, data: Any) -> None:
+def _write(data: dict[str, Any]) -> None:
+    path = registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
+            json.dump(data, fh, indent=2, sort_keys=True)
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def _blank_society() -> dict[str, Any]:
+    return {"schema": SCHEMA, "members": [], "config": {}, "resolves_to": None}
 
 
-# --------------------------------------------------------------- pending-flag write
+def _member_pointer(fleet_id: str) -> str:
+    return f"fleet-id://{fleet_id}"
 
 
-def set_ambient_pending(targets: Iterable[str], reason: str) -> list[str]:
-    """Write the ambient pending-refresh flag for each target seat. Best-effort;
-    returns the targets actually flagged. Caller resolves live-only targets."""
-    written: list[str] = []
-    for target in targets:
-        if not target or ":" not in target:
-            continue
-        try:
-            _atomic_write(pending_path(target),
-                          {"schema": "aura.ambient_pending.v1", "reason": reason, "set_at": _now()})
-            written.append(target)
-        except OSError:
-            continue
-    return written
+def _name_or_glob_to_ids(pattern: str) -> list[str]:
+    """Snapshot a fleet name|id|alias|glob to durable fleet_id(s) at authoring time."""
+    rec = fleets.resolve(pattern)
+    if rec and rec.get("fleet_id"):
+        return [rec["fleet_id"]]
+    ids = [f["fleet_id"] for f in fleets.list_fleets()
+           if f.get("current_name") and f.get("fleet_id")
+           and fnmatch.fnmatch(f["current_name"], pattern)]
+    return sorted(set(ids))
 
 
-# ------------------------------------------------------------------- subscriptions
+# --------------------------------------------------------------------------- verbs
 
 
-def create_subscription(scope: dict[str, str], to: str, *, as_sender: str = "service:aura-society",
-                        kinds: list[str] | None = None) -> dict[str, Any]:
-    sub_id = f"ssub_{os.urandom(6).hex()}"
-    record = {
-        "schema": SCHEMA_SUB, "id": sub_id, "scope": scope, "to": to,
-        "as": as_sender, "kinds": kinds or sorted(KINDS), "status": "active",
-        "created_at": _now(),
-    }
-    _atomic_write(subscriptions_root() / f"{sub_id}.json", record)
-    return record
+def list_societies() -> dict[str, Any]:
+    data = _read()
+    rows = [
+        {"name": name, "members": len(soc.get("members") or []),
+         "has_config": bool(soc.get("config")), "resolves_to": soc.get("resolves_to")}
+        for name, soc in sorted(data["societies"].items())
+    ]
+    return {"ok": True, "schema": "aura.society_list.v1", "total": len(rows), "societies": rows}
 
 
-def list_subscriptions(*, status: str | None = None) -> list[dict[str, Any]]:
-    root = subscriptions_root()
-    if not root.is_dir():
-        return []
-    out: list[dict[str, Any]] = []
-    for path in sorted(root.glob("ssub_*.json")):
-        try:
-            rec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if status and rec.get("status") != status:
-            continue
-        out.append(rec)
-    return out
+def get(name: str) -> dict[str, Any]:
+    soc = _read()["societies"].get(name)
+    if not soc:
+        return {"ok": False, "error": f"society not found: {name}"}
+    members = [resolve.resolve(m) for m in (soc.get("members") or [])]  # ids -> current names (+stale)
+    return {"ok": True, "schema": "aura.society.get.v1", "name": name,
+            "members": members, "config": soc.get("config") or {},
+            "resolves_to": soc.get("resolves_to")}
 
 
-def set_status(sub_id: str, status: str) -> bool:
-    path = subscriptions_root() / f"{sub_id}.json"
-    try:
-        rec = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    rec["status"] = status
-    _atomic_write(path, rec)
-    return True
+def of(fleet: str) -> dict[str, Any]:
+    """Reverse lookup: which societ(ies) own this fleet, by durable id."""
+    rec = fleets.resolve(fleet)
+    fid = rec.get("fleet_id") if rec else None
+    hits = []
+    if fid:
+        for name, soc in _read()["societies"].items():
+            ids = {m.partition("://")[2] for m in (soc.get("members") or [])
+                   if isinstance(m, str) and m.startswith("fleet-id://")}
+            if fid in ids:
+                hits.append(name)
+    return {"ok": True, "schema": "aura.society.of.v1", "fleet": fleet,
+            "fleet_id": fid, "societies": sorted(hits)}
 
 
-def _scope_matches(scope: dict[str, str], group: str) -> bool:
-    if not isinstance(scope, dict):
-        return False
-    if scope.get("fleet") and group == f"fleet:{scope['fleet']}":
-        return True
-    if scope.get("placement") and group == f"placement:{scope['placement']}":
-        return True
-    return False
+def resolve_config(name: str, key: str | None = None) -> dict[str, Any]:
+    soc = _read()["societies"].get(name)
+    if not soc:
+        return {"ok": False, "error": f"society not found: {name}"}
+    cfg = soc.get("config") or {}
+    if key is not None:
+        return {"ok": True, "name": name, "key": key, "value": resolve.resolve(cfg.get(key))}
+    return {"ok": True, "name": name, "config": resolve.resolve_map(cfg)}
 
 
-# -------------------------------------------------------------- live-in-group fanout
+def set_member(name: str, pattern: str) -> dict[str, Any]:
+    ids = _name_or_glob_to_ids(pattern)
+    if not ids:
+        return {"ok": False, "error": f"no fleet matched: {pattern}"}
+    data = _read()
+    soc = data["societies"].setdefault(name, _blank_society())
+    members = set(soc.get("members") or [])
+    members.update(_member_pointer(fid) for fid in ids)
+    soc["members"] = sorted(members)
+    _write(data)
+    return {"ok": True, "name": name, "pinned": ids, "members": soc["members"]}
 
 
-def _live_targets_in_group(group: str) -> list[str]:
-    """LIVE seats inside the changed group (implicit-self convention, no rows)."""
-    kind, _, name = group.partition(":")
-    try:
-        from lib import seat_status
-        if kind == "fleet":
-            rows = seat_status.list_seat_statuses(fleet=name, include_hidden=False)
-        elif kind == "placement":
-            from lib import placements
-            refs = {m.get("target") or m.get("seat_ref")
-                    for m in placements.get_placement(name).get("members", [])}
-            rows = [r for r in seat_status.list_seat_statuses(include_hidden=False)
-                    if (r.get("target") or r.get("seat_ref")) in refs]
-        else:
-            return []
-    except Exception:  # noqa: BLE001 - fanout is best-effort
-        return []
-    live = []
-    for r in rows:
-        if r.get("liveness") == "alive" and r.get("managed_state") not in {"stopped", "missing_pane"}:
-            t = r.get("target") or r.get("seat_ref")
-            if t:
-                live.append(t)
-    return live
+def remove_member(name: str, fleet_id: str) -> dict[str, Any]:
+    data = _read()
+    soc = data["societies"].get(name)
+    if not soc:
+        return {"ok": False, "error": f"society not found: {name}"}
+    fid = fleet_id.partition("://")[2] if str(fleet_id).startswith("fleet-id://") else fleet_id
+    ptr = _member_pointer(fid)
+    before = len(soc.get("members") or [])
+    soc["members"] = [m for m in (soc.get("members") or []) if m != ptr]
+    _write(data)
+    return {"ok": True, "name": name, "removed": before - len(soc["members"])}
 
 
-# --------------------------------------------------------------------- the boundary
+def set_fields(name: str, *, config: dict[str, str] | None = None,
+               resolves_to: str | None = None) -> dict[str, Any]:
+    data = _read()
+    soc = data["societies"].setdefault(name, _blank_society())
+    if config:
+        soc.setdefault("config", {})
+        soc["config"].update(config)
+    if resolves_to is not None:
+        soc["resolves_to"] = resolves_to
+    _write(data)
+    return {"ok": True, "name": name, "config": soc.get("config"), "resolves_to": soc.get("resolves_to")}
 
 
-def schedule_society_subscriptions(group: str, *, kind: str = "join",
-                                   member: str | None = None) -> dict[str, Any]:
-    """Route a society change: flag implicit live-in-group seats + deliver to any
-    explicit watcher subscriptions. Mirror of report-boundary subscription firing.
-    Best-effort and non-fatal — a control-plane write must never break on this."""
-    reason = f"{kind}:{group}" + (f":{member}" if member else "")
-    flagged = set_ambient_pending(_live_targets_in_group(group), reason)
-
-    delivered: list[str] = []
-    for sub in list_subscriptions(status="active"):
-        if kind not in (sub.get("kinds") or []):
-            continue
-        if not _scope_matches(sub.get("scope") or {}, group):
-            continue
-        to = sub.get("to")
-        if to:
-            set_ambient_pending([to], reason)
-            delivered.append(to)
-    return {"group": group, "kind": kind, "flagged": flagged, "delivered": delivered}
-
-
-def emit_society_change(group: str, kind: str, member: str | None = None) -> None:
-    """Emit point — call POST-COMMIT from the member-set writes. Swallows errors so a
-    registry/placement/fleet write is never broken by society routing."""
-    if kind not in KINDS:
-        return
-    try:
-        schedule_society_subscriptions(group, kind=kind, member=member)
-    except Exception:  # noqa: BLE001 - never fatal to the originating write
-        return
+def run(args) -> dict[str, Any]:
+    action = getattr(args, "society_action", None)
+    if action == "list":
+        return list_societies()
+    if action == "get":
+        return get(args.name)
+    if action == "of":
+        return of(args.fleet)
+    if action == "resolve":
+        return resolve_config(args.name, getattr(args, "key", None))
+    if action == "remove-member":
+        return remove_member(args.name, args.fleet_id)
+    if action == "set":
+        steps: list[dict[str, Any]] = []
+        for member in (getattr(args, "member", None) or []):
+            steps.append(set_member(args.name, member))
+        cfg: dict[str, str] = {}
+        for kv in (getattr(args, "config", None) or []):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                cfg[k] = v
+        if cfg or getattr(args, "resolves_to", None) is not None:
+            steps.append(set_fields(args.name, config=cfg or None,
+                                    resolves_to=getattr(args, "resolves_to", None)))
+        if not steps:
+            return {"ok": False, "error": "set requires --member, --config K=V, or --resolves-to"}
+        return {"ok": all(s.get("ok") for s in steps), "name": args.name, "steps": steps}
+    return {"ok": False, "error": f"unknown society action: {action}"}

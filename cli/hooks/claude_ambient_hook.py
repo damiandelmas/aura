@@ -2,8 +2,8 @@
 """Claude Code ambient (fleet-roster) hook for boxed Aura seats.
 
 Topology-awareness injection, the claude twin of the recovered codex ambient hook
-— but **push, not poll**. Heavy roster builds happen only when society actually
-changed (a pending-flag set by the society event source). Per-prompt cost is a
+— but **push, not poll**. Heavy roster builds happen only when membership actually
+changed (a pending-flag set by the membership event source). Per-prompt cost is a
 single file-stat. Binding is NOT done here (that is claude_bind_hook.py).
 
   SessionStart      → inject ambient packet once (born orientation).
@@ -56,7 +56,7 @@ def _pending_key(fleet: str, seat: str) -> str:
 
 
 def pending_path() -> Path:
-    """Cross-process pending-refresh flag — written by the society emitter (aura
+    """Cross-process pending-refresh flag — written by the membership emitter (aura
     CLI), read here. Lives under AURA_STATE_DIR keyed by seat identity (NOT in the
     box) so the emitter resolves the same path without knowing the box layout. Both
     sides have AURA_STATE_DIR + AURA_FLEET + AURA_SEAT in env on every managed launch.
