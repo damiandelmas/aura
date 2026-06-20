@@ -141,26 +141,39 @@ def parse_panes(output: str) -> list[dict[str, Any]]:
 
 
 def list_physical_panes(*, runner: Callable[..., subprocess.CompletedProcess] | None = None) -> dict[str, Any]:
-    """Return exact physical tmux panes without consulting Aura registry."""
-    run = runner or subprocess.run
-    fmt = _FIELD_SEP.join(_FORMAT_FIELDS)
-    result = run(["tmux", "list-panes", "-a", "-F", fmt], capture_output=True, text=True)
-    if result.returncode != 0:
+    """Return exact physical tmux panes without consulting Aura registry.
+
+    Defaults to a live ``tmux list-panes`` poll. When ``AURA_MIRROR_SOURCE`` is
+    ``cache``/``shadow``, the read is served from / compared against a
+    hook-invalidated cache (see lib/tmux_mirror_cache). An explicitly injected
+    ``runner`` always polls directly (the test/injection path), so this is a
+    no-op by default.
+    """
+    def _poll() -> dict[str, Any]:
+        run = runner or subprocess.run
+        fmt = _FIELD_SEP.join(_FORMAT_FIELDS)
+        result = run(["tmux", "list-panes", "-a", "-F", fmt], capture_output=True, text=True)
+        if result.returncode != 0:
+            return {
+                "ok": False,
+                "schema": "aura.tmux_mirror.v1",
+                "error": (result.stderr or "tmux list-panes failed").strip(),
+                "panes": [],
+            }
+        panes = parse_panes(result.stdout)
+        sessions = sorted({row["physical_fleet"] for row in panes if row.get("physical_fleet")})
         return {
-            "ok": False,
+            "ok": True,
             "schema": "aura.tmux_mirror.v1",
-            "error": (result.stderr or "tmux list-panes failed").strip(),
-            "panes": [],
+            "counts": {"sessions": len(sessions), "panes": len(panes)},
+            "sessions": sessions,
+            "panes": panes,
         }
-    panes = parse_panes(result.stdout)
-    sessions = sorted({row["physical_fleet"] for row in panes if row.get("physical_fleet")})
-    return {
-        "ok": True,
-        "schema": "aura.tmux_mirror.v1",
-        "counts": {"sessions": len(sessions), "panes": len(panes)},
-        "sessions": sessions,
-        "panes": panes,
-    }
+
+    if runner is not None:
+        return _poll()
+    from lib import tmux_mirror_cache
+    return tmux_mirror_cache.serve(_poll)
 
 
 def join_managed(panes: list[dict[str, Any]], records: list[dict[str, Any]]) -> dict[str, Any]:
