@@ -1123,3 +1123,121 @@ def test_heal_dry_run_performs_no_registry_write(monkeypatch, tmp_path):
     row = registry.get_agent("builder", fleet="dryfleet")
     assert not runtime_session.is_bound_session(row), "dry-run must not write the registry"
     assert "session_id" not in row
+
+
+# ---- phantom-binding invariant + self-heal (fix/binding-invariant-selfheal) ---- #
+
+def test_normalize_downgrades_phantom_bound_to_unbound():
+    """INVARIANT: a row claiming bound with no runtime session id is a phantom."""
+    from lib import registry, runtime_session
+    out = registry.normalize_agent_record({
+        "name": "manager", "fleet": "pfleet", "runtime": "claude-code",
+        "runtime_session_binding": "bound",
+        "runtime_session_bind_method": "tmux-pane:env",
+        # no runtime_session_id / session_id
+    })
+    assert out["runtime_session_binding"] == "unbound"
+    assert out.get("runtime_session_phantom_downgraded") is True
+    assert out.get("runtime_session_bind_method") is None
+    assert runtime_session.is_bound_session(out) is False
+
+
+def test_normalize_keeps_real_bound_row():
+    from lib import registry, runtime_session
+    out = registry.normalize_agent_record({
+        "name": "manager", "fleet": "pfleet", "runtime": "claude-code",
+        "runtime_session_binding": "bound", "runtime_session_id": "real-sess-1",
+    })
+    assert out["runtime_session_binding"] == "bound"
+    assert out.get("runtime_session_phantom_downgraded") is None
+    assert runtime_session.is_bound_session(out) is True
+
+
+def test_upsert_refuses_to_persist_phantom_bound(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    from lib import registry, runtime_session
+    registry.upsert_agent({
+        "name": "manager", "fleet": "pfleet", "runtime": "claude-code",
+        "registered": True, "pane_ref": "tmux:pfleet:%9",
+        "runtime_session_binding": "bound",            # phantom in -> must store unbound
+        "runtime_session_bind_method": "tmux-pane:env",
+    })
+    row = registry.get_agent("manager", fleet="pfleet")
+    assert row["runtime_session_binding"] == "unbound"
+    assert not row.get("runtime_session_id")
+    assert runtime_session.is_bound_session(row) is False
+
+
+def test_heal_does_not_skip_phantom_bound_record(monkeypatch, tmp_path):
+    """A phantom-bound record (binding=bound, runtime_session_id null, even with a
+    stale session_id) must NOT be skipped as already-bound — it heals to the real
+    live session via the pane->session FK."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    from commands import sessions
+    from lib import registry, runtime_session, terminal as terminal_mod, pane_resolver, bind_guard
+
+    pane_ref = "tmux:pfleet:%9"
+    real_session = "1111aaaa-real-fk-0000-000000000001"
+    phantom = {
+        "name": "manager", "fleet": "pfleet", "runtime": "claude-code",
+        "registered": True, "pane_ref": pane_ref, "cwd": str(tmp_path / "repo"),
+        "runtime_session_binding": "bound",
+        "session_id": "stale-recorded-nowhere",   # is_bound_session() True...
+        "runtime_session_id": None,                # ...but no canonical runtime session
+    }
+    # feed heal the raw phantom candidate (bypassing the normalize downgrade)
+    monkeypatch.setattr(registry, "list_agents", lambda fleet=None, include_hidden=False: [dict(phantom)])
+    monkeypatch.setattr(terminal_mod, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal_mod, "target_exists", lambda target: target == pane_ref)
+    monkeypatch.setattr(pane_resolver, "resolve_pane", lambda **kw: {
+        "ok": True, "runtime_session_id": real_session,
+        "runtime_session_source": "tmux-pane:claude-statusline-map",
+        "runtime_session_confidence": "exact", "pane_pid": None,
+    })
+    monkeypatch.setattr(pane_resolver, "bind_gates", lambda res, previous=None, repair=False: {"ok": True})
+    monkeypatch.setattr(bind_guard, "body_gates", lambda *a, **k: {"ok": True})
+
+    result = sessions._heal(_make_heal_args(all=True))
+    statuses = {r["seat"]: r["status"] for r in result["results"]}
+    assert statuses.get("pfleet:manager") != "skipped", result   # NOT 'already-bound'
+    assert result["healed"] == 1, result
+    row = registry.get_agent("manager", fleet="pfleet")
+    assert row.get("runtime_session_id") == real_session
+    assert runtime_session.is_bound_session(row) is True
+
+
+def test_phantom_bound_seat_self_heals_to_real_session(monkeypatch, tmp_path):
+    """Acceptance: a phantom-bound row entering the registry is downgraded to
+    unbound (invariant), then the sweep binds it to the real live session."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    from commands import sessions
+    from lib import registry, runtime_session, terminal as terminal_mod, pane_resolver, bind_guard
+
+    pane_ref = "tmux:pfleet:%9"
+    real_session = "2222bbbb-real-fk-0000-000000000002"
+    registry.upsert_agent({
+        "name": "manager", "fleet": "pfleet", "runtime": "claude-code",
+        "registered": True, "pane_ref": pane_ref, "cwd": str(tmp_path / "repo"),
+        "runtime_session_binding": "bound", "runtime_session_bind_method": "tmux-pane:env",
+    })
+    # invariant: stored unbound (phantom can't persist)
+    assert registry.get_agent("manager", fleet="pfleet")["runtime_session_binding"] == "unbound"
+
+    monkeypatch.setattr(terminal_mod, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal_mod, "target_exists", lambda target: target == pane_ref)
+    monkeypatch.setattr(pane_resolver, "resolve_pane", lambda **kw: {
+        "ok": True, "runtime_session_id": real_session,
+        "runtime_session_source": "tmux-pane:claude-statusline-map",
+        "runtime_session_confidence": "exact", "pane_pid": None,
+    })
+    monkeypatch.setattr(pane_resolver, "bind_gates", lambda res, previous=None, repair=False: {"ok": True})
+    monkeypatch.setattr(bind_guard, "body_gates", lambda *a, **k: {"ok": True})
+
+    result = sessions._heal(_make_heal_args(target="pfleet:manager"))
+    assert result["healed"] == 1, result
+    row = registry.get_agent("manager", fleet="pfleet")
+    assert row["runtime_session_id"] == real_session
+    assert runtime_session.is_bound_session(row) is True

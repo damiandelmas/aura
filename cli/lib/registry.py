@@ -145,6 +145,16 @@ def normalize_agent_record(record: dict[str, Any], *, fleet: str | None = None, 
         normalized["aura_launch_id"] = normalized.get("aura_launch_id") or launch_id
         normalized["launch_id"] = normalized.get("launch_id") or launch_id
         normalized["launch_ref"] = normalized.get("launch_ref") or launch_id
+    # INVARIANT: 'bound' REQUIRES a real runtime session id. A row claiming bound
+    # with no session id (after the session_id->runtime_session_id promotion above)
+    # is a PHANTOM — it cannot exist by construction. Downgrade it to unbound and
+    # strip the bind provenance, so it neither persists nor reads as bound and the
+    # healer re-binds the real live session on its next sweep.
+    if normalized.get("runtime_session_binding") == "bound" and not normalized.get("runtime_session_id"):
+        normalized["runtime_session_binding"] = "unbound"
+        normalized["runtime_session_bind_method"] = None
+        normalized["runtime_session_bind_source"] = None
+        normalized["runtime_session_phantom_downgraded"] = True
     return normalized
 
 

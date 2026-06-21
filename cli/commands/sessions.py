@@ -507,8 +507,12 @@ def _heal(args) -> dict:
             skipped_count += 1
             continue
 
-        # Skip already-bound seats
-        if runtime_session.is_bound_session(record):
+        # Skip ONLY genuinely-bound seats — bound AND carrying a real
+        # runtime_session_id. A PHANTOM-bound row (binding=bound but
+        # runtime_session_id null) must NOT be skipped: it flows to the pane->session
+        # FK resolve below and gets the real live session written. Without this the
+        # phantom is invisible to the healer and stays stuck forever.
+        if runtime_session.is_bound_session(record) and record.get("runtime_session_id"):
             results.append({
                 "seat": seat_target,
                 "status": "skipped",
