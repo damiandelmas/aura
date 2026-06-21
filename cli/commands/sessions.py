@@ -550,19 +550,35 @@ def _heal(args) -> dict:
                 from lib import pane_resolver
                 res = pane_resolver.resolve_pane(pane=pane_id)
                 if res.get("ok"):
-                    pane_birth_si = pane_resolver._read_birth_env(res.get("pane_pid")).get(
-                        "AURA_SEAT_INSTANCE_ID"
-                    )
+                    birth = pane_resolver._read_birth_env(res.get("pane_pid")) or {}
+                    pane_birth_si = birth.get("AURA_SEAT_INSTANCE_ID")
                     if pane_birth_si and str(pane_birth_si) != str(registry_si):
-                        results.append({
-                            "seat": seat_target,
-                            "status": "skipped",
-                            "reason": "occupant-mismatch-born-pane",
-                            "expected_seat_instance_id": registry_si,
-                            "actual_seat_instance_id": pane_birth_si,
-                        })
-                        skipped_count += 1
-                        continue
+                        # The live pane is a different incarnation than the row. If its
+                        # birth-env fleet:seat MATCHES this row's logical seat, it is a
+                        # NEWER incarnation of the SAME seat (a rollover/restart that did
+                        # not re-register the si) -> self-heal: adopt the new si so heal
+                        # can bind. Gated strictly on birth-env fleet:seat: a FOREIGN pane
+                        # (different fleet:seat) is still REFUSED by the occupant guard.
+                        # Prevention (rollover born-bind) keeps si current, so a healthy
+                        # row never mismatches here — this fires only on already-stale rows,
+                        # so the two never double-refresh.
+                        same_logical = (birth.get("AURA_FLEET") == fleet
+                                        and birth.get("AURA_SEAT") == seat)
+                        if same_logical:
+                            record = registry.upsert_agent({**record, "seat_instance_id": pane_birth_si})
+                            registry_si = pane_birth_si
+                        else:
+                            results.append({
+                                "seat": seat_target,
+                                "status": "skipped",
+                                "reason": "occupant-mismatch-born-pane",
+                                "expected_seat_instance_id": registry_si,
+                                "actual_seat_instance_id": pane_birth_si,
+                                "birth_fleet": birth.get("AURA_FLEET"),
+                                "birth_seat": birth.get("AURA_SEAT"),
+                            })
+                            skipped_count += 1
+                            continue
             except Exception:
                 pass
 

@@ -319,7 +319,13 @@ def test_reconcile_mirror_unavailable_graceful(monkeypatch, tmp_path):
 
 
 def test_heal_skips_occupant_mismatch_born_pane(monkeypatch, tmp_path):
-    """Registry row si-old, but the live pane was born under si-new: skip, don't heal."""
+    """Registry row flt:scout, but the live pane's birth-env names a DIFFERENT
+    fleet:seat (a FOREIGN occupant): skip, don't heal — the occupant guard fires.
+
+    (A same-fleet:seat pane with a newer si is NOT foreign; it is a newer
+    incarnation and is now self-healed by si-refresh — see
+    test_heal_refreshes_stale_si_for_same_logical_seat in test_sessions_command.)
+    """
     monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
     from commands import sessions
     from lib import registry
@@ -336,8 +342,8 @@ def test_heal_skips_occupant_mismatch_born_pane(monkeypatch, tmp_path):
     pane = _pane(pane_id="%26", session="flt")
     _install_mirror(monkeypatch, [pane])
     _install_birth_env(monkeypatch, {
-        "AURA_FLEET": "flt",
-        "AURA_SEAT": "scout",
+        "AURA_FLEET": "otherflt",   # foreign — a different logical seat owns this pane
+        "AURA_SEAT": "intruder",
         "AURA_SEAT_INSTANCE_ID": "si-new",
     })
 

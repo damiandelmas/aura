@@ -1241,3 +1241,77 @@ def test_phantom_bound_seat_self_heals_to_real_session(monkeypatch, tmp_path):
     row = registry.get_agent("manager", fleet="pfleet")
     assert row["runtime_session_id"] == real_session
     assert runtime_session.is_bound_session(row) is True
+
+
+def test_heal_refreshes_stale_si_for_same_logical_seat(monkeypatch, tmp_path):
+    """Self-heal backstop: a stale seat_instance_id on a row whose live pane's
+    birth-env fleet:seat MATCHES is refreshed (newer incarnation adopted), then
+    heal binds the real session."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    from commands import sessions
+    from lib import registry, runtime_session, terminal as terminal_mod, pane_resolver, bind_guard
+
+    pane_ref = "tmux:sfleet:%130"
+    old_si, new_si = "si_stale_old", "si_live_new"
+    real_session = "3333cccc-real-fk-0000-000000000003"
+    registry.upsert_agent({
+        "name": "manager", "fleet": "sfleet", "runtime": "claude-code",
+        "registered": True, "pane_ref": pane_ref, "cwd": str(tmp_path / "repo"),
+        "seat_instance_id": old_si,   # stale — live pane is a newer incarnation
+    })
+    monkeypatch.setattr(terminal_mod, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal_mod, "target_exists", lambda target: target == pane_ref)
+    monkeypatch.setattr(pane_resolver, "resolve_pane", lambda **kw: {
+        "ok": True, "pane_pid": 4242, "runtime_session_id": real_session,
+        "runtime_session_source": "tmux-pane:claude-statusline-map",
+        "runtime_session_confidence": "exact",
+    })
+    monkeypatch.setattr(pane_resolver, "_read_birth_env", lambda pid: {
+        "AURA_SEAT_INSTANCE_ID": new_si, "AURA_FLEET": "sfleet", "AURA_SEAT": "manager",
+    })
+    monkeypatch.setattr(pane_resolver, "bind_gates", lambda res, previous=None, repair=False: {"ok": True})
+    monkeypatch.setattr(bind_guard, "body_gates", lambda *a, **k: {"ok": True})
+
+    result = sessions._heal(_make_heal_args(target="sfleet:manager"))
+    assert result["healed"] == 1, result
+    row = registry.get_agent("manager", fleet="sfleet")
+    assert row["seat_instance_id"] == new_si             # si refreshed to the live incarnation
+    assert row["runtime_session_id"] == real_session     # bound to the real session
+    assert runtime_session.is_bound_session(row) is True
+
+
+def test_heal_refuses_foreign_pane_with_different_fleet_seat(monkeypatch, tmp_path):
+    """A FOREIGN pane (birth-env fleet:seat differs from the row) is STILL refused —
+    the si is NOT refreshed and nothing is bound."""
+    monkeypatch.setenv("AURA_STATE_DIR", str(tmp_path / ".aura"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    from commands import sessions
+    from lib import registry, runtime_session, terminal as terminal_mod, pane_resolver, bind_guard
+
+    pane_ref = "tmux:sfleet:%130"
+    old_si, foreign_si = "si_row_original", "si_foreign_pane"
+    registry.upsert_agent({
+        "name": "manager", "fleet": "sfleet", "runtime": "claude-code",
+        "registered": True, "pane_ref": pane_ref, "cwd": str(tmp_path / "repo"),
+        "seat_instance_id": old_si,
+    })
+    monkeypatch.setattr(terminal_mod, "configure_session", lambda fleet: fleet)
+    monkeypatch.setattr(terminal_mod, "target_exists", lambda target: target == pane_ref)
+    monkeypatch.setattr(pane_resolver, "resolve_pane", lambda **kw: {
+        "ok": True, "pane_pid": 4242, "runtime_session_id": "should-not-be-used",
+        "runtime_session_source": "tmux-pane:claude-statusline-map", "runtime_session_confidence": "exact",
+    })
+    # foreign: birth-env names a DIFFERENT fleet:seat
+    monkeypatch.setattr(pane_resolver, "_read_birth_env", lambda pid: {
+        "AURA_SEAT_INSTANCE_ID": foreign_si, "AURA_FLEET": "otherfleet", "AURA_SEAT": "intruder",
+    })
+    monkeypatch.setattr(bind_guard, "body_gates", lambda *a, **k: {"ok": True})
+
+    result = sessions._heal(_make_heal_args(target="sfleet:manager"))
+    assert result["healed"] == 0, result
+    assert result["results"][0]["status"] == "skipped"
+    assert result["results"][0]["reason"] == "occupant-mismatch-born-pane"
+    row = registry.get_agent("manager", fleet="sfleet")
+    assert row["seat_instance_id"] == old_si             # NOT refreshed
+    assert runtime_session.is_bound_session(row) is False  # nothing bound
