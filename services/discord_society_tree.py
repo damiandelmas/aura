@@ -124,102 +124,169 @@ def guild_id(env: dict[str, str]) -> str:
     return ch["guild_id"]
 
 
-def current_tree(env: dict[str, str], gid: str) -> tuple[dict, list[dict]]:
+BINDINGS_PATH = Path(os.path.expanduser("~/.aura/discord/channel-bindings.json"))
+
+
+def fetch_state(env: dict[str, str], gid: str) -> dict:
+    """Current live guild: categories (by name/id), text channels, and an index
+    of existing text channels keyed by (category-name, channel-name)."""
     chans = discord_api("GET", f"/guilds/{gid}/channels", env["DISCORD_TOKEN"])
-    cats = {c["name"]: c["id"] for c in chans if c["type"] == CT_CATEGORY}
-    home = env.get("DISCORD_CHANNEL_ID")  # the bot's home channel (#general) — NEVER archived
-    text = [{"id": c["id"], "name": c["name"], "parent": c.get("parent_id")}
-            for c in chans if c["type"] == CT_TEXT
-            and c["id"] != home and c["name"] not in SELF_CHANNELS]  # personal channels stay in #self
-    return cats, text
+    cats_by_name = {c["name"]: c["id"] for c in chans if c["type"] == CT_CATEGORY}
+    cats_by_id = {v: k for k, v in cats_by_name.items()}
+    text = [c for c in chans if c["type"] == CT_TEXT]
+    by_key = {(cats_by_id.get(c.get("parent_id")), c["name"]): c for c in text}
+    return {"cats_by_name": cats_by_name, "cats_by_id": cats_by_id, "text": text, "by_key": by_key}
+
+
+def load_bindings() -> dict:
+    try:
+        return json.loads(BINDINGS_PATH.read_text()).get("channels", {})
+    except Exception:
+        return {}
+
+
+def _binding_matches(current: dict | None, c: dict) -> bool:
+    if not current:
+        return False
+    return (current.get("default_target") == c["default_target"]
+            and dict(current.get("aliases") or {}) == c["aliases"])
+
+
+def build_plan(target: list[dict], state: dict, env: dict[str, str], bindings: dict) -> dict:
+    """Diff the desired tree against live state. Every item carries an action so
+    a re-run against an already-applied state produces an empty delta (no-op)."""
+    home = env.get("DISCORD_CHANNEL_ID")
+    target_keys = {(c["category"], c["channel"]) for c in target}
+
+    needed_cats = sorted({c["category"] for c in target}) + [ARCHIVE_CATEGORY]
+    categories = [{"name": cat, "id": state["cats_by_name"].get(cat),
+                   "action": "exists" if cat in state["cats_by_name"] else "create"}
+                  for cat in needed_cats]
+
+    channels = []
+    for c in target:
+        existing = state["by_key"].get((c["category"], c["channel"]))   # match by (category, name)
+        cid = existing["id"] if existing else None
+        bind_ok = _binding_matches(bindings.get(str(cid)) if cid else None, c)
+        channels.append({**c, "id": cid,
+                         "action": "exists" if existing else "create",
+                         "bind_action": "current" if bind_ok else "bind"})
+
+    # ARCHIVE = TRUE LEGACY ONLY: not protected (#general / #self), NOT a target
+    # society channel the generator creates, and not already in #archive.
+    archive = []
+    for ch in state["text"]:
+        name, cat = ch["name"], state["cats_by_id"].get(ch.get("parent_id"))
+        if ch["id"] == home or name in SELF_CHANNELS:      # protected
+            continue
+        if (cat, name) in target_keys:                     # our own society channel — leave it
+            continue
+        if cat == ARCHIVE_CATEGORY:                        # already archived — no-op
+            continue
+        archive.append({"id": ch["id"], "name": name, "from": cat or "(uncategorized)"})
+
+    return {"categories": categories, "channels": channels, "archive": archive}
+
+
+def deltas(plan: dict) -> dict:
+    return {
+        "categories": [c for c in plan["categories"] if c["action"] == "create"],
+        "channels": [c for c in plan["channels"] if c["action"] == "create"],
+        "binds": [c for c in plan["channels"] if c["bind_action"] == "bind"],
+        "archive": plan["archive"],
+    }
 
 
 # ---- Plan rendering -------------------------------------------------------- #
 
-def render(target: list[dict], existing_cats: dict, existing_text: list[dict]) -> str:
+def render(plan: dict) -> str:
     by_cat: dict[str, list[dict]] = {}
-    for c in target:
+    for c in plan["channels"]:
         by_cat.setdefault(c["category"], []).append(c)
+    d = deltas(plan)
     lines = ["DISCORD SOCIETY TREE — DRY RUN (nothing mutated)\n"]
-    lines.append("CATEGORIES TO ENSURE: " +
-                 ", ".join(sorted(by_cat) + [ARCHIVE_CATEGORY]) +
-                 f"   (existing categories: {sorted(existing_cats) or 'none'})\n")
     for cat in list(by_cat) + [ARCHIVE_CATEGORY]:
-        lines.append(f"▸ #{cat}/" + ("   [NEW]" if cat not in existing_cats else "   [exists]"))
+        cstate = next((x for x in plan["categories"] if x["name"] == cat), None)
+        tag = "[create]" if cstate and cstate["action"] == "create" else "[exists]"
+        lines.append(f"▸ #{cat}/   {tag}")
         if cat == ARCHIVE_CATEGORY:
-            for t in existing_text:
-                lines.append(f"    ↳ re-parent  #{t['name']:<28} ({t['id']})  [binding untouched]")
+            for a in plan["archive"]:
+                lines.append(f"    ↳ archive  #{a['name']:<24} ({a['id']})  from #{a['from']}")
+            if not plan["archive"]:
+                lines.append("    (nothing to archive)")
             continue
         for c in by_cat.get(cat, []):
-            lines.append(f"    ├─ #{c['channel']:<14} ⇐ {c['fleet']}")
+            mark = "NEW" if c["action"] == "create" else "exists"
+            bind = "bind" if c["bind_action"] == "bind" else "ok"
+            lines.append(f"    ├─ #{c['channel']:<14} ⇐ {c['fleet']}   [{mark}; binding:{bind}]")
             lines.append(f"    │     default → {c['default_target']}")
             if c["aliases"]:
-                al = ", ".join(f"@{k}→{v}" for k, v in c["aliases"].items())
-                lines.append(f"    │     aliases → {al}")
-            else:
-                lines.append(f"    │     aliases → (none — manager only)")
-    lines.append(f"\nSUMMARY: {len(target)} channels to create + bind across "
-                 f"{len(by_cat)} society categories; "
-                 f"{len(existing_text)} existing channels → archive (no delete).")
+                lines.append("    │     aliases → " + ", ".join(f"@{k}→{v}" for k, v in c["aliases"].items()))
+    lines.append(f"\nDELTA: +{len(d['categories'])} categories, +{len(d['channels'])} channels, "
+                 f"{len(d['archive'])} to archive, {len(d['binds'])} (re)binds.")
+    if not any(d.values()):
+        lines.append("RE-RUN NO-OP ✓ — live state already matches the desired tree.")
     return "\n".join(lines)
 
 
-# ---- Apply (gated; only after approval) ------------------------------------ #
+# ---- Apply (gated; idempotent — only the delta) ---------------------------- #
 
-def apply(target, env, gid, existing_cats, existing_text) -> None:
+def apply(plan: dict, env: dict[str, str], gid: str) -> dict:
     tok = env["DISCORD_TOKEN"]
-    cats = dict(existing_cats)
-    for cat in sorted({c["category"] for c in target}) + [ARCHIVE_CATEGORY]:
-        if cat not in cats:
+    cats = {c["name"]: c["id"] for c in plan["categories"] if c["id"]}
+    counts = {"categories": 0, "channels": 0, "archived": 0, "binds": 0}
+    for c in plan["categories"]:                            # skip-existing
+        if c["action"] == "create":
+            made = discord_api("POST", f"/guilds/{gid}/channels", tok, {"name": c["name"], "type": CT_CATEGORY})
+            cats[c["name"]] = made["id"]; counts["categories"] += 1
+            print(f"created category #{c['name']} ({made['id']})"); time.sleep(0.5)
+    for a in plan["archive"]:                               # true-legacy only
+        discord_api("PATCH", f"/channels/{a['id']}", tok, {"parent_id": cats[ARCHIVE_CATEGORY]})
+        counts["archived"] += 1; print(f"archived #{a['name']} ({a['id']})"); time.sleep(0.5)
+    for c in plan["channels"]:                              # skip-existing + idempotent bind
+        cid = c["id"]
+        if c["action"] == "create":
             made = discord_api("POST", f"/guilds/{gid}/channels", tok,
-                               {"name": cat, "type": CT_CATEGORY})
-            cats[cat] = made["id"]
-            print(f"created category #{cat} ({made['id']})")
-            time.sleep(0.5)
-    # re-parent existing channels into archive (no delete; #general already excluded)
-    for t in existing_text:
-        discord_api("PATCH", f"/channels/{t['id']}", tok, {"parent_id": cats[ARCHIVE_CATEGORY]})
-        print(f"archived #{t['name']} ({t['id']})")
-        time.sleep(0.5)
-    # create + bind the society channels
-    for c in target:
-        made = discord_api("POST", f"/guilds/{gid}/channels", tok,
-                           {"name": c["channel"], "type": CT_TEXT, "parent_id": cats[c["category"]]})
-        cid = made["id"]
-        bind = [str(AURA_CLI), "discord", "bind-channel", cid,
-                "--fleet", c["fleet"], "--default-target", c["default_target"]]
-        for name, tgt in c["aliases"].items():
-            bind += ["--alias", f"{name}={tgt}"]
-        subprocess.run([sys.executable, *bind], check=True)
-        print(f"created #{c['category']}/#{c['channel']} ({cid}) + bound → {c['default_target']}")
-        time.sleep(0.5)
+                               {"name": c["channel"], "type": CT_TEXT, "parent_id": cats[c["category"]]})
+            cid = made["id"]; counts["channels"] += 1
+            print(f"created #{c['category']}/#{c['channel']} ({cid})"); time.sleep(0.5)
+        if c["bind_action"] == "bind":
+            bind = [str(AURA_CLI), "discord", "bind-channel", cid,
+                    "--fleet", c["fleet"], "--default-target", c["default_target"]]
+            for name, tgt in c["aliases"].items():
+                bind += ["--alias", f"{name}={tgt}"]
+            subprocess.run([sys.executable, *bind], check=True, capture_output=True)
+            counts["binds"] += 1; print(f"bound #{c['channel']} → {c['default_target']}"); time.sleep(0.3)
+    return counts
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Discord society-category tree generator (dry-run default).")
-    ap.add_argument("--apply", action="store_true", help="Perform creation/re-parent/bind (gated — needs approval).")
-    ap.add_argument("--json", action="store_true", help="Emit the plan as JSON instead of a tree.")
+    ap = argparse.ArgumentParser(description="Idempotent Discord society-category tree generator (dry-run default; safe to re-run).")
+    ap.add_argument("--apply", action="store_true", help="Apply the delta (gated). A re-run against applied state is a no-op.")
+    ap.add_argument("--json", action="store_true", help="Emit the plan + delta as JSON.")
     args = ap.parse_args(argv)
 
     roster, members = live_roster(), society_members()
     target = compute_target(roster, members)
-
     env = discord_env()
     gid = guild_id(env)
-    existing_cats, existing_text = current_tree(env, gid)
+    state = fetch_state(env, gid)
+    plan = build_plan(target, state, env, load_bindings())
+    d = deltas(plan)
 
     if args.json:
-        print(json.dumps({"guild_id": gid, "channels": target,
-                          "archive": existing_text, "existing_categories": existing_cats}, indent=2))
+        print(json.dumps({"guild_id": gid, "plan": plan, "delta": d}, indent=2, default=str))
     else:
-        print(render(target, existing_cats, existing_text))
+        print(render(plan))
 
     if args.apply:
+        if not any(d.values()):
+            print("\n--apply: NO-OP — live state already matches the desired tree (0 changes).")
+            return 0
         print("\n--apply: MUTATING DISCORD…\n")
-        apply(target, env, gid, existing_cats, existing_text)
-        print("\napply complete.")
+        print(f"\napply complete: {apply(plan, env, gid)}")
     else:
-        print("\n(dry-run — re-run with --apply only after operator approval.)")
+        print("\n(dry-run — re-run with --apply only after operator approval; safe to re-run.)")
     return 0
 
 
