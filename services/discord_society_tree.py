@@ -25,6 +25,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -122,8 +123,9 @@ def guild_id(env: dict[str, str]) -> str:
 def current_tree(env: dict[str, str], gid: str) -> tuple[dict, list[dict]]:
     chans = discord_api("GET", f"/guilds/{gid}/channels", env["DISCORD_TOKEN"])
     cats = {c["name"]: c["id"] for c in chans if c["type"] == CT_CATEGORY}
+    home = env.get("DISCORD_CHANNEL_ID")  # the bot's home channel (#general) — NEVER archived
     text = [{"id": c["id"], "name": c["name"], "parent": c.get("parent_id")}
-            for c in chans if c["type"] == CT_TEXT]
+            for c in chans if c["type"] == CT_TEXT and c["id"] != home]
     return cats, text
 
 
@@ -168,10 +170,12 @@ def apply(target, env, gid, existing_cats, existing_text) -> None:
                                {"name": cat, "type": CT_CATEGORY})
             cats[cat] = made["id"]
             print(f"created category #{cat} ({made['id']})")
-    # re-parent existing channels into archive (no delete)
+            time.sleep(0.5)
+    # re-parent existing channels into archive (no delete; #general already excluded)
     for t in existing_text:
         discord_api("PATCH", f"/channels/{t['id']}", tok, {"parent_id": cats[ARCHIVE_CATEGORY]})
         print(f"archived #{t['name']} ({t['id']})")
+        time.sleep(0.5)
     # create + bind the society channels
     for c in target:
         made = discord_api("POST", f"/guilds/{gid}/channels", tok,
@@ -183,6 +187,7 @@ def apply(target, env, gid, existing_cats, existing_text) -> None:
             bind += ["--alias", f"{name}={tgt}"]
         subprocess.run([sys.executable, *bind], check=True)
         print(f"created #{c['category']}/#{c['channel']} ({cid}) + bound → {c['default_target']}")
+        time.sleep(0.5)
 
 
 def main(argv=None) -> int:
