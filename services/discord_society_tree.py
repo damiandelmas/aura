@@ -35,6 +35,10 @@ USER_AGENT = "AuraSocietyTree (https://aura.local, 1.0)"
 CT_CATEGORY, CT_TEXT = 4, 0
 OTHER_CATEGORY = "other"
 ARCHIVE_CATEGORY = "archive"
+SELF_CATEGORY = "self"
+# Personal (non-fleet) channels — kept OUT of the archive sweep, the same
+# protection #general (the bot home) has. A re-run must never yank them back.
+SELF_CHANNELS = frozenset({"assistant", "life", "spiritual"})
 REPO = Path(__file__).resolve().parents[1]
 AURA_CLI = REPO / "cli" / "aura"
 
@@ -125,7 +129,8 @@ def current_tree(env: dict[str, str], gid: str) -> tuple[dict, list[dict]]:
     cats = {c["name"]: c["id"] for c in chans if c["type"] == CT_CATEGORY}
     home = env.get("DISCORD_CHANNEL_ID")  # the bot's home channel (#general) — NEVER archived
     text = [{"id": c["id"], "name": c["name"], "parent": c.get("parent_id")}
-            for c in chans if c["type"] == CT_TEXT and c["id"] != home]
+            for c in chans if c["type"] == CT_TEXT
+            and c["id"] != home and c["name"] not in SELF_CHANNELS]  # personal channels stay in #self
     return cats, text
 
 
