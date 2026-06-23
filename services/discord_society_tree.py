@@ -39,6 +39,10 @@ SELF_CATEGORY = "self"
 # Personal (non-fleet) channels — kept OUT of the archive sweep, the same
 # protection #general (the bot home) has. A re-run must never yank them back.
 SELF_CHANNELS = frozenset({"assistant", "life", "spiritual"})
+# Manually-managed channels that live in a society category but are NOT fleet
+# targets the generator creates (e.g. an operator's direct-to-human lane). Bound
+# by hand; protected from the archive sweep so a re-run never reclaims them.
+PROTECTED_CHANNELS = frozenset({"sales-ops"})
 REPO = Path(__file__).resolve().parents[1]
 AURA_CLI = REPO / "cli" / "aura"
 
@@ -177,7 +181,7 @@ def build_plan(target: list[dict], state: dict, env: dict[str, str], bindings: d
     archive = []
     for ch in state["text"]:
         name, cat = ch["name"], state["cats_by_id"].get(ch.get("parent_id"))
-        if ch["id"] == home or name in SELF_CHANNELS:      # protected
+        if ch["id"] == home or name in SELF_CHANNELS or name in PROTECTED_CHANNELS:  # protected
             continue
         if (cat, name) in target_keys:                     # our own society channel — leave it
             continue
