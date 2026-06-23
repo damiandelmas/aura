@@ -866,6 +866,13 @@ def _restart(args, registry, terminal) -> dict:
         "AURA_FLEET": fleet,
         "AURA_RUNTIME": plan["runtime"],
         "AURA_LAUNCH_ID": launch_id,
+        # The relaunched pane MUST carry the seat's NEW incarnation id. Without it the
+        # pane inherits the operator's AURA_SEAT_INSTANCE_ID from the parent shell, so
+        # the SessionStart bind hook fires with a mismatched occupant id, bind_guard
+        # refuses, and the row stays phantom (runtime_session_id=null) until self-heal.
+        # spawn sets this on every managed launch; restart/rollover omitted it. Set to
+        # the same new si written onto the row below -> the hook can born-bind.
+        "AURA_SEAT_INSTANCE_ID": seat_instance_id,
         "TERM": "xterm-256color",
         "COLORTERM": "truecolor",
         "FORCE_COLOR": "1",

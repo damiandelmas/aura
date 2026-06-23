@@ -164,6 +164,11 @@ def test_restart_preserves_seat_and_records_seat_history(monkeypatch, tmp_path):
     assert env["AURA_IDENTITY_PROVIDER"] == "desks"
     assert env["AURA_IDENTITY_ID"] == "r_restart"
     assert env["AURA_IDENTITY_LABEL"] == "flex:engine:lead"
+    # Born-bind prevention: the relaunched pane carries the NEW incarnation id (the same
+    # one written onto the row), not the operator's inherited si — so the SessionStart
+    # bind hook's occupant check passes instead of being refused by bind_guard.
+    assert env["AURA_SEAT_INSTANCE_ID"] == result["new"]["seat_instance_id"]
+    assert env["AURA_SEAT_INSTANCE_ID"] != "si_oldrestart1"
     assert RestartTerminal.respawned[0][4] == [
         "NO_COLOR",
         "AURA_RUNTIME_SESSION_ID",
