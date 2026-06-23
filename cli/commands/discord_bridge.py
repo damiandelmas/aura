@@ -597,7 +597,24 @@ async def _listen(args) -> dict[str, Any]:
         raise RuntimeError("discord.py is required for `aura discord listen`") from exc
 
     token, channel_id = _config(args)
-    channel_ids = _listened_channel_ids(channel_id)
+    # The watched-channel set is re-read from channel-bindings.json whenever the
+    # file changes (by mtime), so channels bound AFTER the listener started — e.g.
+    # newly created society channels — are picked up live, no restart needed.
+    # (Routing was already per-message dynamic; only this membership filter was a
+    # stale startup snapshot, which dropped messages in newly-bound channels.)
+    _bindings_path = DEFAULT_CHANNEL_BINDINGS_PATH
+    _chan_cache: dict[str, Any] = {"mtime": None, "ids": _listened_channel_ids(channel_id)}
+
+    def _live_channel_ids() -> set[str]:
+        try:
+            mtime = _bindings_path.stat().st_mtime
+        except OSError:
+            return _chan_cache["ids"]
+        if mtime != _chan_cache["mtime"]:
+            _chan_cache["ids"] = _listened_channel_ids(channel_id)
+            _chan_cache["mtime"] = mtime
+        return _chan_cache["ids"]
+
     sender_prefix = getattr(args, "sender_prefix", None) or "discord"
     dry_run = bool(getattr(args, "dry_run", False))
     ready_once = bool(getattr(args, "ready_once", False))
@@ -616,14 +633,14 @@ async def _listen(args) -> dict[str, Any]:
             "event": "ready",
             "bot_user": str(client.user),
             "channel_id": channel_id,
-            "channel_ids": sorted(channel_ids),
+            "channel_ids": sorted(_live_channel_ids()),
         }), flush=True)
         if ready_once:
             await client.close()
 
     @client.event
     async def on_message(message):
-        if message.author.bot or str(message.channel.id) not in channel_ids:
+        if message.author.bot or str(message.channel.id) not in _live_channel_ids():
             return
         route = _route_for_message(
             message.content or "",
