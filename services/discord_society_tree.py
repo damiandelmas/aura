@@ -42,7 +42,10 @@ SELF_CHANNELS = frozenset({"assistant", "life", "spiritual"})
 # Manually-managed channels that live in a society category but are NOT fleet
 # targets the generator creates (e.g. an operator's direct-to-human lane). Bound
 # by hand; protected from the archive sweep so a re-run never reclaims them.
-PROTECTED_CHANNELS = frozenset({"sales-ops"})
+# 'tenants' is here because flexchat-tenants is temporarily 0-seat (dormant): a
+# channel is more durable than a transiently-dead fleet, so we keep it under
+# flexchat with its binding intact rather than archiving it.
+PROTECTED_CHANNELS = frozenset({"sales-ops", "tenants"})
 REPO = Path(__file__).resolve().parents[1]
 AURA_CLI = REPO / "cli" / "aura"
 
