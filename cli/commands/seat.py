@@ -17,11 +17,21 @@ FLEX_PACKET_MARKER = "[FLEX PROJECT RETRIEVAL]"
 
 
 def _tmux_target(ref: str) -> str:
+    """Resolve an Aura pane/window ref to the tmux target string to act on.
+
+    A pane id `%N` is GLOBALLY unique in tmux and must be returned BARE — never
+    session-qualified. The canonical pane_ref is `tmux:<fleet>:%N`; naively
+    stripping only `tmux:` leaves `<fleet>:%N`, which tmux parses as
+    `session:window=%N`, finds no such window, and silently resolves to the
+    session's ACTIVE window — i.e. the WRONG pane. So extract the pane id and
+    return it bare; fall back to the stripped value for non-pane (window) refs.
+    """
+    _fleet, pane_id = pane_handle.pane_ref_parts(ref)
+    if pane_id:
+        return pane_id
     value = str(ref or "")
     if value.startswith("tmux:"):
         value = value[len("tmux:"):]
-    if value.startswith("%"):
-        return value
     return value
 
 
