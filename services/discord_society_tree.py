@@ -153,10 +153,18 @@ def load_bindings() -> dict:
 
 
 def _binding_matches(current: dict | None, c: dict) -> bool:
-    if not current:
+    # The binding is up to date when the default target matches and every DESIRED
+    # alias is present with the right target. EXTRA stored aliases are tolerated:
+    # `aura discord bind-channel` is additive (can't remove an alias), and per the
+    # channel-durability principle a transiently-dead seat's alias is kept dormant
+    # rather than churned. So rebind only when a desired alias is MISSING or wrong
+    # (a new/renamed live seat) — never just because a dead seat's alias lingers.
+    # Exact equality here caused a perpetual rebind once a seat died (desired drops
+    # it, stored keeps it) — breaking the re-run no-op.
+    if not current or current.get("default_target") != c["default_target"]:
         return False
-    return (current.get("default_target") == c["default_target"]
-            and dict(current.get("aliases") or {}) == c["aliases"])
+    cur_aliases = dict(current.get("aliases") or {})
+    return all(cur_aliases.get(name) == target for name, target in c["aliases"].items())
 
 
 def build_plan(target: list[dict], state: dict, env: dict[str, str], bindings: dict) -> dict:
