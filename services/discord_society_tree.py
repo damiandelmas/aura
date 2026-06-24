@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
-"""Generate the Discord *society-category* tree from Aura's society config + live roster.
+"""Project Aura's live mesh onto a Discord category tree (society config × live state).
 
-Tree (society-config + live-roster driven, auto-curated):
-  - One CATEGORY per society (flex, flexchat, aura) plus "other" (society-less
-    fleets) and "archive" (the existing pre-restructure channels).
-  - One CHANNEL per member fleet THAT HAS A live ``:manager`` seat (no manager ->
-    no channel). Channel name = fleet minus its society prefix
-    (``flexchat-factory`` -> ``#factory``); society-less fleets keep their name.
-  - Each channel BOUND to ``<fleet>:manager`` (default target) with the fleet's
-    other live seats as ``@seat`` aliases (via ``aura discord bind-channel``).
-  - LEGACY: existing channels are RE-PARENTED into "archive" — never deleted,
-    bindings left as-is.
+The desired tree is a function of the society config and the live fleet roster, and
+the generator continuously reconciles the guild to it:
+  - CATEGORY per society (flex, flexchat, aura) + "other" (society-less fleets) +
+    "archive" (true legacy).
+  - A society/known fleet WITH a live ``:manager`` seat -> an ACTIVE channel in its
+    society category, base name (``flexchat-factory`` -> ``#factory``; society-less
+    fleets keep their full name), bound ``<fleet>:manager`` (+ live-seat aliases).
+  - A known fleet at 0 live seats -> its channel STAYS in place (same category, same
+    id, binding kept) and is marked DORMANT with a ``💤`` name prefix. Revived (gains
+    a seat) -> the ``💤`` is stripped. The category is the society lookup, so a dormant
+    channel is NEVER moved — only re-labelled in place.
+  - A channel whose (category, base name) maps to NO known fleet -> ARCHIVE (true
+    legacy only). #general (bot home) and the #self channels and hand-bound lanes
+    (e.g. #sales-ops) are protected.
 
-Mechanics: channel/category CREATE + the archive MOVE go through the Discord bot
-API (Manage-Channels). Aura only BINDS.
-
-DRY-RUN BY DEFAULT — prints the plan, touches nothing. ``--apply`` performs the
-creation / re-parent / bind (gated; run only after operator approval).
+Identity is ``(category, BASE name)`` — the ``💤`` is derived from liveness, never
+stored, so a re-run against an already-projected guild is a no-op. Channel/category
+CREATE, the dormant RENAME, and the archive MOVE go through the Discord bot API;
+Aura only BINDS. DRY-RUN by default; ``--apply`` performs the delta (safe to re-run).
 """
 from __future__ import annotations
 
@@ -36,16 +39,15 @@ CT_CATEGORY, CT_TEXT = 4, 0
 OTHER_CATEGORY = "other"
 ARCHIVE_CATEGORY = "archive"
 SELF_CATEGORY = "self"
-# Personal (non-fleet) channels — kept OUT of the archive sweep, the same
-# protection #general (the bot home) has. A re-run must never yank them back.
+DORMANT_MARK = "💤"          # in-place name prefix for a 0-seat (dormant) fleet channel
+# Personal (non-fleet) channels — kept OUT of the archive sweep, the same protection
+# #general (the bot home) has.
 SELF_CHANNELS = frozenset({"assistant", "life", "spiritual"})
-# Manually-managed channels that live in a society category but are NOT fleet
-# targets the generator creates (e.g. an operator's direct-to-human lane). Bound
-# by hand; protected from the archive sweep so a re-run never reclaims them.
-# 'tenants' is here because flexchat-tenants is temporarily 0-seat (dormant): a
-# channel is more durable than a transiently-dead fleet, so we keep it under
-# flexchat with its binding intact rather than archiving it.
-PROTECTED_CHANNELS = frozenset({"sales-ops", "tenants"})
+# Hand-bound channels that live in a society category but map to NO fleet (e.g. an
+# operator's direct-to-human lane). Protected from archive. Dead SOCIETY fleets are
+# NOT listed here — they are kept automatically as dormant by liveness.
+PROTECTED_CHANNELS = frozenset({"sales-ops"})
+BINDINGS_PATH = Path(os.path.expanduser("~/.aura/discord/channel-bindings.json"))
 REPO = Path(__file__).resolve().parents[1]
 AURA_CLI = REPO / "cli" / "aura"
 
@@ -55,7 +57,6 @@ AURA_CLI = REPO / "cli" / "aura"
 def aura(*args) -> dict:
     out = subprocess.run([sys.executable, str(AURA_CLI), *args],
                          capture_output=True, text=True, timeout=60).stdout
-    # tolerate a leading non-JSON warning line
     start = out.find("{")
     return json.loads(out[start:]) if start >= 0 else {}
 
@@ -78,6 +79,19 @@ def society_members() -> dict[str, list[str]]:
     return out
 
 
+def known_fleets(members: dict[str, list[str]]) -> set[str]:
+    """Every fleet the projection recognises: all society members + every fleet in
+    the registry (alive OR historical). A channel whose name maps outside this set
+    is true legacy and is archived; inside it, the fleet is dormant-kept when dead."""
+    fleets: set[str] = set()
+    for rows in members.values():
+        fleets.update(rows)
+    for r in aura("list").get("rows", []):
+        if r.get("fleet"):
+            fleets.add(r["fleet"])
+    return fleets
+
+
 def channel_name(fleet: str, society: str | None) -> str:
     prefix = f"{society}-"
     if society and fleet.startswith(prefix):
@@ -85,8 +99,25 @@ def channel_name(fleet: str, society: str | None) -> str:
     return fleet
 
 
+def _base_name(name: str) -> str:
+    return name[len(DORMANT_MARK):] if name.startswith(DORMANT_MARK) else name
+
+
+def _dormant_name(base: str) -> str:
+    return f"{DORMANT_MARK}{base}"
+
+
+def _fleet_from_channel(cat: str | None, base: str, society_names: set[str]) -> str | None:
+    """Reverse of channel_name: (category, base) -> fleet."""
+    if cat in society_names:
+        return f"{cat}-{base}"
+    if cat == OTHER_CATEGORY:
+        return base
+    return None
+
+
 def compute_target(roster: dict[str, list[str]], members: dict[str, list[str]]) -> list[dict]:
-    """One channel per manager-bearing fleet, assigned to its society or 'other'."""
+    """One ACTIVE channel per manager-bearing fleet, in its society or 'other'."""
     manager_fleets = {f for f, seats in roster.items() if "manager" in seats}
     assigned: set[str] = set()
     plan: list[dict] = []
@@ -131,18 +162,14 @@ def guild_id(env: dict[str, str]) -> str:
     return ch["guild_id"]
 
 
-BINDINGS_PATH = Path(os.path.expanduser("~/.aura/discord/channel-bindings.json"))
-
-
 def fetch_state(env: dict[str, str], gid: str) -> dict:
-    """Current live guild: categories (by name/id), text channels, and an index
-    of existing text channels keyed by (category-name, channel-name)."""
     chans = discord_api("GET", f"/guilds/{gid}/channels", env["DISCORD_TOKEN"])
     cats_by_name = {c["name"]: c["id"] for c in chans if c["type"] == CT_CATEGORY}
     cats_by_id = {v: k for k, v in cats_by_name.items()}
     text = [c for c in chans if c["type"] == CT_TEXT]
-    by_key = {(cats_by_id.get(c.get("parent_id")), c["name"]): c for c in text}
-    return {"cats_by_name": cats_by_name, "cats_by_id": cats_by_id, "text": text, "by_key": by_key}
+    # index by (category, BASE name) — the 💤 marker is not part of identity
+    by_base = {(cats_by_id.get(c.get("parent_id")), _base_name(c["name"])): c for c in text}
+    return {"cats_by_name": cats_by_name, "cats_by_id": cats_by_id, "text": text, "by_base": by_base}
 
 
 def load_bindings() -> dict:
@@ -153,52 +180,70 @@ def load_bindings() -> dict:
 
 
 def _binding_matches(current: dict | None, c: dict) -> bool:
-    # The binding is up to date when the default target matches and every DESIRED
-    # alias is present with the right target. EXTRA stored aliases are tolerated:
-    # `aura discord bind-channel` is additive (can't remove an alias), and per the
-    # channel-durability principle a transiently-dead seat's alias is kept dormant
-    # rather than churned. So rebind only when a desired alias is MISSING or wrong
-    # (a new/renamed live seat) — never just because a dead seat's alias lingers.
-    # Exact equality here caused a perpetual rebind once a seat died (desired drops
-    # it, stored keeps it) — breaking the re-run no-op.
+    # Up to date when the default target matches and every DESIRED alias is present
+    # (subset). Extra stored aliases are tolerated: bind-channel is additive and a
+    # transiently-dead seat's alias is kept dormant rather than churned. Rebind only
+    # when a desired alias is missing/wrong (a new or renamed live seat).
     if not current or current.get("default_target") != c["default_target"]:
         return False
     cur_aliases = dict(current.get("aliases") or {})
     return all(cur_aliases.get(name) == target for name, target in c["aliases"].items())
 
 
-def build_plan(target: list[dict], state: dict, env: dict[str, str], bindings: dict) -> dict:
-    """Diff the desired tree against live state. Every item carries an action so
-    a re-run against an already-applied state produces an empty delta (no-op)."""
+def build_plan(target: list[dict], state: dict, env: dict[str, str], bindings: dict,
+               roster: dict[str, list[str]], society_names: set[str], known: set[str]) -> dict:
+    """Diff the desired projection against the live guild. Identity is (category,
+    BASE name); the 💤 prefix is derived from liveness, so a re-run is a no-op."""
     home = env.get("DISCORD_CHANNEL_ID")
-    target_keys = {(c["category"], c["channel"]) for c in target}
 
     needed_cats = sorted({c["category"] for c in target}) + [ARCHIVE_CATEGORY]
     categories = [{"name": cat, "id": state["cats_by_name"].get(cat),
                    "action": "exists" if cat in state["cats_by_name"] else "create"}
                   for cat in needed_cats]
 
-    channels = []
-    for c in target:
-        existing = state["by_key"].get((c["category"], c["channel"]))   # match by (category, name)
-        cid = existing["id"] if existing else None
-        bind_ok = _binding_matches(bindings.get(str(cid)) if cid else None, c)
-        channels.append({**c, "id": cid,
-                         "action": "exists" if existing else "create",
-                         "bind_action": "current" if bind_ok else "bind"})
+    channels: list[dict] = []
+    archive: list[dict] = []
+    handled: set[str] = set()
 
-    # ARCHIVE = TRUE LEGACY ONLY: not protected (#general / #self), NOT a target
-    # society channel the generator creates, and not already in #archive.
-    archive = []
+    # 1. ACTIVE targets (manager-bearing). Match existing by (category, base), so a
+    #    revived dormant channel (💤base) matches and gets the 💤 stripped.
+    for c in target:
+        existing = state["by_base"].get((c["category"], c["channel"]))
+        cid = existing["id"] if existing else None
+        rename = c["channel"] if (existing and existing["name"] != c["channel"]) else None
+        bind_ok = _binding_matches(bindings.get(str(cid)) if cid else None, c)
+        channels.append({**c, "id": cid, "dormant": False,
+                         "action": "exists" if existing else "create",
+                         "rename": rename,
+                         "bind_action": "current" if bind_ok else "bind"})
+        if existing:
+            handled.add(existing["id"])
+
+    # 2. Existing channels not claimed by an active target.
     for ch in state["text"]:
-        name, cat = ch["name"], state["cats_by_id"].get(ch.get("parent_id"))
-        if ch["id"] == home or name in SELF_CHANNELS or name in PROTECTED_CHANNELS:  # protected
+        if ch["id"] in handled:
             continue
-        if (cat, name) in target_keys:                     # our own society channel — leave it
+        name = ch["name"]
+        cat = state["cats_by_id"].get(ch.get("parent_id"))
+        base = _base_name(name)
+        if ch["id"] == home or base in SELF_CHANNELS or base in PROTECTED_CHANNELS:  # protected non-fleet
             continue
-        if cat == ARCHIVE_CATEGORY:                        # already archived — no-op
+        if cat == ARCHIVE_CATEGORY:                          # already archived — no-op
             continue
-        archive.append({"id": ch["id"], "name": name, "from": cat or "(uncategorized)"})
+        fleet = _fleet_from_channel(cat, base, society_names)
+        if fleet and fleet in known:
+            # a known fleet channel with no live manager: KEEP in place, mark by liveness.
+            live = roster.get(fleet, [])
+            desired = base if live else _dormant_name(base)
+            channels.append({
+                "category": cat, "channel": base, "fleet": fleet, "id": ch["id"],
+                "dormant": not live, "action": "exists",
+                "rename": desired if name != desired else None,
+                "default_target": f"{fleet}:manager", "aliases": {},
+                "bind_action": "current",     # dormant / manager-less: binding kept, never rebind
+            })
+        else:
+            archive.append({"id": ch["id"], "name": name, "from": cat or "(uncategorized)"})
 
     return {"categories": categories, "channels": channels, "archive": archive}
 
@@ -207,6 +252,7 @@ def deltas(plan: dict) -> dict:
     return {
         "categories": [c for c in plan["categories"] if c["action"] == "create"],
         "channels": [c for c in plan["channels"] if c["action"] == "create"],
+        "renames": [c for c in plan["channels"] if c.get("rename")],
         "binds": [c for c in plan["channels"] if c["bind_action"] == "bind"],
         "archive": plan["archive"],
     }
@@ -219,7 +265,7 @@ def render(plan: dict) -> str:
     for c in plan["channels"]:
         by_cat.setdefault(c["category"], []).append(c)
     d = deltas(plan)
-    lines = ["DISCORD SOCIETY TREE — DRY RUN (nothing mutated)\n"]
+    lines = ["DISCORD LIVE PROJECTION — DRY RUN (nothing mutated)\n"]
     for cat in list(by_cat) + [ARCHIVE_CATEGORY]:
         cstate = next((x for x in plan["categories"] if x["name"] == cat), None)
         tag = "[create]" if cstate and cstate["action"] == "create" else "[exists]"
@@ -230,17 +276,24 @@ def render(plan: dict) -> str:
             if not plan["archive"]:
                 lines.append("    (nothing to archive)")
             continue
-        for c in by_cat.get(cat, []):
-            mark = "NEW" if c["action"] == "create" else "exists"
+        for c in sorted(by_cat.get(cat, []), key=lambda c: (c["dormant"], c["channel"])):
+            disp = (_dormant_name(c["channel"]) if c["dormant"] else c["channel"])
+            if c["action"] == "create":
+                state_tag = "NEW"
+            elif c.get("rename"):
+                state_tag = "REVIVE" if not c["dormant"] else "DORMANT"
+            else:
+                state_tag = "dormant" if c["dormant"] else "active"
             bind = "bind" if c["bind_action"] == "bind" else "ok"
-            lines.append(f"    ├─ #{c['channel']:<14} ⇐ {c['fleet']}   [{mark}; binding:{bind}]")
-            lines.append(f"    │     default → {c['default_target']}")
-            if c["aliases"]:
-                lines.append("    │     aliases → " + ", ".join(f"@{k}→{v}" for k, v in c["aliases"].items()))
+            lines.append(f"    ├─ #{disp:<16} ⇐ {c['fleet']}   [{state_tag}; binding:{bind}]")
+            if not c["dormant"]:
+                lines.append(f"    │     default → {c['default_target']}")
+                if c["aliases"]:
+                    lines.append("    │     aliases → " + ", ".join(f"@{k}→{v}" for k, v in c["aliases"].items()))
     lines.append(f"\nDELTA: +{len(d['categories'])} categories, +{len(d['channels'])} channels, "
-                 f"{len(d['archive'])} to archive, {len(d['binds'])} (re)binds.")
+                 f"{len(d['renames'])} renames (💤), {len(d['archive'])} to archive, {len(d['binds'])} (re)binds.")
     if not any(d.values()):
-        lines.append("RE-RUN NO-OP ✓ — live state already matches the desired tree.")
+        lines.append("RE-RUN NO-OP ✓ — the guild already matches the live projection.")
     return "\n".join(lines)
 
 
@@ -249,7 +302,7 @@ def render(plan: dict) -> str:
 def apply(plan: dict, env: dict[str, str], gid: str) -> dict:
     tok = env["DISCORD_TOKEN"]
     cats = {c["name"]: c["id"] for c in plan["categories"] if c["id"]}
-    counts = {"categories": 0, "channels": 0, "archived": 0, "binds": 0}
+    counts = {"categories": 0, "channels": 0, "renames": 0, "archived": 0, "binds": 0}
     for c in plan["categories"]:                            # skip-existing
         if c["action"] == "create":
             made = discord_api("POST", f"/guilds/{gid}/channels", tok, {"name": c["name"], "type": CT_CATEGORY})
@@ -258,13 +311,16 @@ def apply(plan: dict, env: dict[str, str], gid: str) -> dict:
     for a in plan["archive"]:                               # true-legacy only
         discord_api("PATCH", f"/channels/{a['id']}", tok, {"parent_id": cats[ARCHIVE_CATEGORY]})
         counts["archived"] += 1; print(f"archived #{a['name']} ({a['id']})"); time.sleep(0.5)
-    for c in plan["channels"]:                              # skip-existing + idempotent bind
+    for c in plan["channels"]:
         cid = c["id"]
         if c["action"] == "create":
             made = discord_api("POST", f"/guilds/{gid}/channels", tok,
                                {"name": c["channel"], "type": CT_TEXT, "parent_id": cats[c["category"]]})
             cid = made["id"]; counts["channels"] += 1
             print(f"created #{c['category']}/#{c['channel']} ({cid})"); time.sleep(0.5)
+        elif c.get("rename"):                               # dormant<->active in place; id + category unchanged
+            discord_api("PATCH", f"/channels/{cid}", tok, {"name": c["rename"]})
+            counts["renames"] += 1; print(f"renamed #{cid} -> #{c['rename']}"); time.sleep(0.5)
         if c["bind_action"] == "bind":
             bind = [str(AURA_CLI), "discord", "bind-channel", cid,
                     "--fleet", c["fleet"], "--default-target", c["default_target"]]
@@ -276,17 +332,19 @@ def apply(plan: dict, env: dict[str, str], gid: str) -> dict:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Idempotent Discord society-category tree generator (dry-run default; safe to re-run).")
-    ap.add_argument("--apply", action="store_true", help="Apply the delta (gated). A re-run against applied state is a no-op.")
+    ap = argparse.ArgumentParser(description="Discord live-projection generator (dry-run default; safe to re-run).")
+    ap.add_argument("--apply", action="store_true", help="Apply the delta (gated). A re-run against the projected guild is a no-op.")
     ap.add_argument("--json", action="store_true", help="Emit the plan + delta as JSON.")
     args = ap.parse_args(argv)
 
     roster, members = live_roster(), society_members()
     target = compute_target(roster, members)
+    society_names = set(members)
+    known = known_fleets(members)
     env = discord_env()
     gid = guild_id(env)
     state = fetch_state(env, gid)
-    plan = build_plan(target, state, env, load_bindings())
+    plan = build_plan(target, state, env, load_bindings(), roster, society_names, known)
     d = deltas(plan)
 
     if args.json:
@@ -296,7 +354,7 @@ def main(argv=None) -> int:
 
     if args.apply:
         if not any(d.values()):
-            print("\n--apply: NO-OP — live state already matches the desired tree (0 changes).")
+            print("\n--apply: NO-OP — the guild already matches the live projection (0 changes).")
             return 0
         print("\n--apply: MUTATING DISCORD…\n")
         print(f"\napply complete: {apply(plan, env, gid)}")
