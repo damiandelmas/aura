@@ -1,0 +1,16 @@
+[Unit]
+Description=Aura flight recorder — delta-encoded keyframed timeline of the live fleet
+Documentation=context/changes/code/20260625-1627-flight-recorder-node1.md
+After=default.target
+
+[Service]
+Type=simple
+# Boxed runtimes override HOME; pin the state dir explicitly like the other Aura daemons.
+Environment=AURA_STATE_DIR=%h/.aura
+ExecStart=%h/.local/bin/aura recorder run --every 10 --keyframe-every 300 --compact-every 3600
+Restart=always
+RestartSec=5
+# Single-instance is also enforced in-process via a flock on the flight store.
+
+[Install]
+WantedBy=default.target

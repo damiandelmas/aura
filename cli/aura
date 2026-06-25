@@ -19,7 +19,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from commands import spawn, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, inspect as inspect_cmd, list as list_cmd, resolve, broadcast, capture, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd, work as work_cmd, idle_watch as idle_watch_cmd, anchor as anchor_cmd, notes as notes_cmd, ambient as ambient_cmd, tmux_mirror_cmd
+from commands import spawn, quick as quick_cmd, profile as profile_cmd, agent as agent_cmd, skills as skills_cmd, keeper as keeper_cmd, send, queue as queue_cmd, seat as seat_cmd, holding as holding_cmd, agent_map as agent_map_cmd, inspect as inspect_cmd, list as list_cmd, resolve, broadcast, capture, sense, watch, posture as posture_cmd, write as write_cmd, dash, event, discord_bridge, sessions as sessions_cmd, fleets as fleets_cmd, clawhip as clawhip_cmd, deferred as deferred_cmd, report as report_cmd, view as view_cmd, placement as placement_cmd, work as work_cmd, idle_watch as idle_watch_cmd, anchor as anchor_cmd, notes as notes_cmd, ambient as ambient_cmd, tmux_mirror_cmd, recorder as recorder_cmd
 from lib.output import output
 
 
@@ -1119,6 +1119,19 @@ def main():
         help="install-hooks (register cache-invalidation hooks) | status | shadow-report | mark-dirty | uninstall-hooks",
     )
 
+    # recorder — flight recorder: delta-encoded keyframed timeline of the live fleet
+    p_recorder = subparsers.add_parser("recorder", help="Flight recorder: persist the live fleet timeline (run|once|status|compact)")
+    p_recorder.add_argument(
+        "recorder_action",
+        nargs="?",
+        choices=["run", "once", "status", "compact"],
+        help="run (sampling loop) | once (one tick) | status | compact (retention)",
+    )
+    p_recorder.add_argument("--every", type=float, default=10.0, help="Seconds between sampling ticks in run mode (default: 10)")
+    p_recorder.add_argument("--keyframe-every", dest="keyframe_every", type=float, default=300.0, help="Seconds between full keyframes (default: 300)")
+    p_recorder.add_argument("--compact-every", dest="compact_every", type=float, default=3600.0, help="Seconds between retention compactions in run mode (default: 3600)")
+    p_recorder.add_argument("--ticks", type=int, help="Bound the run loop to N ticks (test/diagnostic)")
+
     hide_suppressed_subcommands(parser)
     args = parser.parse_args()
 
@@ -1195,6 +1208,8 @@ def main():
             result = notes_cmd.run(args)
         elif args.command == "tmux-mirror":
             result = tmux_mirror_cmd.run(args)
+        elif args.command == "recorder":
+            result = recorder_cmd.run(args)
         elif args.command == "clawhip":
             result = clawhip_cmd.run(args)
         elif args.command == "discord":
