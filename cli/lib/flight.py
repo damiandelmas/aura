@@ -35,6 +35,29 @@ from lib.state import state_root
 KEYFRAME_SCHEMA = "aura.flight.keyframe.v1"
 DELTA_SCHEMA = "aura.flight.delta.v1"
 
+# The one canonical timestamp format for the whole flight subsystem: fixed-width, aware-UTC,
+# always 6-digit microseconds + literal +00:00. record_tick, the keyframe index sort, and
+# reconstruct all compare ts as STRINGS, so every producer (recorder ticks, restore --at,
+# the reconstruct/timeline verbs) MUST normalize through here or lexicographic order would
+# diverge from chronological order.
+_TS_FMT = "%Y-%m-%dT%H:%M:%S.%f+00:00"
+
+
+def normalize_ts(value=None) -> str:
+    """Canonicalize a timestamp to the flight format. Accepts None (->now), a datetime, or an
+    iso string (date-only / naive / sub-second all expand to fixed width; naive assumes UTC)."""
+    from datetime import datetime, timezone
+
+    if value is None or (isinstance(value, str) and not value.strip()):
+        dt = datetime.now(timezone.utc)
+    elif isinstance(value, datetime):
+        dt = value
+    else:
+        dt = datetime.fromisoformat(str(value).strip())
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime(_TS_FMT)
+
 DEFAULT_KEYFRAME_INTERVAL_S = 300       # full snapshot at least every 5 min
 DEFAULT_FULL_RES_WINDOW_S = 86_400      # keep fine deltas for 24h
 DEFAULT_TTL_S = 604_800                 # drop everything older than 7d

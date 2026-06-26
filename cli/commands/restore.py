@@ -11,27 +11,17 @@ of what was live.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any
 
 from lib import flight, runtimes, seat_status, session_ledger
 
 
 # --------------------------------------------------------------------------- pure helpers
 
-_TS_FMT = "%Y-%m-%dT%H:%M:%S.%f+00:00"
-
-
 def _normalize_at(at: str | None) -> str:
-    """Canonical UTC iso matching the recorder's format, so reconstruct's lexicographic
-    `ts <= at` compare is chronological. None -> now; naive -> assume UTC."""
-    if at is None or str(at).strip() == "":
-        dt = datetime.now(timezone.utc)
-    else:
-        dt = datetime.fromisoformat(str(at).strip())
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).strftime(_TS_FMT)
+    """Canonical UTC iso via the shared flight normalizer, so reconstruct's lexicographic
+    `ts <= at` compare is chronological. None -> now; naive -> assume UTC; date-only expands."""
+    return flight.normalize_ts(at)
 
 
 def _frame_to_restore_row(fs: dict[str, Any]) -> dict[str, Any]:

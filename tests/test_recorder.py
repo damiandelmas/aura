@@ -137,3 +137,45 @@ def test_next_ts_is_canonical_fixed_width():
 def test_default_action_is_status():
     st = recorder.run(_args(recorder_action=None))
     assert st["ok"] and st["live"] == 0  # nothing recorded yet
+
+
+def test_reconstruct_verb_returns_fleet_at_instant():
+    t1 = "2026-06-25T12:00:00.000000+00:00"
+    t2 = "2026-06-25T12:05:00.000000+00:00"
+    flight.record_tick([flight.frame_seat(_row("f:a"))], now=t1, force_keyframe=True)
+    flight.record_tick([flight.frame_seat(_row("f:a")), flight.frame_seat(_row("f:b"))], now=t2, force_keyframe=True)
+    at1 = recorder.run(_args(recorder_action="reconstruct", at=t1))
+    assert {s["target"] for s in at1["seats"]} == {"f:a"}
+    # naive --at at the t2 instant still selects t2 (shared normalizer)
+    at2 = recorder.run(_args(recorder_action="reconstruct", at="2026-06-25T12:05:00"))
+    assert {s["target"] for s in at2["seats"]} == {"f:a", "f:b"}
+
+
+def test_timeline_verb_lists_keyframes_and_bounds():
+    t1 = "2026-06-25T12:00:00.000000+00:00"
+    t2 = "2026-06-25T12:05:00.000000+00:00"
+    flight.record_tick([flight.frame_seat(_row("f:a"))], now=t1, force_keyframe=True)
+    flight.record_tick([flight.frame_seat(_row("f:a")), flight.frame_seat(_row("f:b"))], now=t2, force_keyframe=True)
+    # a birth recorded as a DELTA after the last keyframe (no new keyframe)
+    t3 = "2026-06-25T12:06:00.000000+00:00"
+    flight.record_tick(
+        [flight.frame_seat(_row("f:a")), flight.frame_seat(_row("f:b")), flight.frame_seat(_row("f:c"))],
+        now=t3, keyframe_interval_s=10**9,  # NOT due -> delta only
+    )
+    tl = recorder.run(_args(recorder_action="timeline", from_ts=None, to_ts=None))
+    assert tl["count"] == 2 and tl["first"] == t1
+    assert tl["last"] == t3, "last must track newest activity (the post-keyframe delta), not last keyframe"
+    # the births/deaths are surfaced as events the scrubber can snap to
+    ev_ts = {e["ts"] for e in tl["events"]}
+    assert t3 in ev_ts and "appear" in next(e["ops"] for e in tl["events"] if e["ts"] == t3)
+    # window filter (normalized; date-only bound)
+    tl2 = recorder.run(_args(recorder_action="timeline", from_ts=t2, to_ts=None))
+    assert tl2["keyframes"] == [t2]
+
+
+def test_flight_normalize_ts_messy_inputs_fixed_width():
+    for raw in ("2026-06-25", "2026-06-25T12:00:00", "2026-06-25T12:00:00+00:00"):
+        out = flight.normalize_ts(raw)
+        assert out.endswith("+00:00") and out.split(".")[1] == "000000+00:00"
+    from datetime import datetime, timezone
+    assert flight.normalize_ts(datetime(2026, 6, 25, tzinfo=timezone.utc)) == "2026-06-25T00:00:00.000000+00:00"

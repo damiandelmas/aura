@@ -53,20 +53,10 @@ def _read_head() -> dict[str, Any] | None:
         return None
 
 
-# Canonical, fixed-width, aware-UTC ISO so lexicographic order == chronological order
-# (record_tick, the keyframe index sort, and reconstruct all compare ts as strings).
-# datetime.isoformat() drops the fractional part when microsecond==0, which would mix
-# widths across ticks — so format microseconds explicitly, always.
-_TS_FMT = "%Y-%m-%dT%H:%M:%S.%f+00:00"
-
-
-def _canonical(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).strftime(_TS_FMT)
-
-
 def _next_ts(last_ts: str | None) -> str:
-    """A strictly-increasing canonical UTC iso timestamp. Guards against same-microsecond
-    ticks and a clock that did not advance since the persisted head (which record_tick rejects)."""
+    """A strictly-increasing canonical UTC iso timestamp (via flight.normalize_ts). Guards
+    against same-microsecond ticks and a clock that did not advance since the persisted head
+    (which record_tick rejects)."""
     now = datetime.now(timezone.utc)
     if last_ts:
         try:
@@ -75,7 +65,7 @@ def _next_ts(last_ts: str | None) -> str:
                 now = prev + timedelta(microseconds=1)
         except ValueError:
             pass
-    return _canonical(now)
+    return flight.normalize_ts(now)
 
 
 # --------------------------------------------------------------------------- IO collectors
@@ -206,6 +196,66 @@ def _head_last_ts() -> str | None:
     return head.get("last_ts") if head else None
 
 
+def _reconstruct(args) -> dict[str, Any]:
+    at = flight.normalize_ts(getattr(args, "at", None))
+    recon = flight.reconstruct(at)
+    return {"ok": True, "requested_at": at, **recon}
+
+
+def _timeline(args) -> dict[str, Any]:
+    """The scrubber's orientation: keyframe tick-marks within an optional window, plus the true
+    range bounds. `last` is head.last_ts (newest activity), not merely the last keyframe; the
+    scrubber slider is continuous over [first, last] and may reconstruct at ANY ts in between."""
+    index = {"keyframes": []}
+    try:
+        index = json.loads(flight.index_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    keyframes = list(index.get("keyframes", []))
+    frm = getattr(args, "from_ts", None)
+    to = getattr(args, "to_ts", None)
+    if frm:
+        frm = flight.normalize_ts(frm)
+        keyframes = [k for k in keyframes if k >= frm]
+    if to:
+        to = flight.normalize_ts(to)
+        keyframes = [k for k in keyframes if k <= to]
+    head = _read_head()
+    # `last` is the newest activity (head.last_ts), NOT merely the last keyframe — a birth/death
+    # recorded as a delta after the last keyframe must still fall inside [first, last].
+    last = (head.get("last_ts") if head else None) or (keyframes[-1] if keyframes else None)
+
+    # Delta timestamps are the actual change moments (births/deaths/rebinds/moves) the scrubber
+    # marks and snaps to; keyframes alone (every ~5min) would miss every change between them.
+    events: list[dict[str, Any]] = []
+    fp = flight.frames_path()
+    if fp.exists():
+        with fp.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    delta = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = delta.get("ts")
+                if ts is None or (frm and ts < frm) or (to and ts > to):
+                    continue
+                changes = delta.get("changes", [])
+                events.append({"ts": ts, "changes": len(changes), "ops": sorted({c.get("op") for c in changes if c.get("op")})})
+
+    return {
+        "ok": True,
+        "keyframes": keyframes,
+        "events": events,
+        "first": keyframes[0] if keyframes else None,
+        "last": last,
+        "count": len(keyframes),
+        "frames_bytes": fp.stat().st_size if fp.exists() else 0,
+    }
+
+
 def run(args):
     action = getattr(args, "recorder_action", None) or "status"
     if action == "run":
@@ -215,4 +265,8 @@ def run(args):
         return record_once(keyframe_interval_s=300.0 if kf is None else float(kf))
     if action == "compact":
         return {"ok": True, **flight.compact(now=_next_ts(_head_last_ts()))}
+    if action == "reconstruct":
+        return _reconstruct(args)
+    if action == "timeline":
+        return _timeline(args)
     return _status()
