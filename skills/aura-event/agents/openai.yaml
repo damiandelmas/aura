@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aura Event"
+  short_description: "Create wakeups or report subscriptions."
+  default_prompt: "Use Aura Event for durable wakeups, simple cadences, and explicit report/check-in subscriptions. For goal-loop launch or uncertain event design, route to Aura Operator."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aura View"
+  short_description: "See nearby live mesh state."
+  default_prompt: "Use Aura View for lightweight awareness of nearby seats, reports, and queued messages before messaging or inspecting."

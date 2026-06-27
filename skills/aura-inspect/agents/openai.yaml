@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aura Inspect"
+  short_description: "Read one seat's current state."
+  default_prompt: "Use Aura Inspect to read one seat's mechanical status, terminal excerpt, or sense state. It is read-only; route repair to Aura Operator."

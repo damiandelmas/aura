@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aura Report"
+  short_description: "Write this agent's Aura report-ledger state."
+  default_prompt: "Use Aura Report only for durable self-state/evidence packets: receipts, blockers, handoffs, completion claims, and next-action state. Use Aura Send for direct replies."

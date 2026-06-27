@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aura Queue"
+  short_description: "Queue a message for a report boundary."
+  default_prompt: "Use Aura Queue when a message should wait until the target seat reaches its next report boundary instead of interrupting the current turn."

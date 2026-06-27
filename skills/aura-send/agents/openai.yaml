@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aura Send"
+  short_description: "Message one live Aura seat now."
+  default_prompt: "Use Aura Send for one immediate message to a live fleet:seat: state the action/question, include only needed refs, and say how to reply."

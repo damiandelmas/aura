@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aura Bridge"
+  short_description: "Use Discord/Clawhip messaging and bridge status."
+  default_prompt: "Use Aura Bridge for Discord or Clawhip messaging/status. If listener, service, dependency, route parsing, or delivery repair is needed, route to Aura Operator."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aura Flex"
+  short_description: "Query live Aura fleets and seats through Flex session evidence."
+  default_prompt: "Use aura view self/fleet or aura view fleet FLEET first, then query Flex by returned session_id. Do not use helper pulses as the routine path unless explicitly requested."

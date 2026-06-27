@@ -11,3 +11,4 @@ venv/
 # Local runtime/editor noise
 .DS_Store
 .aura/
+.gjc/

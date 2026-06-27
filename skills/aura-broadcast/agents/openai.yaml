@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aura Broadcast"
+  short_description: "Message many live seats now."
+  default_prompt: "Use Aura Broadcast when the same immediate message should fan out to a fleet, all live seats, or a runtime-scoped live set."
