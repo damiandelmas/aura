@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# tmux-aura-seat-op <op> [arg]
+# Run one Aura lifecycle op against the CURRENT PANE's seat, resolved by exact
+# physical pane id (%N) — never by window name. Surfaces the result (or the
+# fail-closed refusal reason) in a tmux message.
+#
+# ops: identity | rollover | restart | cut | rename <new-name>
+#      spawn "<name> [runtime]"  — new seat in this fleet, cwd of this pane
+#      adopt "<name>"            — claim this pane as a managed seat
+
+op="${1:-identity}"
+arg="${2:-}"
+
+session="$(tmux display-message -p '#{session_name}' 2>/dev/null || true)"
+pane="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+pane_cwd="$(tmux display-message -p '#{pane_current_path}' 2>/dev/null || true)"
+pane_cmd="$(tmux display-message -p '#{pane_current_command}' 2>/dev/null || true)"
+pane_ref="tmux:${session}:${pane}"
+
+export AURA_STATE_DIR="${AURA_STATE_DIR:-$HOME/.aura}"
+
+# Short runtime names a human would type → adapter names.
+runtime_alias() {
+  case "${1:-}" in
+    claude|cc) echo "claude-code" ;;
+    gjc) echo "gajae-code" ;;
+    "") echo "codex" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+# Infer a runtime from what's running in the pane (for adopt).
+# claude is a native binary (comm=claude); codex is an npm node shim
+# (comm=node); gjc is a bun script (comm=bun). The inferred runtime is shown
+# in the message line, so a mislabel is visible immediately.
+runtime_from_command() {
+  case "${1:-}" in
+    claude*) echo "claude-code" ;;
+    codex*|node*) echo "codex" ;;
+    gjc*|bun*) echo "gajae-code" ;;
+    hermes*) echo "hermes" ;;
+    *) echo "shell" ;;
+  esac
+}
+
+resolve_target() {
+  # CLI contract only — never imports Aura internals.
+  "$aura_bin" seat whoami --pane "$pane_ref" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+if d.get("ok"):
+    print(d.get("target") or "")
+' || true
+}
+
+require_target() {
+  target="$(resolve_target)"
+  if [[ -z "$target" ]]; then
+    tmux display-message "aura: unmanaged pane ${pane_ref} — prefix A adopts it"
+    exit 0
+  fi
+}
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+aura_bin="${AURA_BIN:-$HOME/.local/bin/aura}"
+[[ -x "$aura_bin" ]] || aura_bin="$script_dir/../../../cli/aura"
+
+run() {
+  out="$("$aura_bin" "$@" 2>&1)" || true
+  echo "$out"
+}
+
+summarize() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+op, raw = sys.argv[1], sys.argv[2]
+try:
+    d = json.loads(raw)
+except Exception:
+    print(f"aura {op}: {raw[:120]}")
+    raise SystemExit(0)
+if d.get("ok"):
+    print(f"aura {op}: ok")
+else:
+    reason = d.get("error") or d.get("reason") or "failed"
+    print(f"aura {op} REFUSED: {reason}")
+PY
+}
+
+case "$op" in
+  identity)
+    exec "$HOME/.local/bin/tmux-aura-copy-identity"
+    ;;
+  rollover)
+    require_target
+    out="$(run seat rollover "$target" --reason "tmux keybinding")"
+    tmux display-message "$(summarize "rollover $target" "$out")"
+    ;;
+  restart)
+    require_target
+    out="$(run seat restart "$target")"
+    tmux display-message "$(summarize "restart $target" "$out")"
+    ;;
+  cut)
+    require_target
+    out="$(run seat cut "$target")"
+    tmux display-message "$(summarize "cut $target" "$out")"
+    ;;
+  rename)
+    require_target
+    if [[ -z "$arg" ]]; then
+      tmux display-message "aura rename: no new name given"
+      exit 0
+    fi
+    out="$(run seat rename "$target" "$arg")"
+    tmux display-message "$(summarize "rename $target -> $arg" "$out")"
+    ;;
+  spawn)
+    # arg = "name [runtime]" — fleet is this session, cwd is this pane's dir.
+    name="${arg%% *}"
+    rt_word=""
+    [[ "$arg" == *" "* ]] && rt_word="${arg#* }"
+    if [[ -z "$name" ]]; then
+      tmux display-message "aura spawn: no name given"
+      exit 0
+    fi
+    runtime="$(runtime_alias "$rt_word")"
+    out="$(run spawn "$name" --fleet "$session" --runtime "$runtime" --cwd "$pane_cwd" --as-pane --wait)"
+    tmux display-message "$(summarize "spawn ${session}:${name} (${runtime})" "$out")"
+    ;;
+  adopt)
+    name="${arg%% *}"
+    if [[ -z "$name" ]]; then
+      tmux display-message "aura adopt: no name given"
+      exit 0
+    fi
+    runtime="$(runtime_from_command "$pane_cmd")"
+    out="$(run seat adopt --pane "$pane_ref" --as "${session}:${name}" --runtime "$runtime" --cwd auto)"
+    tmux display-message "$(summarize "adopt ${pane_ref} -> ${session}:${name} (${runtime})" "$out")"
+    ;;
+  *)
+    tmux display-message "aura: unknown op '$op'"
+    ;;
+esac

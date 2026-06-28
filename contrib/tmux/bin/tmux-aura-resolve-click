@@ -1,0 +1,492 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# tmux-aura-resolve-click <pane> <mode> [line] [word] [x] [radius]
+#
+# Right-click resolver: extract the phrase under the mouse in the CLICKED pane
+# (the binding's -t= makes every #{...} format expand against it, never the
+# active pane), resolve it to a runtime transcript message through the seat's
+# session, show the match in a popup, copy it to the tmux buffer, and offer a
+# one-line annotation appended to ~/.aura/notes/annotations.jsonl.
+# Promoted from sandbox/2026-05-22-0128-message-resolver after the
+# tmux-resolver-260522-* autoresearch passes.
+#
+# modes: word-window (mouse click) | line <n|text> | buffer|selection
+
+PANE="${1:-${TMUX_PANE:-}}"
+MODE="${2:-buffer}"
+TEXT_ARG="${3:-}"
+WORD_ARG="${4:-}"
+X_ARG="${5:-}"
+RADIUS_ARG="${6:-10}"
+
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESOLVER="$BIN_DIR/tmux-aura-resolve-message"
+ANNOTATE="$BIN_DIR/tmux-aura-annotate"
+POPUP_HANDLER="$BIN_DIR/tmux-aura-anchor-popup"
+MENU_HANDLER="$BIN_DIR/tmux-aura-anchor-menu"
+DEBUG_LOG="${AURA_CONTEXT_DEBUG_LOG:-/tmp/aura-tmux-resolve-debug.log}"
+
+{
+  printf 'ts=%s pane=%s mode=%s line=%s word=%s x=%s radius=%s\n' "$(date +%s.%N)" "$PANE" "$MODE" "$TEXT_ARG" "$WORD_ARG" "$X_ARG" "$RADIUS_ARG"
+} >>"$DEBUG_LOG" 2>/dev/null || true
+
+if [[ -z "$PANE" ]]; then
+  tmux display-message "Aura: no pane id"
+  exit 1
+fi
+
+case "$MODE" in
+  line)
+    if [[ "$TEXT_ARG" =~ ^[0-9]+$ ]]; then
+      TEXT="$(tmux capture-pane -p -t "$PANE" | awk -v line="$TEXT_ARG" 'NR == line + 1 { print; exit }')"
+    else
+      TEXT="$TEXT_ARG"
+    fi
+    ;;
+  word-window)
+    EXCERPT="$(tmux capture-pane -p -t "$PANE")"
+    PANE_WIDTH="$(tmux display-message -p -t "$PANE" '#{pane_width}' 2>/dev/null || printf '0')"
+    ROLE_HINT_FILE="$(mktemp /tmp/aura-role-hint.XXXXXX)"
+    TEXT="$(ROLE_HINT_OUT="$ROLE_HINT_FILE" PANE_TEXT="$EXCERPT" PANE_WIDTH="$PANE_WIDTH" MOUSE_LINE="$TEXT_ARG" MOUSE_WORD="$WORD_ARG" MOUSE_X="$X_ARG" RADIUS="$RADIUS_ARG" python3 - <<'PY'
+import os
+import re
+import string
+
+pane = os.environ.get("PANE_TEXT", "")
+lines = pane.splitlines()
+word = os.environ.get("MOUSE_WORD", "").strip()
+try:
+    pane_width = int(os.environ.get("PANE_WIDTH", "0"))
+except ValueError:
+    pane_width = 0
+try:
+    mouse_line = int(os.environ.get("MOUSE_LINE", "0"))
+except ValueError:
+    mouse_line = 0
+try:
+    x = int(os.environ.get("MOUSE_X", "0"))
+except ValueError:
+    x = 0
+try:
+    radius = max(1, int(os.environ.get("RADIUS", "6")))
+except ValueError:
+    radius = 6
+
+def clean(value):
+    return value.strip(string.punctuation + " \t\r\n")
+
+def clean_line_phrase(line):
+    phrase = line.strip()
+    phrase = re.sub(r"^\s*(?:[-*+•›●◯○]+|\d+[.)]|>+)\s*", "", phrase)
+    phrase = phrase.strip("`*_# \t\r\n")
+    phrase = phrase.replace("/", " ")
+    phrase = phrase.replace("·", " ")
+    phrase = re.sub(r"\s+", " ", phrase).strip(".,;:!? ")
+    return phrase
+
+def line_seed_near_mouse():
+    if not needle:
+        return ""
+    candidates = []
+    for row in (mouse_line, mouse_line - 1, mouse_line + 1, mouse_line - 2, mouse_line + 2):
+        if not (0 <= row < len(lines)):
+            continue
+        raw = lines[row]
+        phrase = clean_line_phrase(raw)
+        words = re.findall(r"[A-Za-z0-9_/-]+", phrase)
+        if not phrase or not (2 <= len(words) <= 18):
+            continue
+        if needle.lower() not in clean(phrase).lower():
+            continue
+        line_is_structured = bool(re.match(r"^\s*(?:[-*+•›]+|\d+[.)]|>+)\s+", raw))
+        line_is_short = pane_width <= 0 or len(raw) < pane_width
+        if line_is_structured or line_is_short:
+            candidates.append((abs(row - mouse_line), 0 if line_is_structured else 1, phrase))
+    if not candidates:
+        return ""
+    candidates.sort()
+    return candidates[0][2]
+
+tokens = []
+for row, line in enumerate(lines):
+    for match in re.finditer(r"\S+", line):
+        token = match.group(0)
+        segment = {"row": row, "start": match.start(), "end": match.end()}
+        if (
+            tokens
+            and match.start() == 0
+            and pane_width > 0
+            and row > 0
+            and len(lines[row - 1]) >= pane_width
+            and lines[row - 1][-1:] not in ("", " ", "\t")
+        ):
+            tokens[-1]["text"] += token
+            tokens[-1]["clean"] = clean(tokens[-1]["text"])
+            tokens[-1]["segments"].append(segment)
+            continue
+        tokens.append({
+            "text": token,
+            "row": row,
+            "start": match.start(),
+            "end": match.end(),
+            "clean": clean(token),
+            "segments": [segment],
+        })
+
+if not tokens:
+    raise SystemExit
+
+needle = clean(word)
+best_i = 0
+best_score = 10**9
+for i, token in enumerate(tokens):
+    row_penalty = min(abs(segment["row"] - mouse_line) for segment in token["segments"]) * 1000
+    word_penalty = 0 if needle and (needle in token["clean"] or token["clean"] in needle) else 100
+    distance = 10**6
+    for segment in token["segments"]:
+        if segment["row"] != mouse_line:
+            continue
+        if segment["start"] <= x < segment["end"]:
+            distance = 0
+        else:
+            center = (segment["start"] + segment["end"]) / 2
+            distance = min(distance, abs(x - segment["start"]), abs(x - segment["end"]), abs(x - center))
+    if distance == 10**6:
+        distance = 0
+    score = row_penalty + word_penalty + distance
+    if score < best_score:
+        best_i = i
+        best_score = score
+
+start = max(0, best_i - radius)
+end = min(len(tokens), best_i + radius + 1)
+window = " ".join(token["text"] for token in tokens[start:end])
+line_seed = line_seed_near_mouse()
+
+# Role hint from POSITION: walk up from the click to the nearest speaker marker.
+# This is what disambiguates the same text echoed in a prompt (❯ user) from the
+# same text spoken in a reply (● assistant) — the content matcher alone can't.
+hint = ""
+for r in range(min(mouse_line, len(lines) - 1), -1, -1):
+    if not (0 <= r < len(lines)):
+        continue
+    head = lines[r].lstrip()[:1]
+    if head in ("❯", "›", ">"):
+        hint = "user_prompt"
+        break
+    if head in ("●", "◯", "○"):
+        hint = "assistant"
+        break
+hint_out = os.environ.get("ROLE_HINT_OUT")
+if hint_out:
+    try:
+        open(hint_out, "w").write(hint)
+    except OSError:
+        pass
+
+if line_seed:
+    print(line_seed)
+else:
+    print(window)
+PY
+)"
+    ;;
+  buffer|selection)
+    TEXT="$(tmux save-buffer - 2>/dev/null || tmux show-buffer 2>/dev/null || true)"
+    ;;
+  *)
+    tmux display-message "Aura: unknown context mode $MODE"
+    exit 1
+    ;;
+esac
+
+ROLE_HINT=""
+if [[ -n "${ROLE_HINT_FILE:-}" && -f "$ROLE_HINT_FILE" ]]; then
+  ROLE_HINT="$(cat "$ROLE_HINT_FILE" 2>/dev/null || true)"
+  rm -f "$ROLE_HINT_FILE"
+fi
+
+if [[ -z "${TEXT//[[:space:]]/}" ]]; then
+  tmux display-message "Aura: no selected text/copy buffer"
+  exit 1
+fi
+
+if [[ -n "${AURA_CONTEXT_SEED_OUT:-}" ]]; then
+  printf '%s\n' "$TEXT" >"$AURA_CONTEXT_SEED_OUT"
+fi
+printf 'seed=%s\n' "$TEXT" >>"$DEBUG_LOG" 2>/dev/null || true
+
+if [[ -n "${AURA_CONTEXT_SEED_ONLY:-}" ]]; then
+  exit 0
+fi
+
+# Seat identity for the annotation record — CLI contract only, same as
+# tmux-aura-copy-identity. An unmanaged pane still resolves (the resolver
+# matches pane_ref against the registry itself); target just stays empty.
+session="$(tmux display-message -p -t "$PANE" '#{session_name}' 2>/dev/null || true)"
+pane_cwd="$(tmux display-message -p -t "$PANE" '#{pane_current_path}' 2>/dev/null || true)"
+pane_ref="tmux:${session}:${PANE}"
+
+export AURA_STATE_DIR="${AURA_STATE_DIR:-$HOME/.aura}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+aura_bin="${AURA_BIN:-$HOME/.local/bin/aura}"
+[[ -x "$aura_bin" ]] || aura_bin="$script_dir/../../../cli/aura"
+# whoami resolves the EXACT LIVE seat at this pane (Aura's live identity), so we
+# take its target AND runtime_session_id here. We pass --session-id to the
+# resolver, never a bare --pane: %N is reused across past tmux servers, so a
+# pane-suffix scan over historical registry rows can match a stale seat's huge
+# transcript (the fuzzy-resolution failure class). Live identity, not a name scan.
+# timeout: whoami reads the registry + tmux mirror; under load it can spike, and
+# a right-click must never freeze. 2s cap, then degrade to the --pane path.
+whoami_json="$(timeout 2 "$aura_bin" seat whoami --pane "$pane_ref" 2>/dev/null || true)"
+read -r target sid < <(printf '%s' "$whoami_json" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+print((d.get("target") or "-"), (d.get("runtime_session_id") or "-"))
+' || true)
+[[ "$target" == "-" ]] && target=""
+[[ "$sid" == "-" ]] && sid=""
+
+CTX="$(mktemp /tmp/aura-resolve-ctx.XXXXXX.json)"
+META="$(mktemp /tmp/aura-resolve-meta.XXXXXX.json)"
+
+# Forward resolve to a VERIFIABLE anchor: mint on a unique+distinctive match;
+# refuse on ambiguous / non-distinctive so the popup escalates to the exact
+# fzf-over-transcript picker. The anchor carries a content sha (verification pin).
+# Resolve one seed into CTX. 3s cap — the local parse is ~50ms; the cap is pure
+# insurance so a click can never freeze.
+resolve_seed_to_ctx() {
+  local seed="$1" hint="$2" tmo="${3:-3}" hargs=()
+  [[ -n "$hint" ]] && hargs=(--role-hint "$hint")
+  if [[ -n "$sid" ]]; then
+    printf '%s' "$seed" | timeout "$tmo" "$RESOLVER" --session-id "$sid" "${hargs[@]}" --output anchor >"$CTX" 2>/dev/null || true
+  else
+    printf '%s' "$seed" | timeout "$tmo" "$RESOLVER" --pane "$PANE" "${hargs[@]}" --output anchor >"$CTX" 2>/dev/null || true
+  fi
+}
+ctx_is() {  # ctx_is ok | ctx_is ambiguous
+  python3 - "$CTX" "$1" <<'PY'
+import json, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: d = {}
+sys.exit(0 if d.get(sys.argv[2]) else 1)
+PY
+}
+# Widening seeds for a templated/boilerplate click. A line that repeats
+# byte-identical across message blocks (cold-outreach copy: "hi there,",
+# "— damian") resolves AMBIGUOUS (near-tie) or, if it is bare boilerplate,
+# refuses as non-distinctive — but the BLOCK it sits in carries a unique token
+# (a URL/brand like gensee-beauty.flexchat.dev). This grows the seed outward from
+# the clicked row, staying inside that one speaker turn (bounded ONLY by ❯/›/●/◯/○
+# speaker markers — it SPANS blank-line paragraph breaks, since the distinctive
+# token usually sits a paragraph away from the clicked boilerplate; centered on
+# mouse_y), and emits each widened span — smallest first — that clears the
+# resolver's distinctiveness floor. The caller
+# resolves them in order and keeps the first that UNIQUELY mints; we earn a unique
+# match, never guess on a tie.
+#
+# DISTINCTIVENESS IS MIRRORED FROM tmux-aura-resolve-message (normalize() +
+# is_distinctive_seed() + _SEED_STOP) so "distinctive" means the exact same thing
+# on both sides — a length>=4 non-stopword token (URLs/brands qualify, bare
+# boilerplate does not). KEEP THESE IN SYNC with the resolver.
+block_widen_seeds_at() {
+  PANE_TEXT="$EXCERPT" ROW="$1" python3 - <<'PY'
+import os, re
+
+lines = os.environ.get("PANE_TEXT", "").splitlines()
+try:
+    center = int(os.environ.get("ROW", "0"))
+except ValueError:
+    center = 0
+
+def clean_line_phrase(line):
+    phrase = re.sub(r"^\s*(?:[-*+•›●◯○]+|\d+[.)]|>+)\s*", "", line.strip())
+    phrase = phrase.strip("`*_# \t\r\n").replace("/", " ").replace("·", " ")
+    return re.sub(r"\s+", " ", phrase).strip(".,;:!? ")
+
+# --- mirror of tmux-aura-resolve-message: normalize / is_distinctive_seed ---
+def normalize(text):
+    text = text.lower()
+    text = text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    text = re.sub(r"[*`_>#\[\]().,;:!?\"'/\\\\-]+", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+_SEED_STOP = {
+    "the", "and", "that", "this", "with", "from", "your", "you", "for", "are",
+    "was", "were", "have", "has", "had", "not", "but", "can", "will", "just",
+    "into", "then", "than", "they", "them", "its", "what", "when", "where",
+    "how", "why", "all", "one", "two", "out", "our", "now", "should", "store",
+}
+
+def is_distinctive(text):
+    norm = normalize(text)
+    if len(norm) < 4:
+        return False
+    toks = [w for w in re.findall(r"[a-z0-9_/-]+", norm) if len(w) >= 4 and w not in _SEED_STOP]
+    return len(toks) >= 1
+# --- end mirror ---
+
+def is_marker(raw):
+    return raw.lstrip()[:1] in ("❯", "›", ">", "●", "◯", "○")
+
+if not (0 <= center < len(lines)):
+    raise SystemExit
+
+# Block bounds: the whole speaker turn around the click, stopping ONLY at a
+# speaker marker (❯ › > ● ◯ ○ — a marker starts a new turn, so the seed never
+# bleeds across speakers). We deliberately SPAN blank lines: real messages are
+# blank-separated paragraphs, so the clicked boilerplate line and the block's
+# distinctive token (a URL/brand) live in different paragraphs with a blank line
+# between — stopping at blanks would collapse the block to the single clicked line
+# and widening would emit nothing. assemble() drops the blank rows; growing past
+# them is what reaches the distinctive token. Over-spanning self-corrects: a span
+# that swallows a second distinctive token just stays ambiguous and falls to the
+# picker — it never mints a wrong anchor.
+top = center
+while top - 1 >= 0 and not is_marker(lines[top - 1]):
+    top -= 1
+bottom = center
+while bottom + 1 < len(lines) and not is_marker(lines[bottom + 1]):
+    bottom += 1
+
+def assemble(lo, hi):
+    return " ".join(p for p in (clean_line_phrase(lines[r]) for r in range(lo, hi + 1)) if p).strip()
+
+# Mouse-row bias: grow symmetrically outward from the click, smallest window
+# first. r starts at 1 — the bare clicked line (r=0) is exactly what failed to
+# mint, so re-resolving it is pointless; we only forward genuinely WIDER spans.
+seen = set()
+span = max(center - top, bottom - center)
+# Cap the number of widened spans we EMIT. Each emitted seed costs the caller one
+# resolve subprocess; an uncapped widen over a large multi-paragraph assistant turn
+# could fire dozens of resolves on a single ambiguous click (a perceptible hang).
+# The block's distinctive token (a per-prospect URL/brand) is reached within a few
+# rows of the boilerplate, so a small cap keeps the win without the tail latency —
+# past the cap we let the popup escalate to the fzf picker.
+MAX_WIDEN = 6
+emitted = 0
+for r in range(1, span + 1):
+    if emitted >= MAX_WIDEN:
+        break
+    seed = assemble(max(top, center - r), min(bottom, center + r))
+    if not seed or not is_distinctive(seed):
+        continue
+    key = seed.lower()
+    if key in seen:
+        continue
+    seen.add(key)
+    print(seed)
+    emitted += 1
+PY
+}
+
+# Cleaned line + role hint at a given pane row — used by the nudge retries.
+line_and_hint_at() {
+  PANE_TEXT="$EXCERPT" ROW="$1" python3 - <<'PY'
+import os, re
+lines = os.environ.get("PANE_TEXT", "").splitlines()
+try: row = int(os.environ.get("ROW", "0"))
+except ValueError: row = 0
+def clean(line):
+    p = re.sub(r"^\s*(?:[-*+•›●◯○]+|\d+[.)]|>+)\s*", "", line.strip())
+    p = p.strip("`*_# \t\r\n").replace("/", " ").replace("·", " ")
+    return re.sub(r"\s+", " ", p).strip(".,;:!? ")
+seed = clean(lines[row]) if 0 <= row < len(lines) else ""
+hint = ""
+for r in range(min(row, len(lines) - 1), -1, -1):
+    head = lines[r].lstrip()[:1] if 0 <= r < len(lines) else ""
+    if head in ("❯", "›", ">"): hint = "user_prompt"; break
+    if head in ("●", "◯", "○"): hint = "assistant"; break
+print(hint); print(seed)
+PY
+}
+
+# First resolve: the exact click.
+resolve_seed_to_ctx "$TEXT" "$ROLE_HINT"
+
+# Nudge-and-retry: if the exact click resolved NOTHING (whitespace, a wrapped-line
+# gap, between messages) and it isn't a genuine ambiguity, move the click up/down a
+# row or two and try again — first row that mints wins. Ambiguity is left alone
+# (the picker disambiguates it); only a clean MISS triggers the nudge.
+if [[ "$MODE" == "word-window" ]] && ! ctx_is ok && ! ctx_is ambiguous; then
+  for drow in -1 1 -2 2; do
+    nrow=$(( ${TEXT_ARG:-0} + drow ))
+    (( nrow < 0 )) && continue
+    mapfile -t _lh < <(line_and_hint_at "$nrow")
+    nseed="${_lh[1]:-}"
+    [[ -z "${nseed// /}" ]] && continue
+    resolve_seed_to_ctx "$nseed" "${_lh[0]:-}"
+    if ctx_is ok; then TEXT="$nseed"; break; fi
+  done
+fi
+
+# Block widening: a click on TEMPLATED copy (cold-outreach boilerplate repeated
+# byte-identical across prospect blocks) resolves AMBIGUOUS — the line matches
+# many positions at a near-tie — or refuses as non-distinctive. The seed is just
+# too narrow: the block around the click is unique even when the line is not (each
+# block carries its own URL/brand). So when we don't have a clean UNIQUE mint,
+# grow the seed within the click's block (block_widen_seeds_at, centered on
+# mouse_y, smallest span first) and resolve each widened span; the first that
+# UNIQUELY mints wins. This EARNS a unique match — it never guesses on a tie. If
+# no widened span mints, restore the prior CTX so the popup escalates to the
+# fzf-over-transcript picker exactly as today (fail-loud, never silently-wrong).
+if [[ "$MODE" == "word-window" ]] && { ctx_is ambiguous || ! ctx_is ok; }; then
+  mapfile -t _wh < <(line_and_hint_at "${TEXT_ARG:-0}")
+  whint="${_wh[0]:-$ROLE_HINT}"
+  cp "$CTX" "$CTX.bak" 2>/dev/null || true
+  widened=""
+  while IFS= read -r wseed; do
+    [[ -z "${wseed// /}" || "$wseed" == "$TEXT" ]] && continue
+    resolve_seed_to_ctx "$wseed" "$whint" 1   # 1s cap per span: bounded, capped at 6 spans
+    if ctx_is ok; then widened="$wseed"; break; fi
+  done < <(block_widen_seeds_at "${TEXT_ARG:-0}")
+  if [[ -n "$widened" ]]; then
+    TEXT="$widened"
+    rm -f "$CTX.bak"
+  else
+    [[ -f "$CTX.bak" ]] && mv -f "$CTX.bak" "$CTX"
+  fi
+fi
+
+# Base meta (seat / pane / seed) — the popup handler finalizes the anchor onto it.
+AURA_TARGET="$target" PANE_REF="$pane_ref" PANE_CWD="$pane_cwd" SELECTED="$TEXT" \
+  python3 - "$CTX" "$META" <<'PY'
+import json, os, sys
+from pathlib import Path
+ctx_path, meta_path = sys.argv[1], sys.argv[2]
+try:
+    ctx = json.loads(Path(ctx_path).read_text(encoding="utf-8"))
+except Exception:
+    ctx = {}
+Path(meta_path).write_text(json.dumps({
+    "target": os.environ.get("AURA_TARGET") or None,
+    "pane_ref": os.environ.get("PANE_REF"),
+    "cwd": os.environ.get("PANE_CWD") or None,
+    "selected_text": os.environ.get("SELECTED", ""),
+    "session_id": ctx.get("session_id"),
+    "resolved": False,
+}, ensure_ascii=False), encoding="utf-8")
+PY
+
+# Headless test contract: finalize without popup/fzf (autopick the minted
+# position when present), then hand back the meta record.
+if [[ -n "${AURA_CONTEXT_TEST_OUT:-}" || -n "${AURA_CONTEXT_META_OUT:-}" ]]; then
+  AUTO="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print((d.get("anchor") or {}).get("position") or "")' "$CTX" 2>/dev/null || true)"
+  if [[ -n "$AUTO" ]]; then
+    AURA_ANCHOR_POPUP_AUTOPICK="$AUTO" "$POPUP_HANDLER" "$CTX" "$META" >/dev/null 2>&1 || true
+  fi
+  [[ -n "${AURA_CONTEXT_TEST_OUT:-}" ]] && cp "$META" "$AURA_CONTEXT_TEST_OUT"
+  [[ -n "${AURA_CONTEXT_META_OUT:-}" ]] && cp "$META" "$AURA_CONTEXT_META_OUT"
+  rm -f "$CTX" "$META"
+  exit 0
+fi
+
+# Context menu at the click: the resolved anchor is the noun, the menu is the
+# verbs (annotate / copy / patch …; pick first when ambiguous). Native tmux
+# display-menu — positioned at the mouse. Interactive verbs open their own popup.
+"$MENU_HANDLER" show "$CTX" "$META" "${X_ARG:-0}" "${TEXT_ARG:-0}"

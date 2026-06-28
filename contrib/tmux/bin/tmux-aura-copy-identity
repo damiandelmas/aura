@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve the CURRENT PANE's seat by exact physical identity (pane id %N),
+# never by window name — names are labels; the pane is the occupant.
+# All resolution goes through the CLI contract (aura seat whoami); this script
+# never imports Aura internals.
+session="$(tmux display-message -p '#{session_name}' 2>/dev/null || true)"
+pane="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+pane_ref="tmux:${session}:${pane}"
+
+export AURA_STATE_DIR="${AURA_STATE_DIR:-$HOME/.aura}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+aura_bin="${AURA_BIN:-$HOME/.local/bin/aura}"
+[[ -x "$aura_bin" ]] || aura_bin="$script_dir/../../../cli/aura"
+
+raw="$("$aura_bin" seat whoami --pane "$pane_ref" 2>/dev/null || true)"
+value="$(printf '%s' "$raw" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+print(d.get("block") or "- aura: whoami failed")
+')"
+
+tmux set-buffer -- "$value"
+if command -v clip.exe >/dev/null 2>&1; then
+  printf "%s" "$value" | clip.exe
+elif command -v wl-copy >/dev/null 2>&1; then
+  printf "%s" "$value" | wl-copy
+elif command -v xclip >/dev/null 2>&1; then
+  printf "%s" "$value" | xclip -selection clipboard
+elif command -v xsel >/dev/null 2>&1; then
+  printf "%s" "$value" | xsel --clipboard --input
+elif command -v pbcopy >/dev/null 2>&1; then
+  printf "%s" "$value" | pbcopy
+fi
+
+first_line="$(printf "%s\n" "$value" | head -n1)"
+tmux display-message "copied: ${first_line#- aura: }"

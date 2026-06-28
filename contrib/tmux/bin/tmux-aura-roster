@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mode="${1:-role}"
+session="${2:-}"
+if [ -z "$session" ]; then
+  session="$(tmux display-message -p '#{session_name}' 2>/dev/null || true)"
+fi
+[ -n "$session" ] || exit 0
+
+rows="$(tmux list-windows -t "$session" -F '#{window_index}	#{window_name}	#{window_active}' 2>/dev/null || true)"
+[ -n "$rows" ] || exit 0
+client_width="${TMUX_AURA_WIDTH:-$(tmux display-message -p '#{client_width}' 2>/dev/null || echo 120)}"
+
+python3 - "$mode" "$session" "$rows" "$client_width" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+
+mode = sys.argv[1]
+session = sys.argv[2]
+raw = sys.argv[3]
+try:
+    client_width = int(sys.argv[4])
+except Exception:
+    client_width = 120
+rows = []
+
+def load_json(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+def aura_registry():
+    root = Path(os.environ.get("AURA_STATE_DIR") or Path.home() / ".aura")
+    data = load_json(root / "registry" / "seats.json")
+    return data if isinstance(data, dict) else {}
+
+def identity_name(identity_id):
+    if not identity_id:
+        return None
+    root = Path(os.environ.get("DESKS_ROOT") or Path.home() / ".desks")
+    data = load_json(root / "identities" / str(identity_id) / "identity.json")
+    if not isinstance(data, dict):
+        return None
+    value = data.get("current_name")
+    return str(value) if value else None
+
+registry = aura_registry()
+identity_cache = {}
+
+def display_parts(seat):
+    record = registry.get(f"{session}:{seat}") or {}
+    display = record.get("display") if isinstance(record.get("display"), dict) else {}
+    product = display.get("product") or record.get("display_product")
+    role = display.get("role") or display.get("group") or record.get("display_role") or record.get("display_group")
+    lane = display.get("lane") or display.get("label") or record.get("display_lane") or record.get("display_label")
+    if product or role or lane:
+        return seat, str(product or ""), str(role or ""), str(lane or "")
+
+    identity_id = record.get("desks_identity_id")
+    if identity_id not in identity_cache:
+        identity_cache[identity_id] = identity_name(identity_id)
+    current_name = identity_cache.get(identity_id)
+    if current_name:
+        parts = current_name.split(":")
+        if len(parts) >= 4:
+            return seat, parts[0], parts[-2], parts[-1]
+        if len(parts) >= 2:
+            return seat, parts[0], parts[-2], parts[-1]
+
+    return seat, "", "", ""
+
+def current_name_for_seat(seat):
+    record = registry.get(f"{session}:{seat}") or {}
+    identity_id = record.get("desks_identity_id")
+    if identity_id not in identity_cache:
+        identity_cache[identity_id] = identity_name(identity_id)
+    return identity_cache.get(identity_id)
+
+for line in raw.splitlines():
+    parts = line.split("\t")
+    if len(parts) != 3:
+        continue
+    index, name, active = parts
+    aura_seat, product, role, lane = display_parts(name)
+    rows.append((index, aura_seat, product, role, lane, active == "1"))
+
+if mode == "active":
+    for index, aura_seat, product, role, lane, active in rows:
+        if active:
+            print(f"{role}:{lane}" if lane else role)
+            break
+    sys.exit(0)
+
+if mode == "active-summary":
+    for index, aura_seat, product, role, lane, active in rows:
+        if active:
+            aura = f"{session}:{aura_seat}"
+            identity = " ".join(part for part in (product, role, lane) if part)
+            print(f"{aura} | {identity}" if identity else aura)
+            break
+    sys.exit(0)
+
+if mode == "active-identity":
+    for index, aura_seat, product, role, lane, active in rows:
+        if active:
+            print(current_name_for_seat(aura_seat) or "")
+            break
+    sys.exit(0)
+
+if mode == "active-border":
+    for index, aura_seat, product, role, lane, active in rows:
+        if active:
+            identity = current_name_for_seat(aura_seat)
+            print(f" {identity or session + ':' + aura_seat} ")
+            break
+    sys.exit(0)
+
+if mode == "active-product":
+    for index, aura_seat, product, role, lane, active in rows:
+        if active:
+            print(product)
+            break
+    sys.exit(0)
+
+if mode == "active-role":
+    for index, aura_seat, product, role, lane, active in rows:
+        if active:
+            print(role)
+            break
+    sys.exit(0)
+
+if mode == "active-lane":
+    for index, aura_seat, product, role, lane, active in rows:
+        if active:
+            print(lane)
+            break
+    sys.exit(0)
+
+cells = []
+row_mode = mode in {"seat-row1", "seat-row2"}
+row_limit = max(24, client_width - 4)
+for index, aura_seat, product, role, lane, active in rows:
+    prefix = f"{index} "
+    seat_label = aura_seat
+    aura_display = f"{prefix}{seat_label}".rstrip()
+    product_display = f"{prefix}{product}" if product else aura_display
+    role_display = f"{' ' * len(prefix)}{role}" if role else " " * len(aura_display)
+    lane_display = f"{' ' * len(prefix)}{lane}" if lane else " " * len(aura_display)
+    width = max(len(aura_display), len(product_display), len(role_display), len(lane_display), 3) + 3
+    if mode == "index":
+        value = index
+    elif mode == "seat":
+        value = aura_display
+    elif mode == "aura":
+        value = aura_display
+    elif mode == "product":
+        value = product_display
+    elif mode == "role":
+        value = role_display
+    elif mode == "lane":
+        value = lane_display
+    else:
+        value = aura_display
+    text = value[:width - 1].ljust(width)
+    styled = (
+        f"#[bold,fg=colour81]{text}#[default]"
+        if active else
+        f"#[fg=colour246]{text}#[default]"
+    )
+    cells.append((text.rstrip(), len(text), styled))
+
+def split_cells(cells, width):
+    if not cells:
+        return "", ""
+    # Leave breathing room for tmux/status decorations and avoid a final clipped cell.
+    limit = max(24, width - 4)
+    total = sum(cell_width for _plain, cell_width, _styled in cells)
+    if total <= limit:
+        return "".join(c[2] for c in cells), ""
+    target = min(limit, max((total + 1) // 2, total - limit))
+    used = 0
+    split_at = len(cells)
+    for i, (_plain, cell_width, _styled) in enumerate(cells):
+        if used and used + cell_width > target:
+            split_at = i
+            break
+        used += cell_width
+    if split_at == len(cells):
+        return "".join(c[2] for c in cells), ""
+    return "".join(c[2] for c in cells[:split_at]), "".join(c[2] for c in cells[split_at:])
+
+if mode == "seat-row1":
+    print(split_cells(cells, client_width)[0])
+elif mode == "seat-row2":
+    print(split_cells(cells, client_width)[1])
+else:
+    print("".join(c[2] for c in cells))
+PY

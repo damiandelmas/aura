@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Interactive anchor popup — finalizes a right-click into a verifiable anchor.
+
+Reads the forward-resolve context (the `--output anchor` result) and a base meta
+record. If the click minted a unique anchor, it displays the message and offers a
+note. If it was ambiguous / non-distinctive, it escalates to the exact
+fzf-over-transcript picker (tmux-aura-pick), then displays + annotates the chosen
+anchor. Either way the final anchor carries its content sha (the verification
+pin), and the note record is written through tmux-aura-annotate.
+
+Test hook: env AURA_ANCHOR_POPUP_AUTOPICK=<pos> skips fzf/prompt and finalizes
+that position non-interactively (the headless path the suite exercises).
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+BIN = Path(__file__).resolve().parent
+RESOLVER = str(BIN / "tmux-aura-resolve-message")
+PICKER = str(BIN / "tmux-aura-pick")
+ANNOTATE = str(BIN / "tmux-aura-annotate")
+
+
+def reverse(session_id: str, pos: int) -> dict:
+    p = subprocess.run([RESOLVER, "--session-id", session_id, "--resolve-anchor", str(pos)],
+                       capture_output=True, text=True, timeout=30)
+    try:
+        return json.loads(p.stdout)
+    except json.JSONDecodeError:
+        return {}
+
+
+def main() -> int:
+    ctx_path, meta_path = sys.argv[1], sys.argv[2]
+    ctx = json.loads(Path(ctx_path).read_text(encoding="utf-8")) if Path(ctx_path).exists() else {}
+    meta = json.loads(Path(meta_path).read_text(encoding="utf-8")) if Path(meta_path).exists() else {}
+    session_id = ctx.get("session_id") or meta.get("session_id")
+    autopick = os.environ.get("AURA_ANCHOR_POPUP_AUTOPICK")
+
+    pos = None
+    if ctx.get("ok") and ctx.get("anchor"):
+        pos = ctx["anchor"].get("position")
+    elif autopick:
+        pos = int(autopick)
+    elif session_id:
+        # escalate to the exact picker over the real transcript (or the candidates)
+        cands = [str(c["position"]) for c in ctx.get("candidates", [])]
+        args = [PICKER, "--session-id", session_id]
+        if cands:
+            args += ["--positions", ",".join(cands)]
+        picked = subprocess.run(args, capture_output=True, text=True)
+        try:
+            pos = (json.loads(picked.stdout).get("anchor") or {}).get("position")
+        except json.JSONDecodeError:
+            pos = None
+
+    if pos is not None and session_id:
+        rr = reverse(session_id, int(pos))
+        meta.update({
+            "message_position": rr.get("position"),
+            "message_id": rr.get("message_id"),
+            "message_type": rr.get("type"),
+            "content_sha256": rr.get("sha256"),
+            "resolved": True,
+            "ambiguous": False,
+            "picked": bool(autopick) or not (ctx.get("ok")),
+        })
+        Path(meta_path).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        content = rr.get("content", "")
+        subprocess.run([str(BIN / "tmux-aura-clip")], input=content, text=True, check=False)
+        header = f"#{rr.get('position')} · {rr.get('type')} · sha {str(rr.get('sha256'))[:8]}"
+        body = f"{header}\n\n{content}\n\nAnchor minted · copied to buffer."
+    else:
+        meta.update({"resolved": False, "refuse_reason": ctx.get("refuse_reason")})
+        Path(meta_path).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        body = "No transcript message resolved (seed not distinctive)."
+
+    if autopick:
+        return 0  # headless test path — no display, no prompt
+
+    print(body)
+    try:
+        note = input("\nnote (Enter to skip): ").strip()
+    except EOFError:
+        note = ""
+    if note:
+        subprocess.run([ANNOTATE, meta_path, note], check=False)
+        print("annotated")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

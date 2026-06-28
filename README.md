@@ -1,8 +1,8 @@
 # Aura
 
-Aura exists because many agents running in parallel need a floor: a shared address book, a way to talk to each other, and a guarantee that process death doesn't erase identity. Each agent runs as a named **seat** at `fleet:seat` in tmux. Aura gives it an address, a roster of peers, a delivery layer, and a durable body that survives restarts.
+A living mesh of AI agents — each one a named mind at a real address, able to find its peers, send them messages, spawn workers, lead crews, and survive process death with its identity intact. Aura is the floor underneath all of it: the address book, the switchboard, the delivery layer, and the lifecycle engine that turns a collection of terminal processes into a coordinated fleet.
 
-The skill library is how agents learn to operate that floor. Each `aura-*` skill teaches one domain verb — start with `aura-onboard` for the full mental model, then reach for the specific skill when you need it. An agent with the right skills can view the fleet, message a peer, report its state, spawn a worker, and manage its own session binding without any operator help.
+The `aura-*` skills are how an agent wakes up cold and immediately knows how to operate the whole thing — who it is, who's around it, how to talk to them, how to report its state, how to hand off work. Start with `aura-onboard`. The rest follows.
 
 ```
 Owns:    liveness · routing · launch records · delivery evidence · grouping · observability
@@ -14,6 +14,10 @@ Live address is `fleet:seat`. Live backend is tmux. Truth is the registry joined
 ## Install
 
 One symlink exposes the CLI globally. The smoke check runs in a clean environment so you can confirm Aura resolves tmux correctly before doing anything real.
+
+### Operator UI (`contrib/tmux`)
+
+`contrib/tmux/` is the recommended tmux surface for the Aura operator. It wires the status bar to show the live `fleet:seat` address and a seat roster, binds lifecycle ops to keys (`r` rollover, `R` restart, `x` cut, `N` rename, `S` spawn, `A` adopt), and adds a right-click → transcript anchor system that resolves any visible text to its exact runtime message position. Run `contrib/tmux/install.sh` to symlink the scripts into `~/.local/bin/` and optionally install `tmux.conf`.
 
 ```bash
 # global entry point

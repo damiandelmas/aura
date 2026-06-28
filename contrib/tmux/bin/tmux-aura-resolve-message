@@ -1,0 +1,630 @@
+#!/usr/bin/env python3
+"""Resolve selected terminal text to a runtime transcript message position.
+
+Promoted from sandbox/2026-05-22-0128-message-resolver. Read-only and
+deliberately dumb: resolves the pane's seat through the Aura registry, discovers
+the runtime transcript JSONL (codex: <home>/sessions/**/*<sid>*.jsonl
+response_item events; claude-code: <home>/projects/<cwd>/<sid>.jsonl
+user/assistant events, sidechains skipped), and matches the selected text against
+that ONE session's ordered messages — nothing else. No semantic search, no
+cross-cell fallback, no indexing dependency: if the seed isn't in this transcript,
+it refuses. Never mutates the registry; never imports Aura internals.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+def content_sha(text: str) -> str:
+    """Stable content hash for an anchor (the verification pin).
+
+    The anchor address is session_<line> — the raw 1-based JSONL line number, which
+    IS the Flex chunk id by construction. The sha verifies that line still holds the
+    SAME thought; on reverse-resolve a mismatch is loud drift (fires on compaction /
+    reindex), never a silently-wrong return — the write law one layer down.
+    """
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def aura_anchor_resolve(anchor_or_id: str) -> dict | None:
+    """DURABLE / cross-tool resolve through the one authority: `aura anchor
+    resolve` (→ Flex). Reached ONLY when the local same-session transcript can't
+    answer (a foreign / dead session, or a pasted anchor). Best-effort — returns
+    None when the id isn't indexed yet (the live-edge lag; mint locally, resolve
+    later). The live same-session path never reaches here: it reads line N.
+    """
+    candidates = (
+        os.environ.get("AURA_BIN"),
+        shutil.which("aura"),
+        str(Path(__file__).resolve().parents[3] / "cli" / "aura"),
+    )
+    for binp in candidates:
+        if not binp:
+            continue
+        if not os.path.exists(binp):
+            continue
+        try:
+            p = subprocess.run([binp, "anchor", "resolve", anchor_or_id],
+                               capture_output=True, text=True, timeout=20)
+            d = json.loads(p.stdout or "{}")
+        except Exception:
+            return None
+        return d if d.get("ok") else None
+    return None
+
+
+def normalize(text: str) -> str:
+    text = text.lower()
+    text = text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    text = re.sub(r"[*`_>#\[\]().,;:!?\"'/\\\\-]+", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+_SEED_STOP = {
+    "the", "and", "that", "this", "with", "from", "your", "you", "for", "are",
+    "was", "were", "have", "has", "had", "not", "but", "can", "will", "just",
+    "into", "then", "than", "they", "them", "its", "what", "when", "where",
+    "how", "why", "all", "one", "two", "out", "our", "now", "should", "store",
+}
+
+
+def is_distinctive_seed(text: str) -> bool:
+    """A seed must carry at least one distinctive token to mint an anchor.
+
+    The matcher is content-exact, so a 3-char stopword ("the") substring-matches a
+    long message at score 1.0 and returns a confident wrong anchor. This is the
+    fail-loud floor (cell pin: anchors verifiable, never silently-wrong): a seed
+    below the floor resolves to nothing rather than a false-confident hit. Long
+    multi-word fragments ("the install link to the store") clear it on their
+    distinctive tokens; bare stopwords do not.
+    """
+    norm = normalize(text)
+    if len(norm) < 4:
+        return False
+    tokens = [w for w in re.findall(r"[a-z0-9_/-]+", norm) if len(w) >= 4 and w not in _SEED_STOP]
+    return len(tokens) >= 1
+
+
+def registry_path() -> Path:
+    configured = os.environ.get("AURA_REGISTRY_PATH")
+    if configured:
+        return Path(configured).expanduser()
+    root = Path(os.environ.get("AURA_STATE_DIR", str(Path.home() / ".aura"))).expanduser()
+    return root / "registry" / "seats.json"
+
+
+def read_registry() -> dict:
+    path = registry_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def resolve_registry_record(target: str | None, pane: str | None) -> dict | None:
+    records = read_registry()
+    if target:
+        if target in records:
+            return records[target]
+        if ":" in target:
+            return records.get(target)
+        matches = [row for row in records.values() if row.get("name") == target or row.get("seat") == target]
+        if matches:
+            matches.sort(key=lambda row: row.get("last_seen", ""), reverse=True)
+            return matches[0]
+    if pane:
+        pane_id = pane.split(":")[-1] if pane.startswith("tmux:") else pane
+        for row in records.values():
+            pane_ref = str(row.get("pane_ref") or "")
+            if pane_ref == pane or pane_ref.endswith(f":{pane_id}") or pane_ref == f"tmux:{pane}":
+                return row
+    return None
+
+
+def transcript_path_from_record(record: dict | None) -> Path | None:
+    if not record:
+        return None
+    evidence = record.get("runtime_session_evidence")
+    if isinstance(evidence, dict) and evidence.get("transcript_path"):
+        return Path(str(evidence["transcript_path"])).expanduser()
+    for key in ("transcript_path", "runtime_transcript_path"):
+        if record.get(key):
+            return Path(str(record[key])).expanduser()
+    return None
+
+
+def discover_transcript_path(record: dict | None, session_id: str | None) -> Path | None:
+    direct = transcript_path_from_record(record)
+    if direct and direct.exists():
+        return direct
+    if not session_id:
+        return None
+    roots = []
+    if record:
+        for key in ("codex_package_codex_home", "native_state_ref"):
+            value = record.get(key)
+            if value:
+                roots.append(Path(str(value)).expanduser())
+        runtime_home = record.get("runtime_home")
+        if runtime_home:
+            roots.append(Path(str(runtime_home)).expanduser() / ".codex")
+    roots.append(Path.home() / ".codex")
+    roots.append(Path.home() / ".claude")
+    matches = []
+    for root in roots:
+        # codex layout: <root>/sessions/**/*<sid>*.jsonl
+        sessions = root / "sessions"
+        if sessions.exists():
+            try:
+                matches.extend(sessions.glob(f"**/*{session_id}*.jsonl"))
+            except OSError:
+                pass
+        # claude-code layout: <root>/projects/<sanitized-cwd>/<sid>.jsonl
+        projects = root / "projects"
+        if projects.exists():
+            try:
+                matches.extend(projects.glob(f"*/{session_id}.jsonl"))
+            except OSError:
+                pass
+    if not matches:
+        return direct if direct and direct.exists() else None
+    matches.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True)
+    return matches[0]
+
+
+def selected_text(args: argparse.Namespace) -> str:
+    if args.text:
+        return args.text
+    if args.text_file:
+        return Path(args.text_file).expanduser().read_text(encoding="utf-8")
+    if not sys.stdin.isatty():
+        return sys.stdin.read()
+    return ""
+
+
+def selected_texts(args: argparse.Namespace) -> list[str]:
+    raw = selected_text(args)
+    parts = [part.strip() for part in raw.split("\n---AURA-CANDIDATE---\n")]
+    seen = set()
+    texts = []
+    for part in parts:
+        key = normalize(part)
+        if key and key not in seen:
+            seen.add(key)
+            texts.append(part)
+    return texts
+
+
+def expanded_texts(texts: list[str]) -> list[str]:
+    expanded = []
+    seen = set()
+    for text in texts:
+        for candidate in (text, distinctive_query(text)):
+            key = normalize(candidate)
+            if key and key not in seen:
+                seen.add(key)
+                expanded.append(candidate)
+    return expanded
+
+
+def content_from_response_item(payload: dict) -> tuple[str | None, str]:
+    if payload.get("type") != "message":
+        return None, ""
+    role = payload.get("role")
+    content = payload.get("content")
+    parts = []
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") in {"output_text", "input_text"}:
+                parts.append(str(item.get("text") or ""))
+    text = "\n".join(part for part in parts if part).strip()
+    if not text:
+        return None, ""
+    if role == "assistant":
+        return "assistant", text
+    if role == "user":
+        return "user_prompt", text
+    return str(role or "message"), text
+
+
+def content_from_claude_event(event: dict) -> tuple[str | None, str]:
+    row_type = event.get("type")
+    if row_type not in {"user", "assistant"}:
+        return None, ""
+    if event.get("isSidechain"):
+        return None, ""
+    message = event.get("message") or {}
+    content = message.get("content")
+    parts = []
+    if isinstance(content, str):
+        parts.append(content)
+    elif isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text") or ""))
+    text = "\n".join(part for part in parts if part).strip()
+    if not text:
+        return None, ""
+    return ("assistant" if row_type == "assistant" else "user_prompt"), text
+
+
+def transcript_rows(path: Path | None, session_id: str, limit: int) -> list[dict]:
+    if not path or not path.exists():
+        return []
+    rows = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            # position = the RAW 1-based JSONL line number, which IS the Flex chunk id
+            # by construction. Flex's claude_code/codex workers key every line as
+            # `f"{session_id}_{line_num}"` over enumerate(lines, 1) — so we count EVERY
+            # line (blanks included), mint only message lines but with their true line
+            # number. No filtered counter, no alignment: id minted == Flex chunk id.
+            # The content-sha stays the drift alarm (fires on compaction / reindex).
+            for line_num, raw in enumerate(handle, 1):
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") == "response_item":
+                    row_type, content = content_from_response_item(event.get("payload") or {})
+                else:
+                    row_type, content = content_from_claude_event(event)
+                if not row_type or not content:
+                    continue
+                rows.append({
+                    "id": f"{session_id}_{line_num}",
+                    "session_id": session_id,
+                    "position": line_num,
+                    "type": row_type,
+                    "created_at": event.get("timestamp"),
+                    "content": content,
+                    "sha256": content_sha(content),
+                    "retrieval_method": "transcript",
+                })
+    except OSError:
+        return []
+    return rows[-limit:]
+
+
+def distinctive_query(text: str, *, max_terms: int = 12) -> str:
+    words = re.findall(r"[A-Za-z0-9_/-]+", normalize(text))
+    stop = {
+        "the", "and", "that", "this", "with", "from", "your", "you", "for", "are",
+        "was", "were", "have", "has", "had", "not", "but", "can", "will", "just",
+        "into", "then", "than", "they", "them", "its", "it's", "what", "when",
+        "where", "how", "why", "all", "one", "two", "out", "our", "now",
+    }
+    terms = []
+    seen = set()
+    for word in words:
+        if len(word) < 4 or word in stop or word in seen:
+            continue
+        seen.add(word)
+        terms.append(word)
+    return " ".join(terms[:max_terms]) or " ".join(words[:max_terms])
+
+
+def preferred_role_for_seed(needle: str) -> str | None:
+    stripped = needle.strip()
+    if stripped.startswith(("›", ">")):
+        return "user_prompt"
+    return "assistant"
+
+
+def score_rows(rows: list[dict], needle: str, *, include_content: bool = False, role_hint: str | None = None) -> list[dict]:
+    needle_norm = normalize(needle)
+    if not needle_norm:
+        return []
+    scored = []
+    for row in rows:
+        content = str(row.get("content") or "")
+        content_norm = normalize(content)
+        if not content_norm:
+            continue
+        score = 0.0
+        method = None
+        if needle in content:
+            score = 1.0
+            method = "exact"
+        elif needle_norm in content_norm:
+            score = 0.95
+            method = "normalized-substring"
+        else:
+            needle_words = [w for w in re.findall(r"[a-z0-9_/-]+", needle_norm) if len(w) > 2]
+            if needle_words:
+                hits = sum(1 for word in needle_words if word in content_norm)
+                score = hits / len(needle_words)
+                threshold = 0.8 if len(needle_words) <= 5 else 0.6
+                if score >= threshold:
+                    method = "word-overlap"
+        if method:
+            row_type = str(row.get("type") or "")
+            # role_hint comes from the click's POSITION (the speaker marker above
+            # it) and overrides the text heuristic — this is what disambiguates the
+            # same line echoed in a prompt (#user) vs spoken in a reply (#assistant).
+            preferred_role = role_hint or preferred_role_for_seed(needle)
+            if row_type == preferred_role:
+                role_priority = 0
+            elif row_type in {"assistant", "user_prompt"}:
+                role_priority = 1
+            else:
+                role_priority = 2
+            retrieval_bonus = 0.0
+            if row.get("retrieval_method") == "hybrid":
+                retrieval_bonus = 0.08
+            elif row.get("keyword_rank") is not None:
+                retrieval_bonus = 0.05
+            elif row.get("semantic_score") is not None:
+                retrieval_bonus = 0.03
+            rank_score = score + retrieval_bonus - (0.25 * role_priority)
+            scored_row = {
+                **{k: row.get(k) for k in ("id", "session_id", "position", "type", "tool_name", "target_file", "created_at")},
+                "score": round(score, 4),
+                "rank_score": round(rank_score, 4),
+                "role_priority": role_priority,
+                "method": method,
+                "matched_text": needle,
+                "retrieval_method": row.get("retrieval_method"),
+                "keyword_rank": row.get("keyword_rank"),
+                "semantic_score": row.get("semantic_score"),
+                "preview": content[:500],
+            }
+            if include_content:
+                scored_row["content"] = content
+            scored.append(scored_row)
+    scored.sort(key=lambda row: (-row["rank_score"], row["role_priority"], -(row.get("position") or 0)))
+    return scored
+
+
+def score_many(rows: list[dict], needles: list[str], *, include_content: bool = False, role_hint: str | None = None) -> list[dict]:
+    by_id = {}
+    for needle in needles:
+        for row in score_rows(rows, needle, include_content=include_content, role_hint=role_hint):
+            current = by_id.get(row["id"])
+            if current is None or (row["rank_score"], -row["role_priority"]) > (current["rank_score"], -current["role_priority"]):
+                by_id[row["id"]] = row
+    scored = list(by_id.values())
+    scored.sort(key=lambda row: (-row["rank_score"], row["role_priority"], -(row.get("position") or 0)))
+    return scored
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Resolve selected text to Codex message position")
+    parser.add_argument("--target", help="Aura seat ref, e.g. fleet:seat")
+    parser.add_argument("--pane", help="tmux pane id/ref, e.g. %%123 or fleet:%%123")
+    parser.add_argument("--session-id", help="Codex session id; bypass Aura registry lookup")
+    parser.add_argument("--text", help="Selected text")
+    parser.add_argument("--text-file", help="Read selected text from file")
+    parser.add_argument("--limit", type=int, default=5000, help="Max messages to scan for the session")
+    parser.add_argument("--candidates", type=int, default=5, help="Candidate count to return")
+    parser.add_argument("--output", choices=("json", "message", "message-with-header", "header-and-message-json", "anchor"), default="json", help="Output JSON metadata, resolved message text, or a mintable anchor record")
+    parser.add_argument("--resolve-anchor", type=int, metavar="POS", help="REVERSE: fetch the message at this transcript position (no text matching); pair with --expect-sha to verify drift")
+    parser.add_argument("--list", action="store_true", help="LIST: emit every transcript message as JSONL (position, type, sha, preview) — the exact-by-construction source for the fzf picker")
+    parser.add_argument("--expect-sha", help="On --resolve-anchor, the content sha the anchor was minted with; mismatch reports drift")
+    parser.add_argument("--ambiguity-epsilon", type=float, default=0.06, help="rank_score gap under which a second distinct-position candidate makes the resolve ambiguous")
+    parser.add_argument("--role-hint", choices=("user_prompt", "assistant"), help="bias resolution to this role — derived from the click's nearest speaker marker (❯=user, ●=assistant); disambiguates text echoed in a prompt vs spoken in a reply")
+    args = parser.parse_args()
+
+    # NB: do NOT read stdin here. --resolve-anchor / --list / --latest-anchor need
+    # no selected text, and a blind sys.stdin.read() blocks forever when stdin is
+    # an open pipe (a subprocess with no input). The forward path reads stdin only
+    # when it actually needs the seed (below, past the reverse/list early-returns).
+    record = resolve_registry_record(args.target, args.pane)
+    session_id = args.session_id or (record or {}).get("runtime_session_id") or (record or {}).get("session_id")
+    if not session_id:
+        print(json.dumps({
+            "ok": False,
+            "error": "no session id; pass --session-id or a bound --target/--pane",
+            "target": args.target,
+            "pane": args.pane,
+            "registry_record_found": bool(record),
+        }, indent=2))
+        return 1
+
+    transcript = discover_transcript_path(record, session_id)
+
+    # REVERSE: anchor (session_<line>) -> the exact thought, hash-verified.
+    # LIVE / same-session: read line N off disk (instant, pre-index). DURABLE /
+    # cross-tool (not on disk here): defer to `aura anchor resolve` (Flex, the one
+    # authority). position == the raw JSONL line == the Flex chunk id, so the two
+    # paths agree by construction; the sha stays the drift alarm.
+    if args.resolve_anchor is not None:
+        rows = transcript_rows(transcript, session_id, args.limit)
+        row = next((r for r in rows if r.get("position") == args.resolve_anchor), None)
+        if row is not None:
+            sha = row.get("sha256") or content_sha(str(row.get("content") or ""))
+            drift = (args.expect_sha is not None and args.expect_sha != sha)
+            print(json.dumps({
+                "ok": not drift,
+                "message_id": row.get("id"),
+                "session_id": session_id,
+                "position": row.get("position"),
+                "type": row.get("type"),
+                "sha256": sha,
+                "expected_sha": args.expect_sha,
+                "drift": drift,
+                "source": "local-line",
+                "content": str(row.get("content") or ""),
+            }, ensure_ascii=False))
+            return 3 if drift else 0
+        # Not resolvable locally — defer to the durable authority (Flex via aura anchor).
+        durable = aura_anchor_resolve(f"{session_id}_{args.resolve_anchor}")
+        if durable is not None:
+            content = str(durable.get("content") or "")
+            sha = content_sha(content)
+            drift = (args.expect_sha is not None and args.expect_sha != sha)
+            print(json.dumps({
+                "ok": not drift,
+                "message_id": f"{session_id}_{args.resolve_anchor}",
+                "session_id": session_id,
+                "position": args.resolve_anchor,
+                "type": durable.get("type"),
+                "sha256": sha,
+                "expected_sha": args.expect_sha,
+                "drift": drift,
+                "source": "aura-anchor-flex",
+                "content": content,
+            }, ensure_ascii=False))
+            return 3 if drift else 0
+        print(json.dumps({"ok": False, "error": "position-not-found-and-not-indexed",
+                          "session_id": session_id, "position": args.resolve_anchor,
+                          "available": len(rows),
+                          "hint": "local transcript missing; not yet indexed in Flex (live-edge lag)"},
+                         ensure_ascii=False))
+        return 2
+
+    # LIST: every message as JSONL — the exact source the fzf picker filters over.
+    if args.list:
+        rows = transcript_rows(transcript, session_id, args.limit)
+        for r in rows:
+            print(json.dumps({
+                "position": r.get("position"),
+                "type": r.get("type"),
+                "message_id": r.get("id"),
+                "sha256": r.get("sha256") or content_sha(str(r.get("content") or "")),
+                "preview": str(r.get("content") or "").replace("\n", " ⏎ ")[:200],
+            }, ensure_ascii=False))
+        return 0
+
+    # Forward path only: now read the seed (stdin / --text / --text-file).
+    texts = selected_texts(args)
+    if not texts:
+        print(json.dumps({"ok": False, "error": "no selected text supplied"}, indent=2))
+        return 1
+
+    match_texts = expanded_texts(texts)
+    # Dumb-on-purpose: resolve ONLY against this session's own transcript on disk.
+    # No semantic search, no cross-cell fallback, no indexing dependency — if the
+    # seed isn't in THIS transcript, refuse. Fast and exact beats clever.
+    rows = transcript_rows(transcript, session_id, args.limit)
+    wants_content = args.output in {"message", "message-with-header", "header-and-message-json", "anchor"}
+    candidates = score_many(rows, match_texts, include_content=wants_content, role_hint=args.role_hint)[: max(1, args.candidates)]
+    retrieval_used = bool(rows)
+    best = candidates[0] if candidates else None
+    # Fail-loud floor: a non-distinctive seed (bare stopword) substring-matches a
+    # long message at score 1.0 — refuse rather than mint a false-confident anchor.
+    refuse_reason = None
+    if best is not None and not is_distinctive_seed(str(best.get("matched_text") or "")):
+        refuse_reason = "seed-not-distinctive"
+        best = None
+
+    if args.output == "anchor":
+        # Mint an anchor only on a UNIQUE, distinctive match. A near-tie across two
+        # distinct positions is ambiguous → refuse to mint and hand back the
+        # candidates, so the caller escalates to the fzf-over-transcript picker.
+        seen_pos, distinct = set(), []
+        for c in candidates:
+            p = c.get("position")
+            if p in seen_pos:
+                continue
+            seen_pos.add(p)
+            distinct.append(c)
+        ambiguous = False
+        if best is not None and len(distinct) >= 2:
+            gap = float(distinct[0].get("rank_score") or 0) - float(distinct[1].get("rank_score") or 0)
+            ambiguous = gap < args.ambiguity_epsilon
+        mint = best is not None and not ambiguous
+
+        def _brief(c):
+            return {
+                "position": c.get("position"), "message_id": c.get("id"),
+                "type": c.get("type"), "score": c.get("score"),
+                "rank_score": c.get("rank_score"),
+                "sha256": content_sha(str(c.get("content") or "")),
+                "preview": str(c.get("content") or "").replace("\n", " ")[:140],
+            }
+
+        anchor = None
+        if mint:
+            anchor = {
+                "session_id": session_id,
+                "position": best.get("position"),
+                "message_id": best.get("id"),
+                "type": best.get("type"),
+                "sha256": content_sha(str(best.get("content") or "")),
+                "seat_ref": (record or {}).get("seat_ref") or (record or {}).get("target"),
+            }
+        print(json.dumps({
+            "ok": mint,
+            "anchor": anchor,
+            "ambiguous": ambiguous,
+            "refuse_reason": refuse_reason or ("ambiguous" if ambiguous else None),
+            "session_id": session_id,
+            "candidates": [_brief(c) for c in distinct[: max(1, args.candidates)]],
+        }, ensure_ascii=False))
+        return 0 if mint else 4
+
+    if args.output in {"message", "message-with-header", "header-and-message-json"}:
+        if not best:
+            if args.output == "header-and-message-json":
+                print(json.dumps({
+                    "ok": False,
+                    "header": "No matching transcript message found.",
+                    "message": "",
+                    "session_id": session_id,
+                }))
+                return 2
+            print("No matching transcript message found.")
+            return 2
+        header = f"message {best.get('position')} · {best.get('type')} · {best.get('method')}"
+        retrieval = f" · {best.get('retrieval_method')}" if best.get("retrieval_method") else ""
+        header = f"{header}{retrieval} · score {best.get('score')}"
+        message = str(best.get("content") or "")
+        if args.output == "header-and-message-json":
+            print(json.dumps({
+                "ok": True,
+                "header": header,
+                "message": message,
+                "session_id": session_id,
+                "position": best.get("position"),
+                "message_id": best.get("id"),
+                "type": best.get("type"),
+                "method": best.get("method"),
+                "score": best.get("score"),
+            }, ensure_ascii=False))
+            return 0
+        if args.output == "message-with-header":
+            print(header)
+            print()
+        print(message)
+        return 0
+
+    result = {
+        "ok": bool(best),
+        "target": args.target,
+        "pane": args.pane,
+        "runtime": (record or {}).get("runtime"),
+        "seat_ref": (record or {}).get("seat_ref"),
+        "runtime_session_id": session_id,
+        "selected_text": texts[0],
+        "selected_text_candidates": texts,
+        "message_number": best.get("position") if best else None,
+        "message_id": best.get("id") if best else None,
+        "match": best.get("method") if best else None,
+        "score": best.get("score") if best else None,
+        "retrieval_used": retrieval_used,
+        "refuse_reason": refuse_reason,
+        "candidates": candidates,
+    }
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if best else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

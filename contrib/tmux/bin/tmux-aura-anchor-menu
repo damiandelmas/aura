@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""Right-click context menu over a resolved anchor (native tmux display-menu).
+
+Right-click resolves the thought under the cursor to a verifiable anchor, then
+this opens a menu of verbs on it. The menu is the frame the patch-bay fills:
+annotate / copy today, link / patch as those modules land. The resolution is the
+noun (the anchor); the menu is the verb.
+
+Subcommands:
+  show <ctx> <meta> <mx> <my>   build + open the menu from a resolve result
+  note <ctx> <meta>             annotate (delegates to the tested anchor-popup)
+  copy-message <meta>           reverse-resolve the anchor's text -> tmux buffer
+  copy-anchor <meta>            fleet:seat@session#N + sha -> tmux buffer
+  patch <meta>                  pick a live seat, send this thought into it
+  pick <ctx> <meta> <mx> <my>   fzf-disambiguate, then re-open the menu
+
+Interactive actions (note/patch/pick/fzf) run inside a tmux display-popup, which
+has a tty; copy actions are silent + a confirmation in the message line.
+Test hooks: AURA_PATCH_TARGET=<fleet:seat> bypasses the seat fzf; AURA_MENU_DRYRUN=1
+prints the menu command instead of invoking tmux (headless verification).
+"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+BIN = Path(__file__).resolve().parent
+RESOLVER = str(BIN / "tmux-aura-resolve-message")
+PICKER = str(BIN / "tmux-aura-pick")
+POPUP = str(BIN / "tmux-aura-anchor-popup")
+ANNOTATE = str(BIN / "tmux-aura-annotate")
+CLIP = str(BIN / "tmux-aura-clip")
+SELF = str(BIN / "tmux-aura-anchor-menu")
+
+
+def clip(text):
+    """Copy to the tmux buffer AND the OS clipboard (so Ctrl/Cmd+V works)."""
+    subprocess.run([CLIP], input=text, text=True, check=False)
+AURA = os.environ.get("AURA_BIN") or shutil.which("aura") or str(BIN.parents[2] / "cli" / "aura")
+
+
+def load(p):
+    try:
+        return json.loads(Path(p).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save(p, d):
+    Path(p).write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+
+
+def reverse(session_id, pos):
+    p = subprocess.run([RESOLVER, "--session-id", session_id, "--resolve-anchor", str(pos)],
+                       capture_output=True, text=True, timeout=10)
+    try:
+        return json.loads(p.stdout)
+    except json.JSONDecodeError:
+        return {}
+
+
+def msg(text):
+    subprocess.run(["tmux", "display-message", text], check=False)
+
+
+# ---- menu construction -----------------------------------------------------
+
+def show(ctx_path, meta_path, mx, my):
+    ctx = load(ctx_path)
+    meta = load(meta_path)
+    session_id = ctx.get("session_id") or meta.get("session_id")
+
+    items = []  # each: (name, key, command)  | ("", "", "") = separator
+    if ctx.get("ok") and ctx.get("anchor"):
+        a = ctx["anchor"]
+        meta.update({
+            "message_position": a.get("position"), "message_id": a.get("message_id"),
+            "message_type": a.get("type"), "content_sha256": a.get("sha256"),
+            "session_id": session_id, "resolved": True,
+        })
+        save(meta_path, meta)
+        preview = ""
+        rr = reverse(session_id, a.get("position"))
+        preview = (rr.get("content", "") or "").replace("\n", " ")[:46]
+        title = f"#{a.get('position')} {a.get('type','')[:4]} {str(a.get('sha256'))[:6]} {preview}"
+        items = [
+            ("Annotate (note)", "a", f"display-popup -E \"'{POPUP}' '{ctx_path}' '{meta_path}'\""),
+            # run-shell -b (background): the copy path calls tmux load-buffer, and a
+            # SYNCHRONOUS run-shell that invokes tmux deadlocks the server (it waits
+            # on run-shell; run-shell waits on it) — that was the "tmux totally stuck".
+            ("Copy message",    "c", f"run-shell -b \"'{SELF}' copy-message '{meta_path}'\""),
+            ("Copy anchor",     "y", f"run-shell -b \"'{SELF}' copy-anchor '{meta_path}'\""),
+            ("", "", ""),
+            ("Patch into seat…", "p", f"display-popup -E \"'{SELF}' patch '{meta_path}'\""),
+        ]
+    elif ctx.get("ambiguous"):
+        n = len(ctx.get("candidates", []))
+        title = f"ambiguous · {n} matches"
+        items = [
+            (f"Pick exact message…", "e",
+             f"display-popup -E \"'{SELF}' pick '{ctx_path}' '{meta_path}' {mx} {my}\""),
+        ]
+    else:
+        title = "no message resolved here"
+        items = [("(nothing to anchor)", "", "")]
+
+    cmd = ["tmux", "display-menu", "-T", title, "-x", str(mx), "-y", str(my)]
+    for name, key, action in items:
+        cmd += [name, key, action]
+
+    if os.environ.get("AURA_MENU_DRYRUN"):
+        print(json.dumps({"title": title, "items": [(n, k) for n, k, _ in items if n or k]}, ensure_ascii=False))
+        return 0
+    subprocess.run(cmd, check=False)
+    return 0
+
+
+# ---- actions ---------------------------------------------------------------
+
+def copy_message(meta_path):
+    meta = load(meta_path)
+    rr = reverse(meta.get("session_id"), meta.get("message_position"))
+    content = rr.get("content", "")
+    if not content:
+        msg("Aura: nothing to copy")
+        return 2
+    clip(content)
+    msg(f"Copied message #{meta.get('message_position')} to clipboard ({len(content)} chars)")
+    return 0
+
+
+def copy_anchor(meta_path):
+    meta = load(meta_path)
+    target = meta.get("target") or "?"
+    ref = f"{target}@{meta.get('session_id')}#{meta.get('message_position')} sha:{str(meta.get('content_sha256'))[:8]}"
+    clip(ref)
+    msg(f"Copied anchor to clipboard: {ref[:54]}")
+    return 0
+
+
+def live_seats():
+    p = subprocess.run([AURA, "view"], capture_output=True, text=True, timeout=5)
+    try:
+        d = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        return []
+    out = []
+    for c in d.get("colleagues", []):
+        if c.get("status") == "alive" and (c.get("runtime") or "").startswith(("claude", "codex")):
+            out.append(f"{c['fleet']}:{c['seat']}")
+    return out
+
+
+def patch(meta_path):
+    meta = load(meta_path)
+    rr = reverse(meta.get("session_id"), meta.get("message_position"))
+    content = rr.get("content", "")
+    if not content:
+        msg("Aura: nothing to patch")
+        return 2
+    target = os.environ.get("AURA_PATCH_TARGET")
+    if not target:
+        seats = live_seats()
+        if not seats:
+            print("no live seats to patch into"); return 2
+        fzf = subprocess.run(["fzf", "--prompt", "patch into> ", "--height", "40%", "--reverse"],
+                             input="\n".join(seats), capture_output=True, text=True)
+        target = fzf.stdout.strip()
+    if not target:
+        return 130
+    env = {**os.environ}
+    r = subprocess.run([AURA, "send", target,
+                        f"[PATCH from {meta.get('target','?')} #{meta.get('message_position')}] {content}",
+                        "--as-service", "patch-cable"], capture_output=True, text=True, env=env)
+    ok = r.returncode == 0 and '"ok": true' in r.stdout
+    msg(f"Patched #{meta.get('message_position')} -> {target}" if ok else f"Patch failed -> {target}")
+    return 0 if ok else 2
+
+
+def pick(ctx_path, meta_path, mx, my):
+    ctx = load(ctx_path)
+    sid = ctx.get("session_id")
+    cands = [str(c["position"]) for c in ctx.get("candidates", [])]
+    args = [PICKER, "--session-id", sid]
+    if cands:
+        args += ["--positions", ",".join(cands)]
+    picked = subprocess.run(args, capture_output=True, text=True)
+    try:
+        anc = json.loads(picked.stdout).get("anchor")
+    except json.JSONDecodeError:
+        anc = None
+    if not anc:
+        return 130
+    # rewrite ctx as a minted result for the chosen anchor, then re-open the menu
+    ctx = {"ok": True, "anchor": anc, "ambiguous": False, "session_id": sid, "candidates": []}
+    save(ctx_path, ctx)
+    return show(ctx_path, meta_path, mx, my)
+
+
+def main():
+    if len(sys.argv) < 2:
+        return 1
+    cmd = sys.argv[1]
+    if cmd == "show":
+        return show(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
+    if cmd == "note":
+        return subprocess.run([POPUP, sys.argv[2], sys.argv[3]]).returncode
+    if cmd == "copy-message":
+        return copy_message(sys.argv[2])
+    if cmd == "copy-anchor":
+        return copy_anchor(sys.argv[2])
+    if cmd == "patch":
+        return patch(sys.argv[2])
+    if cmd == "pick":
+        return pick(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

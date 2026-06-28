@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Read stdin once, copy it to the tmux paste buffer AND the OS clipboard.
+# tmux set-buffer alone only feeds tmux's own paste — it never reaches the system
+# clipboard, so Ctrl/Cmd+V into other apps gets nothing. We fan out to every sink
+# present: WSL clip.exe (Windows clipboard), xclip (X11 / WSLg), wl-copy (Wayland),
+# pbcopy (macOS).
+#
+# Two footguns this guards against:
+#  - clip.exe stalling: capped with `timeout`.
+#  - xclip/wl-copy stay RESIDENT to serve the selection; they are setsid-detached so
+#    they never tie up the caller. (The actual tmux freeze was a *synchronous*
+#    run-shell calling tmux from here — fixed at the menu with run-shell -b.)
+set -uo pipefail
+data="$(cat)"
+
+# tmux paste buffer (fast; no-op outside tmux).
+printf '%s' "$data" | tmux load-buffer - 2>/dev/null || true
+
+# Windows clipboard — primary on WSL, exits cleanly. Capped just in case.
+if command -v clip.exe >/dev/null 2>&1; then
+  printf '%s' "$data" | timeout 3 clip.exe >/dev/null 2>&1 || true
+fi
+
+# Resident selection servers — detach fully so they can't block anything.
+export AURA_CLIPDATA="$data"
+if [[ -n "${DISPLAY:-}" ]] && command -v xclip >/dev/null 2>&1; then
+  setsid bash -c 'printf "%s" "$AURA_CLIPDATA" | xclip -selection clipboard' </dev/null >/dev/null 2>&1 &
+fi
+if command -v wl-copy >/dev/null 2>&1; then
+  setsid bash -c 'printf "%s" "$AURA_CLIPDATA" | wl-copy' </dev/null >/dev/null 2>&1 &
+fi
+disown -a 2>/dev/null || true
+exit 0
