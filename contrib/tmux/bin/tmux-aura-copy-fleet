@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fleet="${1:-$(tmux display-message -p '#{session_name}' 2>/dev/null || true)}"
+registry="${AURA_SEATS_REGISTRY:-$HOME/.aura/registry/seats.json}"
+windows="$(
+  if [ -n "$fleet" ]; then
+    tmux list-windows -t "$fleet" -F '#{window_name}' 2>/dev/null || true
+  fi
+)"
+
+value="$(
+  AURA_FLEET="$fleet" AURA_WINDOWS="$windows" AURA_SEATS_REGISTRY="$registry" python3 - <<'PY'
+import json
+import os
+
+
+def first(row, *keys):
+    return next((str(row.get(key)) for key in keys if row.get(key)), "")
+
+
+def entry(target, row):
+    row = row or {}
+    lines = [f"- aura: {target or 'unknown'}"]
+    agent = first(row, "identity_id", "agent_package_id", "identity")
+    if agent.startswith("i_"):
+        lines.append(f"  agent: {agent}")
+    else:
+        for out_key, *sources in (
+            ("seat_instance", "seat_instance_id"),
+            ("launch", "aura_launch_id"),
+        ):
+            value = first(row, *sources)
+            if value:
+                lines.append(f"  {out_key}: {value}")
+
+    for out_key, *sources in (
+        ("session", "session_id", "runtime_session_id"),
+        ("runtime", "runtime"),
+    ):
+        value = first(row, *sources)
+        if value:
+            lines.append(f"  {out_key}: {value}")
+
+    return "\n".join(lines)
+
+
+fleet = os.environ.get("AURA_FLEET", "")
+windows = [line for line in os.environ.get("AURA_WINDOWS", "").splitlines() if line]
+registry = os.environ.get("AURA_SEATS_REGISTRY", "")
+
+try:
+    with open(registry, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+except (OSError, json.JSONDecodeError):
+    data = {}
+
+targets = [f"{fleet}:{window}" for window in windows] if fleet else []
+if not targets and fleet:
+    rows = [
+        (target, row)
+        for target, row in data.items()
+        if row.get("fleet") == fleet
+        or row.get("logical_fleet") == fleet
+        or row.get("physical_fleet") == fleet
+    ]
+    targets = [target for target, _ in sorted(rows)]
+
+print("\n\n".join(entry(target, data.get(target, {})) for target in targets))
+PY
+)"
+
+printf "%s" "$value" | "$(dirname "${BASH_SOURCE[0]}")/tmux-aura-clip"
+
+count="$(printf "%s\n" "$value" | grep -c '^- aura: ' || true)"
+tmux display-message "copied $count agent refs for $fleet"

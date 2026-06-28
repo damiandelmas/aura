@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+identity="$(tmux show-option -qv @aura_active_identity 2>/dev/null || true)"
+target="$(tmux display-message -p '#{session_name}:#{window_name}' 2>/dev/null || true)"
+
+if [ -n "$identity" ]; then
+  text="$identity"
+else
+  text="unbound identity ($target)"
+fi
+
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+printf '%s\n' "$text" >"$tmp"
+
+tmux display-popup \
+  -B \
+  -h 3 \
+  -w 72% \
+  -s 'bg=colour235,fg=colour81' \
+  -E "text=\$(cat '$tmp'); cols=\$(tput cols 2>/dev/null || echo 80); pad=\$(( (cols + \${#text}) / 2 )); printf '\n%*s' \"\$pad\" \"\$text\"; sleep 3"

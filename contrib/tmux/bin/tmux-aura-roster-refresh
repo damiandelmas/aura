@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+session="${1:-}"
+if [ -z "$session" ]; then
+  session="$(tmux display-message -p '#{session_name}' 2>/dev/null || true)"
+fi
+[ -n "$session" ] || exit 0
+
+roster="$HOME/.local/bin/tmux-aura-roster"
+[ -x "$roster" ] || exit 0
+
+# Keep tmux window labels mirroring Aura seat names (one-way: registry is the
+# authority, the window name is its label). Idempotent — converges in one pass,
+# so the after-rename-window hook this may trigger finds nothing to do.
+AURA_STATE_DIR="${AURA_STATE_DIR:-$HOME/.aura}" \
+  "${AURA_BIN:-$HOME/.local/bin/aura}" seat sync-windows --fleet "$session" >/dev/null 2>&1 || true
+
+product="$("$roster" product "$session" 2>/dev/null || true)"
+role="$("$roster" role "$session" 2>/dev/null || true)"
+lane="$("$roster" lane "$session" 2>/dev/null || true)"
+seats="$("$roster" seat "$session" 2>/dev/null || true)"
+seats_row1="$("$roster" seat-row1 "$session" 2>/dev/null || true)"
+seats_row2="$("$roster" seat-row2 "$session" 2>/dev/null || true)"
+active_identity="$("$roster" active-identity "$session" 2>/dev/null || true)"
+active_border="$("$roster" active-border "$session" 2>/dev/null || true)"
+
+tmux set-option -q -t "$session" @aura_roster_product "$product"
+tmux set-option -q -t "$session" @aura_roster_role "$role"
+tmux set-option -q -t "$session" @aura_roster_lane "$lane"
+tmux set-option -q -t "$session" @aura_roster_seats "$seats"
+tmux set-option -q -t "$session" @aura_roster_seats_row1 "$seats_row1"
+tmux set-option -q -t "$session" @aura_roster_seats_row2 "$seats_row2"
+tmux set-option -q -t "$session" @aura_active_identity "$active_identity"
+tmux set-option -q -t "$session" @aura_active_border "$active_border"
+if [ -n "$seats_row2" ]; then
+  tmux set-option -q -t "$session" status 3
+else
+  tmux set-option -q -t "$session" status 2
+fi

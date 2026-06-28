@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""Exact-by-construction message picker — the fzf fallback for the anchor primitive.
+
+When the spatial right-click can't be sure (refused / ambiguous), the caller
+escalates here: enumerate the REAL transcript (no screen-scrape, no rendered
+gap), let fzf narrow it, and mint an anchor from the chosen source message + its
+content sha. Also usable standalone when you would rather search than point.
+
+Numbering authority: the rows come from the committed aura/main primitive
+`aura anchor enum` (one shared 1-based JSONL-line counter) — falling back to the
+resolver's `tmux-aura-resolve-message --list` if `aura anchor` is unavailable or
+errors. Either way `position` is the same line number, so the chosen row still
+resolves through `tmux-aura-resolve-message --resolve-anchor POS`.
+
+Distinguishing context: templated transcripts (cold-outreach copy etc.) make the
+matched line byte-identical across many positions ("— damian", "hi there,"), so a
+bare line preview is unpickable exactly when the picker is needed. For any rows
+whose previews collide we pull the full message and surface its nearest
+distinctive token — a URL / domain / brand, else the first distinctive line — so
+the human picks by context (#43 … ⟵ …gensee-beauty.flexchat.dev).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+
+BIN = Path(__file__).resolve().parent
+RESOLVER = str(BIN / "tmux-aura-resolve-message")
+
+
+def aura_bin() -> str | None:
+    """Prefer `aura` on PATH; fall back to the known local install."""
+    from shutil import which
+    found = which("aura")
+    if found:
+        return found
+    fallback = str(Path.home() / ".local" / "bin" / "aura")
+    return fallback if os.path.exists(fallback) else None
+
+
+def _resolver(common: list[str], extra: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run([RESOLVER, *common, *extra], capture_output=True, text=True, timeout=30)
+
+
+def enum_rows(session_id: str | None, target: str | None) -> list[dict]:
+    """The shared numbering authority: `aura anchor enum` (best-effort).
+
+    Returns [] on any failure so the caller can fall back to the resolver's
+    --list. Maps to the picker's minimal row shape (position/type/preview); the
+    chosen position still resolves through --resolve-anchor (same line counter).
+    """
+    binp = aura_bin()
+    if not binp or not (session_id or target):
+        return []
+    sel = ["--session", session_id] if session_id else ["--target", target]
+    try:
+        p = subprocess.run([binp, "anchor", "enum", *sel], capture_output=True, text=True, timeout=30)
+        d = json.loads(p.stdout or "{}")
+    except Exception:
+        return []
+    if not d.get("ok"):
+        return []
+    rows = []
+    for r in d.get("rows", []):
+        rows.append({"position": r.get("position"), "type": r.get("type"), "preview": r.get("preview", "")})
+    return rows
+
+
+def list_rows(common: list[str]) -> list[dict]:
+    """Fallback enumeration through the resolver's own --list."""
+    p = _resolver(common, ["--list"])
+    rows = []
+    for line in p.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+    return rows
+
+
+def full_content(common: list[str], pos: int) -> str:
+    """Full message text at a position (for distinguishing collided previews)."""
+    p = _resolver(common, ["--resolve-anchor", str(pos)])
+    try:
+        return str(json.loads(p.stdout).get("content") or "")
+    except json.JSONDecodeError:
+        return ""
+
+
+def anchor_for(common: list[str], pos: int) -> dict | None:
+    p = _resolver(common, ["--resolve-anchor", str(pos)])
+    try:
+        d = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        return None
+    if d.get("sha256") is None:
+        return None
+    return {
+        "session_id": d.get("session_id"),
+        "position": d.get("position"),
+        "message_id": d.get("message_id"),
+        "type": d.get("type"),
+        "sha256": d.get("sha256"),
+    }
+
+
+_STOP = {
+    "the", "and", "that", "this", "with", "from", "your", "you", "for", "are",
+    "was", "were", "have", "has", "had", "not", "but", "can", "will", "just",
+    "into", "then", "than", "they", "them", "its", "what", "when", "where",
+    "how", "why", "all", "one", "two", "out", "our", "now", "should", "store",
+    "there", "hi", "hey", "hello", "thanks", "thank", "best", "regards",
+}
+_URL_RE = re.compile(r'https?://[^\s<>"\')\]]+', re.I)
+_HOST_RE = re.compile(r'(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?:/[^\s<>"\')\]]*)?', re.I)
+_WORD_RE = re.compile(r'[a-z0-9_/-]+')
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "")).strip().lower()
+
+
+def _oneline(text: str, n: int) -> str:
+    s = re.sub(r"\s+", " ", (text or "").replace("⏎", " ")).strip()
+    return s if len(s) <= n else s[: n - 1].rstrip() + "…"
+
+
+def _shorten_tail(s: str, n: int = 44) -> str:
+    s = s.strip()
+    return s if len(s) <= n else "…" + s[-(n - 1):]
+
+
+def distinguishing(text: str, avoid: str = "") -> str | None:
+    """Nearest distinctive token in a message — URL/domain/brand, else a line.
+
+    The whole point: when the preview is templated-identical across positions,
+    this is what tells two rows apart. Prefers a URL or bare host (unique per
+    block), then the first distinctive (len>=4, non-stopword) line that isn't the
+    preview already shown.
+    """
+    if not text:
+        return None
+    m = _URL_RE.search(text)
+    if m:
+        return _shorten_tail(re.sub(r"^https?://", "", m.group(0)))
+    m = _HOST_RE.search(text)
+    if m:
+        return _shorten_tail(m.group(0))
+    avoid_n = _norm(avoid)
+    for ln in text.splitlines():
+        s = ln.strip()
+        if len(s) < 4:
+            continue
+        toks = [w for w in _WORD_RE.findall(s.lower()) if len(w) >= 4 and w not in _STOP]
+        if toks and _norm(s) != avoid_n:
+            return _oneline(s, 60)
+    return None
+
+
+def render_rows(rows: list[dict], common: list[str]) -> list[str]:
+    """fzf input lines: key TAB display. Display = #pos type preview [⟵ context].
+
+    Distinguishing context is computed for every row from its preview cheaply,
+    and — for rows whose previews COLLIDE (the templated-identical case) — from
+    the full message fetched on demand, so look-alike rows become pickable.
+    """
+    # Which positions share a preview with another row → need full-message context.
+    by_key: dict[str, list[int]] = {}
+    for i, r in enumerate(rows):
+        by_key.setdefault(_norm(_oneline(r.get("preview", ""), 80)), []).append(i)
+    collided = {i for idxs in by_key.values() if len(idxs) > 1 for i in idxs}
+
+    lines = []
+    for i, r in enumerate(rows):
+        pos = r.get("position")
+        rtype = str(r.get("type") or "")
+        base = _oneline(r.get("preview", ""), 70)
+        source = full_content(common, pos) if i in collided else r.get("preview", "")
+        dist = distinguishing(source, avoid=base)
+        disp = f"#{pos:>4} {rtype:<10} {base}"
+        if dist and _norm(dist) not in _norm(base):
+            disp += f"   ⟵ {dist}"
+        lines.append(f"{pos}\t{disp}")
+    return lines
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="fzf message picker → mint an anchor from the real transcript")
+    ap.add_argument("--session-id")
+    ap.add_argument("--pane")
+    ap.add_argument("--target")
+    ap.add_argument("--positions", help="restrict the picker to these comma-separated positions (ambiguous candidates)")
+    ap.add_argument("--query", default="", help="initial fzf query")
+    ap.add_argument("--pick", type=int, help="non-interactive: mint the anchor for this position directly (tests/automation)")
+    ap.add_argument("--copy", action="store_true", help="copy the minted anchor JSON to the tmux buffer")
+    ap.add_argument("--print-rows", action="store_true", help="non-interactive: print the rendered picker rows and exit (tests)")
+    a = ap.parse_args()
+
+    common: list[str] = []
+    if a.session_id:
+        common += ["--session-id", a.session_id]
+    if a.pane:
+        common += ["--pane", a.pane]
+    if a.target:
+        common += ["--target", a.target]
+    if not common:
+        print(json.dumps({"ok": False, "error": "need --session-id/--pane/--target"}))
+        return 1
+
+    # Non-interactive: mint a chosen position directly (the test/automation path).
+    if a.pick is not None:
+        anc = anchor_for(common, a.pick)
+        if a.copy and anc:
+            subprocess.run(["tmux", "set-buffer", "--", json.dumps(anc)], check=False)
+        print(json.dumps({"ok": bool(anc), "anchor": anc, "via": "pick"}, ensure_ascii=False))
+        return 0 if anc else 2
+
+    # Enumerate via the shared numbering authority (aura anchor enum), falling
+    # back to the resolver's --list. Positions are identical either way.
+    rows = enum_rows(a.session_id, a.target)
+    via = "aura-anchor-enum"
+    if not rows:
+        rows = list_rows(common)
+        via = "resolver-list"
+    if a.positions:
+        want = {int(x) for x in a.positions.split(",") if x.strip().isdigit()}
+        rows = [r for r in rows if r.get("position") in want]
+    if not rows:
+        print(json.dumps({"ok": False, "error": "no messages to pick"}))
+        return 2
+
+    if a.print_rows:
+        for line in render_rows(rows, common):
+            print(line.split("\t", 1)[1])
+        return 0
+
+    # Single candidate → no need to prompt.
+    if len(rows) == 1:
+        chosen = rows[0]["position"]
+    else:
+        lines = render_rows(rows, common)
+        fzf = subprocess.run(
+            ["fzf", "--with-nth=2..", "--delimiter", "\t", "--query", a.query,
+             "--prompt", "anchor> ", "--height=45%", "--reverse"],
+            input="\n".join(lines), capture_output=True, text=True,
+        )
+        if fzf.returncode != 0 or not fzf.stdout.strip():
+            print(json.dumps({"ok": False, "error": "no selection"}))
+            return 130
+        chosen = int(fzf.stdout.split("\t", 1)[0])
+
+    anc = anchor_for(common, chosen)
+    if a.copy and anc:
+        subprocess.run(["tmux", "set-buffer", "--", json.dumps(anc)], check=False)
+    print(json.dumps({"ok": bool(anc), "anchor": anc, "via": via}, ensure_ascii=False))
+    return 0 if anc else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
